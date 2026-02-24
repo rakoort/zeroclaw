@@ -21,6 +21,7 @@ pub mod bedrock;
 pub mod compatible;
 pub mod copilot;
 pub mod gemini;
+pub mod gemini_sanitize;
 pub mod ollama;
 pub mod openai;
 pub mod openai_codex;
