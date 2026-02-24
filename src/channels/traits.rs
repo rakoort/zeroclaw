@@ -12,6 +12,8 @@ pub struct ChannelMessage {
     /// Platform thread identifier (e.g. Slack `ts`, Discord thread ID).
     /// When set, replies should be posted as threaded responses.
     pub thread_ts: Option<String>,
+    pub thread_starter_body: Option<String>,
+    pub thread_history: Option<String>,
 }
 
 /// Message to send through a channel
@@ -172,6 +174,8 @@ mod tests {
                 channel: "dummy".into(),
                 timestamp: 123,
                 thread_ts: None,
+                thread_starter_body: None,
+                thread_history: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -188,6 +192,8 @@ mod tests {
             channel: "dummy".into(),
             timestamp: 999,
             thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
         };
 
         let cloned = message.clone();

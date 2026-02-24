@@ -25,6 +25,8 @@ fn channel_message_sender_field_holds_platform_user_id() {
         channel: "telegram".into(),
         timestamp: 1700000000,
         thread_ts: None,
+        thread_starter_body: None,
+        thread_history: None,
     };
 
     assert_eq!(msg.sender, "123456789");
@@ -47,6 +49,8 @@ fn channel_message_reply_target_distinct_from_sender() {
         channel: "discord".into(),
         timestamp: 1700000000,
         thread_ts: None,
+        thread_starter_body: None,
+        thread_history: None,
     };
 
     assert_ne!(
@@ -67,6 +71,8 @@ fn channel_message_fields_not_swapped() {
         channel: "test".into(),
         timestamp: 1700000000,
         thread_ts: None,
+        thread_starter_body: None,
+        thread_history: None,
     };
 
     assert_eq!(
@@ -93,6 +99,8 @@ fn channel_message_preserves_all_fields_on_clone() {
         channel: "test_channel".into(),
         timestamp: 1700000001,
         thread_ts: None,
+        thread_starter_body: None,
+        thread_history: None,
     };
 
     let cloned = original.clone();
@@ -186,6 +194,8 @@ impl Channel for CapturingChannel {
             channel: "capturing".into(),
             timestamp: 1700000000,
             thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
         })
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -315,4 +325,42 @@ async fn channel_multiple_sends_preserve_order_and_recipients() {
     assert_eq!(sent[0].content, "msg 1");
     assert_eq!(sent[1].content, "msg 2");
     assert_eq!(sent[2].content, "msg 3");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session scoping: per-thread, not per-sender
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn conversation_history_key_is_per_thread_not_per_sender() {
+    // Two users in the same thread should share a conversation key.
+    // Tests the public conversation_history_key function.
+    let msg_alice = ChannelMessage {
+        id: "1".into(),
+        sender: "alice".into(),
+        reply_target: "C123".into(),
+        content: "hello".into(),
+        channel: "slack".into(),
+        timestamp: 1000,
+        thread_ts: Some("thread_001".into()),
+        thread_starter_body: None,
+        thread_history: None,
+    };
+    let msg_bob = ChannelMessage {
+        id: "2".into(),
+        sender: "bob".into(),
+        reply_target: "C123".into(),
+        content: "hi".into(),
+        channel: "slack".into(),
+        timestamp: 1001,
+        thread_ts: Some("thread_001".into()),
+        thread_starter_body: None,
+        thread_history: None,
+    };
+    let key_alice = zeroclaw::channels::conversation_history_key(&msg_alice);
+    let key_bob = zeroclaw::channels::conversation_history_key(&msg_bob);
+    assert_eq!(
+        key_alice, key_bob,
+        "same thread should have same history key regardless of sender"
+    );
 }
