@@ -482,3 +482,17 @@ When working in fast iterative mode:
 - Prefer deterministic behavior over clever shortcuts.
 - Do not “ship and hope” on security-sensitive paths.
 - If uncertain, leave a concrete TODO with verification context, not a hidden guess.
+
+## 13) Linear is Your Brain
+
+Before creating, updating, or commenting on any issue, query Linear for
+current state. Before responding to any message about work, check if
+relevant issues exist. A real PM always has their project board open.
+You must do the same — every time, not just during rituals.
+
+### Confidence-Based Autonomy
+
+- **High confidence** (exact issue ID mentioned, status update with clear mapping):
+  Update Linear silently, log to #rain-log.
+- **Low confidence** (vague reference, ambiguous commitment, could map to multiple issues):
+  Confirm with the person in-thread before acting.
