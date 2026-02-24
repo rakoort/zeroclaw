@@ -77,6 +77,54 @@ async fn fetch_thread_replies(
         .unwrap_or_default())
 }
 
+/// Per-channel ring buffer for non-mention messages.
+struct PendingHistoryBuffer {
+    entries: Vec<String>,
+    max: usize,
+}
+
+impl PendingHistoryBuffer {
+    fn new(max: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(max),
+            max,
+        }
+    }
+
+    fn push(&mut self, entry: String) {
+        if self.entries.len() >= self.max {
+            self.entries.remove(0);
+        }
+        self.entries.push(entry);
+    }
+
+    fn drain(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.entries)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn entries(&self) -> &[String] {
+        &self.entries
+    }
+}
+
+/// Format a message in the structured envelope format.
+fn format_message_envelope(
+    channel_name: &str,
+    sender_name: &str,
+    timestamp: &str,
+    text: &str,
+) -> String {
+    format!("[Slack {channel_name} {sender_name} {timestamp}] {sender_name}: {text}")
+}
+
 /// Check if message text contains a mention of the bot.
 fn is_mention(text: &str, bot_user_id: &str, mention_regex: Option<&regex::Regex>) -> bool {
     // Explicit Slack mention: <@U_BOT_ID>
@@ -343,6 +391,7 @@ impl Channel for SlackChannel {
         let mut discovered_channels: Vec<String> = Vec::new();
         let mut last_discovery = Instant::now();
         let mut last_ts_by_channel: HashMap<String, String> = HashMap::new();
+        let mut pending_history: HashMap<String, PendingHistoryBuffer> = HashMap::new();
 
         if let Some(ref channel_id) = scoped_channel {
             tracing::info!("Slack channel listening on #{channel_id}...");
@@ -470,7 +519,19 @@ impl Channel for SlackChannel {
 
                         last_ts_by_channel.insert(channel_id.clone(), ts.to_string());
 
-                        // Mention gating: skip non-mention messages when enabled
+                        // Format timestamp from Slack ts for envelope
+                        let ts_secs = ts
+                            .split('.')
+                            .next()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0);
+                        let ts_display = {
+                            let dt = chrono::DateTime::from_timestamp(ts_secs, 0)
+                                .unwrap_or_default();
+                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                        };
+
+                        // Mention gating: buffer non-mention messages when enabled
                         let text = if self.mention_only {
                             let parent_uid = msg
                                 .get("parent_user_id")
@@ -480,6 +541,14 @@ impl Channel for SlackChannel {
                                     || is_implicit_mention(&bot_user_id, parent_uid);
 
                             if !was_mentioned {
+                                // Buffer for pending history context
+                                let buffer = pending_history
+                                    .entry(channel_id.clone())
+                                    .or_insert_with(|| PendingHistoryBuffer::new(50));
+                                let envelope = format_message_envelope(
+                                    &channel_id, user, &ts_display, text,
+                                );
+                                buffer.push(envelope);
                                 continue;
                             }
 
@@ -489,6 +558,25 @@ impl Channel for SlackChannel {
                                 .to_string()
                         } else {
                             text.to_string()
+                        };
+
+                        // Drain pending history and wrap content with context
+                        let text = {
+                            let pending = pending_history
+                                .get_mut(&channel_id)
+                                .map(|b| b.drain())
+                                .unwrap_or_default();
+                            if pending.is_empty() {
+                                text
+                            } else {
+                                let current_envelope =
+                                    format_message_envelope(&channel_id, user, &ts_display, &text);
+                                format!(
+                                    "[Chat messages since your last reply - for context]\n{}\n\n[Current message - respond to this]\n{}",
+                                    pending.join("\n"),
+                                    current_envelope
+                                )
+                            }
                         };
 
                         let inbound_thread = Self::inbound_thread_ts(msg, ts);
@@ -842,5 +930,41 @@ mod tests {
         assert!(formatted.contains("[Slack #general"), "should have channel envelope: {formatted}");
         assert!(formatted.contains("(user)"), "should have user role: {formatted}");
         assert!(formatted.contains("(assistant)"), "should have assistant role: {formatted}");
+    }
+
+    // ── Pending history buffer ──────────────────────────────────────
+
+    #[test]
+    fn ring_buffer_evicts_oldest_when_full() {
+        let mut buffer = PendingHistoryBuffer::new(3);
+        buffer.push("msg1".into());
+        buffer.push("msg2".into());
+        buffer.push("msg3".into());
+        buffer.push("msg4".into());
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(buffer.entries()[0], "msg2");
+    }
+
+    #[test]
+    fn drain_returns_all_and_clears() {
+        let mut buffer = PendingHistoryBuffer::new(50);
+        buffer.push("msg1".into());
+        buffer.push("msg2".into());
+        let drained = buffer.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn format_envelope_includes_channel_sender_timestamp() {
+        let envelope = format_message_envelope(
+            "#general",
+            "Alice",
+            "2026-02-24 14:30:05",
+            "hello world",
+        );
+        assert!(envelope.contains("[Slack #general Alice"));
+        assert!(envelope.contains("2026-02-24 14:30:05"));
+        assert!(envelope.contains("Alice: hello world"));
     }
 }
