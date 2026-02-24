@@ -2814,6 +2814,16 @@ pub struct SlackConfig {
     /// Allowed Slack user IDs. Empty = deny all.
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Only respond when explicitly mentioned or in bot's own threads.
+    /// Default: true. When false, responds to all messages from allowed users.
+    #[serde(default = "default_mention_only")]
+    pub mention_only: bool,
+    /// Optional regex pattern for mention detection (in addition to @bot).
+    pub mention_regex: Option<String>,
+}
+
+fn default_mention_only() -> bool {
+    true
 }
 
 impl ChannelConfig for SlackConfig {

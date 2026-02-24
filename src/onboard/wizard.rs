@@ -3844,6 +3844,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                         Some(channel)
                     },
                     allowed_users,
+                    mention_only: true,
+                    mention_regex: None,
                 });
             }
             ChannelMenuChoice::IMessage => {

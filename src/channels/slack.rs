@@ -77,11 +77,33 @@ async fn fetch_thread_replies(
         .unwrap_or_default())
 }
 
+/// Check if message text contains a mention of the bot.
+fn is_mention(text: &str, bot_user_id: &str, mention_regex: Option<&regex::Regex>) -> bool {
+    // Explicit Slack mention: <@U_BOT_ID>
+    if text.contains(&format!("<@{bot_user_id}>")) {
+        return true;
+    }
+    // Configurable regex (e.g. bot name)
+    if let Some(re) = mention_regex {
+        if re.is_match(text) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if message is an implicit mention (reply in bot's thread).
+fn is_implicit_mention(bot_user_id: &str, parent_user_id: Option<&str>) -> bool {
+    parent_user_id == Some(bot_user_id)
+}
+
 /// Slack channel — polls conversations.history via Web API
 pub struct SlackChannel {
     bot_token: String,
     channel_id: Option<String>,
     allowed_users: Vec<String>,
+    mention_only: bool,
+    mention_regex: Option<regex::Regex>,
 }
 
 impl SlackChannel {
@@ -90,7 +112,23 @@ impl SlackChannel {
             bot_token,
             channel_id,
             allowed_users,
+            mention_only: true,
+            mention_regex: None,
         }
+    }
+
+    pub fn with_mention_config(
+        mut self,
+        mention_only: bool,
+        mention_regex: Option<String>,
+    ) -> Self {
+        self.mention_only = mention_only;
+        self.mention_regex = mention_regex.and_then(|pat| {
+            regex::Regex::new(&pat)
+                .map_err(|e| tracing::warn!("Invalid mention_regex pattern: {e}"))
+                .ok()
+        });
+        self
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -432,6 +470,27 @@ impl Channel for SlackChannel {
 
                         last_ts_by_channel.insert(channel_id.clone(), ts.to_string());
 
+                        // Mention gating: skip non-mention messages when enabled
+                        let text = if self.mention_only {
+                            let parent_uid = msg
+                                .get("parent_user_id")
+                                .and_then(|v| v.as_str());
+                            let was_mentioned =
+                                is_mention(text, &bot_user_id, self.mention_regex.as_ref())
+                                    || is_implicit_mention(&bot_user_id, parent_uid);
+
+                            if !was_mentioned {
+                                continue;
+                            }
+
+                            // Strip @mention from text before sending to LLM
+                            text.replace(&format!("<@{bot_user_id}>"), "")
+                                .trim()
+                                .to_string()
+                        } else {
+                            text.to_string()
+                        };
+
                         let inbound_thread = Self::inbound_thread_ts(msg, ts);
 
                         // Thread hydration: fetch replies when message is threaded
@@ -475,7 +534,7 @@ impl Channel for SlackChannel {
                             id: format!("slack_{channel_id}_{ts}"),
                             sender: user.to_string(),
                             reply_target: channel_id.clone(),
-                            content: text.to_string(),
+                            content: text,
                             channel: "slack".to_string(),
                             timestamp: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -734,6 +793,29 @@ mod tests {
         let names = HashMap::from([("U_ALICE".to_string(), "Alice".to_string())]);
         let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &names);
         assert!(formatted.contains("Alice"), "should include resolved name: {formatted}");
+    }
+
+    // ── Mention gating ────────────────────────────────────────────
+
+    #[test]
+    fn detects_explicit_bot_mention() {
+        assert!(is_mention("<@U_BOT> what do you think?", "U_BOT", None));
+    }
+
+    #[test]
+    fn detects_implicit_mention_in_bot_thread() {
+        assert!(is_implicit_mention("U_BOT", Some("U_BOT")));
+    }
+
+    #[test]
+    fn no_mention_for_regular_message() {
+        assert!(!is_mention("hey everyone", "U_BOT", None));
+    }
+
+    #[test]
+    fn mention_regex_matches_bot_name() {
+        let regex = regex::Regex::new(r"(?i)\brain\b").unwrap();
+        assert!(is_mention("Rain what do you think?", "U_BOT", Some(&regex)));
     }
 
     #[test]
