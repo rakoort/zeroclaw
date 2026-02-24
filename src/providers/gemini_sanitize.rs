@@ -7,9 +7,12 @@
 //! and flattens `anyOf`/`oneOf` literal unions into `enum` arrays.  It is called
 //! before Gemini API requests so that tool schemas pass validation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use regex::Regex;
 use serde_json::{json, Map, Value};
+
+use crate::providers::traits::ChatMessage;
 
 /// JSON Schema keywords that Gemini does not support.
 ///
@@ -291,11 +294,95 @@ fn clean_schema_recursive(
     Value::Object(out)
 }
 
+/// Sanitize a conversation transcript for Gemini compatibility.
+///
+/// Applies four transforms in order:
+/// 1. Rewrite non-alphanumeric tool call IDs to alphanumeric-only equivalents.
+/// 2. Preserve system messages at the front unchanged.
+/// 3. Prepend a synthetic user turn if non-system messages start with assistant.
+/// 4. Merge consecutive same-role messages (content joined with `\n`).
+///
+/// This is a pure function — no side effects, returns a new `Vec`.
+pub fn sanitize_transcript_for_gemini(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 1: Rewrite non-alphanumeric tool call IDs.
+    let id_pattern = Regex::new(r#"id="([^"]+)""#).expect("valid regex");
+    let mut id_map: HashMap<String, String> = HashMap::new();
+    let rewritten: Vec<ChatMessage> = messages
+        .iter()
+        .map(|msg| {
+            let new_content = id_pattern
+                .replace_all(&msg.content, |caps: &regex::Captures| {
+                    let original_id = &caps[1];
+                    if original_id.chars().all(|c| c.is_alphanumeric()) {
+                        return format!(r#"id="{}""#, original_id);
+                    }
+                    let rewritten_id = id_map
+                        .entry(original_id.to_string())
+                        .or_insert_with(|| {
+                            original_id
+                                .chars()
+                                .filter(|c| c.is_alphanumeric())
+                                .collect()
+                        })
+                        .clone();
+                    format!(r#"id="{}""#, rewritten_id)
+                })
+                .into_owned();
+            ChatMessage {
+                role: msg.role.clone(),
+                content: new_content,
+            }
+        })
+        .collect();
+
+    // Step 2: Separate system messages from non-system messages.
+    let mut system_msgs: Vec<ChatMessage> = Vec::new();
+    let mut non_system_msgs: Vec<ChatMessage> = Vec::new();
+    for msg in rewritten {
+        if msg.role == "system" {
+            system_msgs.push(msg);
+        } else {
+            non_system_msgs.push(msg);
+        }
+    }
+
+    // Step 3: Prepend synthetic user turn if non-system messages start with assistant.
+    if non_system_msgs
+        .first()
+        .is_some_and(|m| m.role == "assistant")
+    {
+        non_system_msgs.insert(0, ChatMessage::user("(session bootstrap)"));
+    }
+
+    // Step 4: Merge consecutive same-role messages.
+    let mut merged: Vec<ChatMessage> = Vec::new();
+    for msg in non_system_msgs {
+        if let Some(last) = merged.last_mut() {
+            if last.role == msg.role {
+                last.content.push('\n');
+                last.content.push_str(&msg.content);
+                continue;
+            }
+        }
+        merged.push(msg);
+    }
+
+    // Reassemble: system messages at the front, then merged non-system.
+    let mut result = system_msgs;
+    result.extend(merged);
+    result
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::traits::ChatMessage;
     use serde_json::json;
 
     #[test]
@@ -617,5 +704,126 @@ mod tests {
         assert!(priority.get("anyOf").is_none());
         assert_eq!(priority["type"], "string");
         assert_eq!(priority["enum"], json!(["low", "high"]));
+    }
+
+    // ── Transcript sanitizer tests ─────────────────────────────────────
+
+    #[test]
+    fn handles_empty_transcript() {
+        let result = sanitize_transcript_for_gemini(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn no_change_for_clean_transcript() {
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there"),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "Hello");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[1].content, "Hi there");
+    }
+
+    #[test]
+    fn preserves_system_messages_at_start() {
+        let messages = vec![
+            ChatMessage::system("You are helpful"),
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi"),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[0].content, "You are helpful");
+        assert_eq!(result[1].role, "user");
+        assert_eq!(result[2].role, "assistant");
+    }
+
+    #[test]
+    fn prepends_user_turn_if_starts_with_assistant() {
+        let messages = vec![ChatMessage::assistant("I started"), ChatMessage::user("OK")];
+        let result = sanitize_transcript_for_gemini(&messages);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "(session bootstrap)");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[1].content, "I started");
+        assert_eq!(result[2].role, "user");
+        assert_eq!(result[2].content, "OK");
+    }
+
+    #[test]
+    fn merges_consecutive_same_role_messages() {
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::user("World"),
+            ChatMessage::assistant("Hi"),
+            ChatMessage::assistant("There"),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "Hello\nWorld");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[1].content, "Hi\nThere");
+    }
+
+    #[test]
+    fn rewrites_non_alphanumeric_tool_call_ids() {
+        let messages = vec![
+            ChatMessage::user(r#"Tool call id="call_abc-123_def" executed"#),
+            ChatMessage::assistant("OK"),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        // The ID should have non-alphanumeric chars stripped (digits are alphanumeric)
+        assert!(!result[0].content.contains("call_abc-123_def"));
+        assert!(result[0].content.contains("callabc123def"));
+    }
+
+    #[test]
+    fn tool_call_id_rewrite_is_consistent() {
+        let messages = vec![
+            ChatMessage::user(r#"id="call_abc-123_def" called"#),
+            ChatMessage::assistant(r#"result for id="call_abc-123_def" done"#),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        // Extract the rewritten ID from both messages — they should match
+        let re = Regex::new(r#"id="([^"]+)""#).unwrap();
+        let id1 = re
+            .captures(&result[0].content)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str();
+        let id2 = re
+            .captures(&result[1].content)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str();
+        assert_eq!(id1, id2);
+        // And should be alphanumeric only
+        assert!(id1.chars().all(|c| c.is_alphanumeric()));
+    }
+
+    #[test]
+    fn merges_and_prepends_combined() {
+        let messages = vec![
+            ChatMessage::assistant("Part 1"),
+            ChatMessage::assistant("Part 2"),
+            ChatMessage::user("Go"),
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "(session bootstrap)");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[1].content, "Part 1\nPart 2");
+        assert_eq!(result[2].role, "user");
+        assert_eq!(result[2].content, "Go");
     }
 }
