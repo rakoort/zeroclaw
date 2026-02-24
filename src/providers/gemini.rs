@@ -5,6 +5,7 @@
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
+use crate::providers::gemini_sanitize::sanitize_transcript_for_gemini;
 use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
 use async_trait::async_trait;
 use base64::Engine;
@@ -1176,10 +1177,11 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
+        let messages = sanitize_transcript_for_gemini(messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
 
-        for msg in messages {
+        for msg in &messages {
             match msg.role.as_str() {
                 "system" => {
                     system_parts.push(&msg.content);
@@ -1228,10 +1230,11 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
+        let sanitized_messages = sanitize_transcript_for_gemini(request.messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
 
-        for msg in request.messages {
+        for msg in &sanitized_messages {
             match msg.role.as_str() {
                 "system" => system_parts.push(&msg.content),
                 "user" => contents.push(Content {
