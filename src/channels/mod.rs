@@ -1606,8 +1606,18 @@ async fn process_channel_message(
         .get(&history_key)
         .is_some_and(|turns| !turns.is_empty());
 
+    // Enrich message content with thread context when available.
+    let enriched_content = if let Some(ref history) = msg.thread_history {
+        format!(
+            "[Thread context]\n{}\n\n[Current message]\n{}",
+            history, msg.content
+        )
+    } else {
+        msg.content.clone()
+    };
+
     // Preserve user turn before the LLM call so interrupted requests keep context.
-    append_sender_turn(ctx.as_ref(), &history_key, ChatMessage::user(&msg.content));
+    append_sender_turn(ctx.as_ref(), &history_key, ChatMessage::user(&enriched_content));
 
     // Build history from per-sender conversation cache.
     let prior_turns_raw = ctx
@@ -1626,7 +1636,7 @@ async fn process_channel_message(
             build_memory_context(ctx.memory.as_ref(), &msg.content, ctx.min_relevance_score).await;
         if let Some(last_turn) = prior_turns.last_mut() {
             if last_turn.role == "user" && !memory_context.is_empty() {
-                last_turn.content = format!("{memory_context}{}", msg.content);
+                last_turn.content = format!("{memory_context}{enriched_content}");
             }
         }
     }

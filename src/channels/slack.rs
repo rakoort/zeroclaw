@@ -3,6 +3,80 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Format a single thread reply with role label and envelope.
+fn format_thread_reply(
+    reply: &serde_json::Value,
+    bot_user_id: &str,
+    bot_name: &str,
+    user_names: &HashMap<String, String>,
+) -> String {
+    let user = reply["user"].as_str().unwrap_or("unknown");
+    let text = reply["text"].as_str().unwrap_or("");
+
+    let is_bot = user == bot_user_id;
+    let role = if is_bot { "assistant" } else { "user" };
+    let name = if is_bot {
+        bot_name.to_string()
+    } else {
+        user_names
+            .get(user)
+            .cloned()
+            .unwrap_or_else(|| user.to_string())
+    };
+
+    format!("[Slack {{channel}} {name} ({role})] {name}: {text}")
+}
+
+/// Format full thread history from a list of replies.
+fn format_thread_history(
+    replies: &[serde_json::Value],
+    bot_user_id: &str,
+    bot_name: &str,
+    channel_name: &str,
+    user_names: &HashMap<String, String>,
+) -> String {
+    replies
+        .iter()
+        .map(|r| {
+            format_thread_reply(r, bot_user_id, bot_name, user_names)
+                .replace("{channel}", channel_name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Fetch thread replies from Slack conversations.replies API.
+async fn fetch_thread_replies(
+    client: &reqwest::Client,
+    bot_token: &str,
+    channel: &str,
+    thread_ts: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let resp = client
+        .get("https://slack.com/api/conversations.replies")
+        .bearer_auth(bot_token)
+        .query(&[
+            ("channel", channel),
+            ("ts", thread_ts),
+            ("limit", &limit.to_string()),
+            ("inclusive", "true"),
+        ])
+        .send()
+        .await?;
+
+    let body: serde_json::Value = resp.json().await?;
+    if body["ok"].as_bool() != Some(true) {
+        let err = body["error"].as_str().unwrap_or("unknown");
+        anyhow::bail!("Slack conversations.replies failed: {err}");
+    }
+
+    Ok(body["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default())
+}
+
 /// Slack channel — polls conversations.history via Web API
 pub struct SlackChannel {
     bot_token: String,
@@ -358,6 +432,45 @@ impl Channel for SlackChannel {
 
                         last_ts_by_channel.insert(channel_id.clone(), ts.to_string());
 
+                        let inbound_thread = Self::inbound_thread_ts(msg, ts);
+
+                        // Thread hydration: fetch replies when message is threaded
+                        let (starter_body, history_body) =
+                            if let Some(ref tts) = inbound_thread {
+                                match fetch_thread_replies(
+                                    &self.http_client(),
+                                    &self.bot_token,
+                                    &channel_id,
+                                    tts,
+                                    20,
+                                )
+                                .await
+                                {
+                                    Ok(replies) => {
+                                        let starter = replies
+                                            .first()
+                                            .and_then(|r| r["text"].as_str())
+                                            .map(String::from);
+                                        let history = format_thread_history(
+                                            &replies,
+                                            &bot_user_id,
+                                            "assistant",
+                                            &channel_id,
+                                            &HashMap::new(),
+                                        );
+                                        (starter, Some(history))
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Slack thread hydration failed for {channel_id}/{tts}: {e}"
+                                        );
+                                        (None, None)
+                                    }
+                                }
+                            } else {
+                                (None, None)
+                            };
+
                         let channel_msg = ChannelMessage {
                             id: format!("slack_{channel_id}_{ts}"),
                             sender: user.to_string(),
@@ -368,9 +481,9 @@ impl Channel for SlackChannel {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs(),
-                            thread_ts: Self::inbound_thread_ts(msg, ts),
-                            thread_starter_body: None,
-                            thread_history: None,
+                            thread_ts: inbound_thread,
+                            thread_starter_body: starter_body,
+                            thread_history: history_body,
                         };
 
                         if tx.send(channel_msg).await.is_err() {
@@ -583,5 +696,69 @@ mod tests {
             cursors.get("C123").map(String::as_str),
             Some("1700000000.000001")
         );
+    }
+
+    // ── Thread hydration formatting ─────────────────────────────────
+
+    #[test]
+    fn format_thread_reply_labels_bot_as_assistant() {
+        let reply = serde_json::json!({
+            "user": "U_BOT",
+            "text": "I can help with that",
+            "ts": "1234567890.000200"
+        });
+        let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &HashMap::new());
+        assert!(formatted.contains("(assistant)"), "should label bot as assistant: {formatted}");
+        assert!(formatted.contains("I can help with that"));
+    }
+
+    #[test]
+    fn format_thread_reply_labels_human_as_user() {
+        let reply = serde_json::json!({
+            "user": "U_HUMAN",
+            "text": "hello there",
+            "ts": "1234567890.000100"
+        });
+        let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &HashMap::new());
+        assert!(formatted.contains("(user)"), "should label human as user: {formatted}");
+        assert!(formatted.contains("hello there"));
+    }
+
+    #[test]
+    fn format_thread_reply_resolves_user_name() {
+        let reply = serde_json::json!({
+            "user": "U_ALICE",
+            "text": "thread reply",
+            "ts": "1234567890.000300"
+        });
+        let names = HashMap::from([("U_ALICE".to_string(), "Alice".to_string())]);
+        let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &names);
+        assert!(formatted.contains("Alice"), "should include resolved name: {formatted}");
+    }
+
+    #[test]
+    fn format_thread_history_includes_envelope() {
+        let replies = vec![
+            serde_json::json!({
+                "user": "U_ALICE",
+                "text": "started the thread",
+                "ts": "1234567890.000100"
+            }),
+            serde_json::json!({
+                "user": "U_BOT",
+                "text": "how can I help?",
+                "ts": "1234567890.000200"
+            }),
+        ];
+        let formatted = format_thread_history(
+            &replies,
+            "U_BOT",
+            "Rain",
+            "#general",
+            &HashMap::new(),
+        );
+        assert!(formatted.contains("[Slack #general"), "should have channel envelope: {formatted}");
+        assert!(formatted.contains("(user)"), "should have user role: {formatted}");
+        assert!(formatted.contains("(assistant)"), "should have assistant role: {formatted}");
     }
 }
