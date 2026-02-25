@@ -2410,6 +2410,9 @@ pub struct HeartbeatConfig {
     /// Optional delivery recipient/chat identifier (required when `target` is set).
     #[serde(default, alias = "recipient")]
     pub to: Option<String>,
+    /// Optional model override for heartbeat tasks. Falls back to `default_model` when absent.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl Default for HeartbeatConfig {
@@ -2420,6 +2423,7 @@ impl Default for HeartbeatConfig {
             message: None,
             target: None,
             to: None,
+            model: None,
         }
     }
 }
@@ -5118,6 +5122,7 @@ default_temperature = 0.7
                 message: Some("Check London time".into()),
                 target: Some("telegram".into()),
                 to: Some("123456".into()),
+                model: None,
             },
             cron: CronConfig::default(),
             channels_config: ChannelsConfig {
@@ -7653,5 +7658,29 @@ require_otp_to_resume = true
             .validate()
             .expect_err("expected ttl validation failure");
         assert!(err.to_string().contains("token_ttl_secs"));
+    }
+
+    // ── HeartbeatConfig model field ─────────────────────────────
+
+    #[test]
+    async fn heartbeat_config_model_field_parses() {
+        let toml_str = r#"
+            [heartbeat]
+            enabled = true
+            interval_minutes = 15
+            model = "gemini-2.0-flash-lite"
+        "#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            heartbeat: HeartbeatConfig,
+        }
+        let w: Wrapper = toml::from_str(toml_str).expect("should parse heartbeat with model");
+        assert_eq!(w.heartbeat.model, Some("gemini-2.0-flash-lite".to_string()));
+    }
+
+    #[test]
+    async fn heartbeat_config_model_defaults_to_none() {
+        let config = HeartbeatConfig::default();
+        assert_eq!(config.model, None);
     }
 }
