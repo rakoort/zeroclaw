@@ -202,7 +202,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 config.clone(),
                 Some(prompt),
                 None,
-                None,
+                config.heartbeat.model.clone(),
                 temp,
                 vec![],
                 false,
@@ -522,6 +522,19 @@ mod tests {
         assert!(err
             .to_string()
             .contains("channels_config.telegram is not configured"));
+    }
+
+    #[test]
+    fn heartbeat_model_override_some_when_configured() {
+        let mut config = Config::default();
+        config.heartbeat.model = Some("gemini-2.0-flash-lite".into());
+        assert_eq!(config.heartbeat.model, Some("gemini-2.0-flash-lite".into()));
+    }
+
+    #[test]
+    fn heartbeat_model_override_none_when_unconfigured() {
+        let config = Config::default();
+        assert_eq!(config.heartbeat.model, None);
     }
 
     #[test]
