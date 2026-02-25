@@ -2374,17 +2374,12 @@ pub struct EmbeddingRouteConfig {
 // ── Query Classification ─────────────────────────────────────────
 
 /// Classification mode: rule-based (default, backward-compatible) or weighted scoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ClassificationMode {
+    #[default]
     Rules,
     Weighted,
-}
-
-impl Default for ClassificationMode {
-    fn default() -> Self {
-        Self::Rules
-    }
 }
 
 /// Tier-to-hint mapping for weighted classification.
