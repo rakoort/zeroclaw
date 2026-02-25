@@ -14,6 +14,9 @@ pub struct ChannelMessage {
     pub thread_ts: Option<String>,
     pub thread_starter_body: Option<String>,
     pub thread_history: Option<String>,
+    /// Whether this message requires LLM triage before responding.
+    /// Set by channels that detect thread participation without explicit @mention.
+    pub triage_required: bool,
 }
 
 /// Message to send through a channel
@@ -176,6 +179,7 @@ mod tests {
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             })
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -194,6 +198,7 @@ mod tests {
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
 
         let cloned = message.clone();
@@ -248,6 +253,23 @@ mod tests {
             .await
             .is_ok());
         assert!(channel.cancel_draft("bob", "msg_1").await.is_ok());
+    }
+
+    #[test]
+    fn channel_message_triage_required_defaults_to_false() {
+        let message = ChannelMessage {
+            id: "1".into(),
+            sender: "tester".into(),
+            reply_target: "tester".into(),
+            content: "hello".into(),
+            channel: "test".into(),
+            timestamp: 0,
+            thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
+            triage_required: false,
+        };
+        assert!(!message.triage_required);
     }
 
     #[tokio::test]

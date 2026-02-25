@@ -463,6 +463,7 @@ impl Channel for QQChannel {
                                 thread_ts: None,
                                 thread_starter_body: None,
                                 thread_history: None,
+                                triage_required: false,
                             };
 
                             if tx.send(channel_msg).await.is_err() {
@@ -503,6 +504,7 @@ impl Channel for QQChannel {
                                 thread_ts: None,
                                 thread_starter_body: None,
                                 thread_history: None,
+                                triage_required: false,
                             };
 
                             if tx.send(channel_msg).await.is_err() {

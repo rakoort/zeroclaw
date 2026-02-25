@@ -1034,6 +1034,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             thread_ts: thread_id,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         })
     }
 
@@ -1153,6 +1154,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             thread_ts: thread_id,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         })
     }
 
@@ -1311,6 +1313,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             thread_ts: thread_id,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         })
     }
 

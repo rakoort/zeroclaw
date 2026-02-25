@@ -1849,6 +1849,7 @@ mod tests {
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
 
         let key = whatsapp_memory_key(&msg);

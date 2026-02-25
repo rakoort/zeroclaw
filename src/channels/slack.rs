@@ -631,6 +631,7 @@ impl Channel for SlackChannel {
                             thread_ts: inbound_thread,
                             thread_starter_body: starter_body,
                             thread_history: history_body,
+                            triage_required: false,
                         };
 
                         if tx.send(channel_msg).await.is_err() {

@@ -234,6 +234,7 @@ end tell"#
                             thread_ts: None,
                             thread_starter_body: None,
                             thread_history: None,
+                            triage_required: false,
                         };
 
                         if tx.send(msg).await.is_err() {

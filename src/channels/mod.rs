@@ -4143,6 +4143,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4204,6 +4205,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4279,6 +4281,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4340,6 +4343,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4410,6 +4414,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4501,6 +4506,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4574,6 +4580,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4662,6 +4669,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4735,6 +4743,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4797,6 +4806,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -4969,6 +4979,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         })
         .await
         .unwrap();
@@ -4982,6 +4993,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         })
         .await
         .unwrap();
@@ -5054,6 +5066,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             })
             .await
             .unwrap();
@@ -5068,6 +5081,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             })
             .await
             .unwrap();
@@ -5150,6 +5164,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             })
             .await
             .unwrap();
@@ -5164,6 +5179,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             })
             .await
             .unwrap();
@@ -5228,6 +5244,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -5289,6 +5306,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -5667,6 +5685,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
 
         assert_eq!(conversation_memory_key(&msg), "slack_U123_msg_abc123");
@@ -5684,6 +5703,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -5695,6 +5715,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
 
         assert_ne!(
@@ -5718,6 +5739,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -5729,6 +5751,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
         };
 
         mem.store(
@@ -5817,6 +5840,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -5834,6 +5858,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -5906,6 +5931,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -5993,6 +6019,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -6545,6 +6572,7 @@ This is an example JSON object for profile settings."#;
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -6612,6 +6640,7 @@ This is an example JSON object for profile settings."#;
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
@@ -6629,6 +6658,7 @@ This is an example JSON object for profile settings."#;
                 thread_ts: None,
                 thread_starter_body: None,
                 thread_history: None,
+                triage_required: false,
             },
             CancellationToken::new(),
         )
