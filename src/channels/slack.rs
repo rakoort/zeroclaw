@@ -71,10 +71,7 @@ async fn fetch_thread_replies(
         anyhow::bail!("Slack conversations.replies failed: {err}");
     }
 
-    Ok(body["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default())
+    Ok(body["messages"].as_array().cloned().unwrap_or_default())
 }
 
 /// Per-channel ring buffer for non-mention messages.
@@ -152,6 +149,7 @@ pub struct SlackChannel {
     allowed_users: Vec<String>,
     mention_only: bool,
     mention_regex: Option<regex::Regex>,
+    participated_threads: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl SlackChannel {
@@ -162,6 +160,7 @@ impl SlackChannel {
             allowed_users,
             mention_only: true,
             mention_regex: None,
+            participated_threads: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -336,6 +335,27 @@ impl SlackChannel {
             .or_insert_with(|| now_ts.to_string())
             .clone()
     }
+
+    /// Record that the bot has participated in a thread.
+    pub fn record_participation(&self, thread_ts: &str) {
+        self.participated_threads
+            .lock()
+            .unwrap()
+            .insert(thread_ts.to_string());
+    }
+
+    /// Check if the bot has participated in a thread.
+    pub fn has_participated(&self, thread_ts: &str) -> bool {
+        self.participated_threads
+            .lock()
+            .unwrap()
+            .contains(thread_ts)
+    }
+
+    /// Get the current set of participated threads (for testing).
+    fn participated_threads(&self) -> std::collections::HashSet<String> {
+        self.participated_threads.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -380,6 +400,11 @@ impl Channel for SlackChannel {
                 .and_then(|e| e.as_str())
                 .unwrap_or("unknown");
             anyhow::bail!("Slack chat.postMessage failed: {err}");
+        }
+
+        // Record thread participation for triage tracking
+        if let Some(ref ts) = message.thread_ts {
+            self.record_participation(ts);
         }
 
         Ok(())
@@ -526,16 +551,14 @@ impl Channel for SlackChannel {
                             .and_then(|s| s.parse::<i64>().ok())
                             .unwrap_or(0);
                         let ts_display = {
-                            let dt = chrono::DateTime::from_timestamp(ts_secs, 0)
-                                .unwrap_or_default();
+                            let dt =
+                                chrono::DateTime::from_timestamp(ts_secs, 0).unwrap_or_default();
                             dt.format("%Y-%m-%d %H:%M:%S").to_string()
                         };
 
                         // Mention gating: buffer non-mention messages when enabled
                         let text = if self.mention_only {
-                            let parent_uid = msg
-                                .get("parent_user_id")
-                                .and_then(|v| v.as_str());
+                            let parent_uid = msg.get("parent_user_id").and_then(|v| v.as_str());
                             let was_mentioned =
                                 is_mention(text, &bot_user_id, self.mention_regex.as_ref())
                                     || is_implicit_mention(&bot_user_id, parent_uid);
@@ -545,9 +568,8 @@ impl Channel for SlackChannel {
                                 let buffer = pending_history
                                     .entry(channel_id.clone())
                                     .or_insert_with(|| PendingHistoryBuffer::new(50));
-                                let envelope = format_message_envelope(
-                                    &channel_id, user, &ts_display, text,
-                                );
+                                let envelope =
+                                    format_message_envelope(&channel_id, user, &ts_display, text);
                                 buffer.push(envelope);
                                 continue;
                             }
@@ -582,41 +604,40 @@ impl Channel for SlackChannel {
                         let inbound_thread = Self::inbound_thread_ts(msg, ts);
 
                         // Thread hydration: fetch replies when message is threaded
-                        let (starter_body, history_body) =
-                            if let Some(ref tts) = inbound_thread {
-                                match fetch_thread_replies(
-                                    &self.http_client(),
-                                    &self.bot_token,
-                                    &channel_id,
-                                    tts,
-                                    20,
-                                )
-                                .await
-                                {
-                                    Ok(replies) => {
-                                        let starter = replies
-                                            .first()
-                                            .and_then(|r| r["text"].as_str())
-                                            .map(String::from);
-                                        let history = format_thread_history(
-                                            &replies,
-                                            &bot_user_id,
-                                            "assistant",
-                                            &channel_id,
-                                            &HashMap::new(),
-                                        );
-                                        (starter, Some(history))
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Slack thread hydration failed for {channel_id}/{tts}: {e}"
-                                        );
-                                        (None, None)
-                                    }
+                        let (starter_body, history_body) = if let Some(ref tts) = inbound_thread {
+                            match fetch_thread_replies(
+                                &self.http_client(),
+                                &self.bot_token,
+                                &channel_id,
+                                tts,
+                                20,
+                            )
+                            .await
+                            {
+                                Ok(replies) => {
+                                    let starter = replies
+                                        .first()
+                                        .and_then(|r| r["text"].as_str())
+                                        .map(String::from);
+                                    let history = format_thread_history(
+                                        &replies,
+                                        &bot_user_id,
+                                        "assistant",
+                                        &channel_id,
+                                        &HashMap::new(),
+                                    );
+                                    (starter, Some(history))
                                 }
-                            } else {
-                                (None, None)
-                            };
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Slack thread hydration failed for {channel_id}/{tts}: {e}"
+                                    );
+                                    (None, None)
+                                }
+                            }
+                        } else {
+                            (None, None)
+                        };
 
                         let channel_msg = ChannelMessage {
                             id: format!("slack_{channel_id}_{ts}"),
@@ -856,7 +877,10 @@ mod tests {
             "ts": "1234567890.000200"
         });
         let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &HashMap::new());
-        assert!(formatted.contains("(assistant)"), "should label bot as assistant: {formatted}");
+        assert!(
+            formatted.contains("(assistant)"),
+            "should label bot as assistant: {formatted}"
+        );
         assert!(formatted.contains("I can help with that"));
     }
 
@@ -868,7 +892,10 @@ mod tests {
             "ts": "1234567890.000100"
         });
         let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &HashMap::new());
-        assert!(formatted.contains("(user)"), "should label human as user: {formatted}");
+        assert!(
+            formatted.contains("(user)"),
+            "should label human as user: {formatted}"
+        );
         assert!(formatted.contains("hello there"));
     }
 
@@ -881,7 +908,10 @@ mod tests {
         });
         let names = HashMap::from([("U_ALICE".to_string(), "Alice".to_string())]);
         let formatted = format_thread_reply(&reply, "U_BOT", "Rain", &names);
-        assert!(formatted.contains("Alice"), "should include resolved name: {formatted}");
+        assert!(
+            formatted.contains("Alice"),
+            "should include resolved name: {formatted}"
+        );
     }
 
     // ── Mention gating ────────────────────────────────────────────
@@ -921,16 +951,20 @@ mod tests {
                 "ts": "1234567890.000200"
             }),
         ];
-        let formatted = format_thread_history(
-            &replies,
-            "U_BOT",
-            "Rain",
-            "#general",
-            &HashMap::new(),
+        let formatted =
+            format_thread_history(&replies, "U_BOT", "Rain", "#general", &HashMap::new());
+        assert!(
+            formatted.contains("[Slack #general"),
+            "should have channel envelope: {formatted}"
         );
-        assert!(formatted.contains("[Slack #general"), "should have channel envelope: {formatted}");
-        assert!(formatted.contains("(user)"), "should have user role: {formatted}");
-        assert!(formatted.contains("(assistant)"), "should have assistant role: {formatted}");
+        assert!(
+            formatted.contains("(user)"),
+            "should have user role: {formatted}"
+        );
+        assert!(
+            formatted.contains("(assistant)"),
+            "should have assistant role: {formatted}"
+        );
     }
 
     // ── Pending history buffer ──────────────────────────────────────
@@ -958,14 +992,31 @@ mod tests {
 
     #[test]
     fn format_envelope_includes_channel_sender_timestamp() {
-        let envelope = format_message_envelope(
-            "#general",
-            "Alice",
-            "2026-02-24 14:30:05",
-            "hello world",
-        );
+        let envelope =
+            format_message_envelope("#general", "Alice", "2026-02-24 14:30:05", "hello world");
         assert!(envelope.contains("[Slack #general Alice"));
         assert!(envelope.contains("2026-02-24 14:30:05"));
         assert!(envelope.contains("Alice: hello world"));
+    }
+
+    // -- Thread participation tracking -----------------------------------------
+
+    #[test]
+    fn participated_threads_empty_on_init() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        assert!(channel.participated_threads().is_empty());
+    }
+
+    #[test]
+    fn record_participation_tracks_thread() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        channel.record_participation("1234.5678");
+        assert!(channel.has_participated("1234.5678"));
+    }
+
+    #[test]
+    fn has_participated_returns_false_for_unknown_thread() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        assert!(!channel.has_participated("unknown.thread"));
     }
 }
