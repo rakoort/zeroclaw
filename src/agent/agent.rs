@@ -441,9 +441,17 @@ impl Agent {
     }
 
     fn classify_model(&self, user_message: &str) -> String {
-        if let Some(decision) =
-            super::classifier::classify_with_decision(&self.classification_config, user_message)
-        {
+        let turn_count = self
+            .history
+            .iter()
+            .filter(|msg| matches!(msg, ConversationMessage::Chat(cm) if cm.role == "user"))
+            .count();
+
+        if let Some(decision) = super::classifier::classify_with_context(
+            &self.classification_config,
+            user_message,
+            turn_count,
+        ) {
             if self.available_hints.contains(&decision.hint) {
                 let resolved_model = self
                     .route_model_by_hint
@@ -892,5 +900,168 @@ mod tests {
         assert_eq!(response, "classified");
         let seen = seen_models.lock();
         assert_eq!(seen.as_slice(), &["hint:fast".to_string()]);
+    }
+
+    /// RED: Verify that conversation history depth influences weighted classification.
+    ///
+    /// Currently `classify_model` calls `classify_with_decision` which always
+    /// passes `turn_count = 0`, ignoring conversation history. This test
+    /// asserts that a deep conversation (20 prior user turns) classifies
+    /// differently from a fresh one — it will FAIL until classify_model is
+    /// updated to pass the actual turn count via `classify_with_context`.
+    #[tokio::test]
+    async fn classify_model_accounts_for_conversation_depth() {
+        use crate::config::schema::{
+            ClassificationMode, ClassificationTiers, ClassificationWeights,
+        };
+        use crate::config::QueryClassificationConfig;
+
+        // Weights: only conversation_depth matters.
+        let weights = ClassificationWeights {
+            length: 0.0,
+            code_density: 0.0,
+            question_complexity: 0.0,
+            conversation_depth: 1.0,
+            tool_hint: 0.0,
+            domain_specificity: 0.0,
+        };
+
+        let tiers = ClassificationTiers {
+            simple: Some("hint:simple".into()),
+            medium: Some("hint:medium".into()),
+            complex: Some("hint:complex".into()),
+            reasoning: Some("hint:reasoning".into()),
+        };
+
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers,
+            weights,
+        };
+
+        // ── First agent: fresh conversation (no history) ──
+        let seen_models_fresh = Arc::new(Mutex::new(Vec::new()));
+        let provider_fresh = Box::new(ModelCaptureProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some("ok".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+            seen_models: seen_models_fresh.clone(),
+        });
+
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+
+        let available = vec![
+            "hint:simple".into(),
+            "hint:medium".into(),
+            "hint:complex".into(),
+            "hint:reasoning".into(),
+        ];
+        let mut route_map = HashMap::new();
+        route_map.insert("hint:simple".into(), "model-simple".into());
+        route_map.insert("hint:medium".into(), "model-medium".into());
+        route_map.insert("hint:complex".into(), "model-complex".into());
+        route_map.insert("hint:reasoning".into(), "model-reasoning".into());
+
+        let mut agent_fresh = Agent::builder()
+            .provider(provider_fresh)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem.clone())
+            .observer(observer.clone())
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .classification_config(config.clone())
+            .available_hints(available.clone())
+            .route_model_by_hint(route_map.clone())
+            .build()
+            .expect("agent build should succeed");
+
+        // First turn — no prior history, turn_count = 0.
+        // depth_score = (0/10) - 0.5 = -0.5  -> tier = simple  (< -0.1)
+        let _ = agent_fresh.turn("hi").await.unwrap();
+        let fresh_model = seen_models_fresh.lock()[0].clone();
+        assert_eq!(
+            fresh_model, "hint:hint:simple",
+            "Fresh conversation should classify as simple"
+        );
+
+        // ── Second agent: pre-populated with 20 user turns ──
+        let seen_models_deep = Arc::new(Mutex::new(Vec::new()));
+        let provider_deep = Box::new(ModelCaptureProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some("ok".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+            seen_models: seen_models_deep.clone(),
+        });
+
+        let mem2: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed"),
+        );
+        let observer2: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+
+        let mut agent_deep = Agent::builder()
+            .provider(provider_deep)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem2)
+            .observer(observer2)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .classification_config(config)
+            .available_hints(available)
+            .route_model_by_hint(route_map)
+            .build()
+            .expect("agent build should succeed");
+
+        // Seed the agent with a system message + 20 user/assistant turn pairs.
+        agent_deep
+            .history
+            .push(ConversationMessage::Chat(ChatMessage::system(
+                "system prompt",
+            )));
+        for i in 0..20 {
+            agent_deep
+                .history
+                .push(ConversationMessage::Chat(ChatMessage::user(format!(
+                    "user turn {i}"
+                ))));
+            agent_deep
+                .history
+                .push(ConversationMessage::Chat(ChatMessage::assistant(format!(
+                    "assistant turn {i}"
+                ))));
+        }
+
+        // Next turn — 20 prior user messages in history.
+        // depth_score = (20/10) - 0.5 = 1.5, clamped to 1.0  -> tier = reasoning  (>= 0.4)
+        let _ = agent_deep.turn("hi").await.unwrap();
+        let deep_model = seen_models_deep.lock()[0].clone();
+
+        // With conversation depth awareness, the deep conversation should NOT
+        // classify the same as a fresh one.
+        assert_ne!(
+            deep_model, fresh_model,
+            "Deep conversation should classify differently from fresh conversation"
+        );
+        // Specifically, 20 prior user turns should push into reasoning tier.
+        assert_eq!(
+            deep_model, "hint:hint:reasoning",
+            "Deep conversation (20 user turns) should classify as reasoning"
+        );
     }
 }
