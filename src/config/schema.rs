@@ -2182,6 +2182,15 @@ impl Default for RuntimeConfig {
 
 // ── Reliability / supervision ────────────────────────────────────
 
+/// A cross-provider fallback entry: try this model on this provider when the primary fails.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderFallbackEntry {
+    /// Provider name (must match a key in provider config, e.g. "openrouter").
+    pub provider: String,
+    /// Model identifier for this provider.
+    pub model: String,
+}
+
 /// Reliability and supervision configuration (`[reliability]` section).
 ///
 /// Controls provider retries, fallback chains, API key rotation, and channel restart backoff.
@@ -2204,6 +2213,11 @@ pub struct ReliabilityConfig {
     /// Example: `{ "claude-opus-4-20250514" = ["claude-sonnet-4-20250514", "gpt-4o"] }`
     #[serde(default)]
     pub model_fallbacks: std::collections::HashMap<String, Vec<String>>,
+    /// Cross-provider fallback chains: when retries exhaust on the primary provider,
+    /// try these (provider, model) pairs in order.
+    /// Key = primary model name, Value = list of fallback entries.
+    #[serde(default)]
+    pub provider_fallbacks: std::collections::HashMap<String, Vec<ProviderFallbackEntry>>,
     /// Initial backoff for channel/daemon restarts.
     #[serde(default = "default_channel_backoff_secs")]
     pub channel_initial_backoff_secs: u64,
@@ -2250,6 +2264,7 @@ impl Default for ReliabilityConfig {
             fallback_providers: Vec::new(),
             api_keys: Vec::new(),
             model_fallbacks: std::collections::HashMap::new(),
+            provider_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: default_channel_backoff_secs(),
             channel_max_backoff_secs: default_channel_backoff_max_secs(),
             scheduler_poll_secs: default_scheduler_poll_secs(),
@@ -7710,5 +7725,35 @@ require_otp_to_resume = true
     async fn cron_config_model_defaults_to_none() {
         let config = CronConfig::default();
         assert_eq!(config.model, None);
+    }
+
+    #[test]
+    async fn reliability_provider_fallbacks_parses() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            reliability: ReliabilityConfig,
+        }
+        let toml_str = r#"
+            [reliability]
+            provider_retries = 3
+
+            [reliability.provider_fallbacks]
+            "gemini-2.5-pro" = [{ provider = "openrouter", model = "google/gemini-2.5-pro" }]
+        "#;
+        let w: Wrapper = toml::from_str(toml_str).expect("should parse provider_fallbacks");
+        let chain = w
+            .reliability
+            .provider_fallbacks
+            .get("gemini-2.5-pro")
+            .unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].provider, "openrouter");
+        assert_eq!(chain[0].model, "google/gemini-2.5-pro");
+    }
+
+    #[test]
+    async fn reliability_provider_fallbacks_defaults_to_empty() {
+        let config = ReliabilityConfig::default();
+        assert!(config.provider_fallbacks.is_empty());
     }
 }
