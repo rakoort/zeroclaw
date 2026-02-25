@@ -2923,6 +2923,11 @@ pub struct SlackConfig {
     pub mention_only: bool,
     /// Optional regex pattern for mention detection (in addition to @bot).
     pub mention_regex: Option<String>,
+    /// Optional model for triage decisions on thread-participant messages.
+    /// When set, the bot makes a cheap LLM call to decide whether to respond
+    /// to messages in threads it participates in (without explicit @mention).
+    /// When absent, thread-participant messages are buffered silently.
+    pub triage_model: Option<String>,
 }
 
 fn default_mention_only() -> bool {
@@ -5886,6 +5891,28 @@ channel_id = "C123"
         let parsed: SlackConfig = toml::from_str(toml_str).unwrap();
         assert!(parsed.allowed_users.is_empty());
         assert_eq!(parsed.channel_id.as_deref(), Some("C123"));
+    }
+
+    #[test]
+    async fn slack_config_triage_model_parses() {
+        let toml_str = r#"
+bot_token = "xoxb-test"
+triage_model = "gemini-2.5-flash-lite"
+"#;
+        let config: SlackConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.triage_model.as_deref(),
+            Some("gemini-2.5-flash-lite")
+        );
+    }
+
+    #[test]
+    async fn slack_config_triage_model_defaults_to_none() {
+        let toml_str = r#"
+bot_token = "xoxb-test"
+"#;
+        let config: SlackConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.triage_model.is_none());
     }
 
     #[test]

@@ -3846,6 +3846,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     allowed_users,
                     mention_only: true,
                     mention_regex: None,
+                    triage_model: None,
                 });
             }
             ChannelMenuChoice::IMessage => {
