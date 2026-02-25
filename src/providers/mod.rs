@@ -1334,13 +1334,39 @@ pub fn create_resilient_provider_with_options(
         }
     }
 
+    // Build cross-provider fallback entries by resolving provider names to indices.
+    // This must happen before `providers` is moved into `ReliableProvider::new()`.
+    let provider_fallback_entries: Vec<(String, usize, String)> = reliability
+        .provider_fallbacks
+        .iter()
+        .flat_map(|(primary_model, entries)| {
+            entries.iter().filter_map(|entry| {
+                let idx = providers
+                    .iter()
+                    .position(|(name, _)| name == &entry.provider);
+                match idx {
+                    Some(i) => Some((primary_model.clone(), i, entry.model.clone())),
+                    None => {
+                        tracing::warn!(
+                            primary_model = primary_model.as_str(),
+                            fallback_provider = entry.provider.as_str(),
+                            "Provider fallback references unknown provider, skipping"
+                        );
+                        None
+                    }
+                }
+            })
+        })
+        .collect();
+
     let reliable = ReliableProvider::new(
         providers,
         reliability.provider_retries,
         reliability.provider_backoff_ms,
     )
     .with_api_keys(reliability.api_keys.clone())
-    .with_model_fallbacks(reliability.model_fallbacks.clone());
+    .with_model_fallbacks(reliability.model_fallbacks.clone())
+    .with_provider_fallbacks(provider_fallback_entries);
 
     Ok(Box::new(reliable))
 }
