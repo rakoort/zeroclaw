@@ -451,7 +451,16 @@ impl Channel for SlackChannel {
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        let bot_user_id = self.get_bot_user_id().await.unwrap_or_default();
+        let bot_user_id = match self.get_bot_user_id().await {
+            Some(id) => {
+                tracing::info!("Slack: resolved bot user ID: {id}");
+                id
+            }
+            None => {
+                tracing::warn!("Slack: failed to resolve bot user ID via auth.test — bot_id field check will still filter own messages");
+                String::new()
+            }
+        };
         let scoped_channel = self.configured_channel_id();
         let mut discovered_channels: Vec<String> = Vec::new();
         let mut last_discovery = Instant::now();
@@ -564,8 +573,13 @@ impl Channel for SlackChannel {
                             .map(String::as_str)
                             .unwrap_or("");
 
-                        // Skip bot's own messages
-                        if user == bot_user_id {
+                        // Skip all bot messages (bot_id field is present on every bot-posted message)
+                        if msg.get("bot_id").is_some() {
+                            continue;
+                        }
+
+                        // Skip bot's own messages (fallback for edge cases without bot_id)
+                        if !bot_user_id.is_empty() && user == bot_user_id {
                             continue;
                         }
 
