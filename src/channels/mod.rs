@@ -123,6 +123,23 @@ const CHANNEL_HISTORY_COMPACT_CONTENT_CHARS: usize = 600;
 /// Guardrail for hook-modified outbound channel content.
 const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 
+const TRIAGE_PROMPT: &str = r#"You are monitoring a Slack thread you previously participated in.
+A new message arrived. Decide whether you should respond.
+
+Respond YES if:
+- You are directly addressed by name or role
+- Someone asks a question you can answer
+- The conversation needs your input to move forward
+- You're being asked to take an action
+
+Respond NO if:
+- People are talking to each other
+- The message is an acknowledgment (ok, thanks, got it)
+- Your input would not add value
+- The conversation is proceeding fine without you
+
+Respond with exactly YES or NO."#;
+
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
@@ -224,6 +241,7 @@ struct ChannelRuntimeContext {
     multimodal: crate::config::MultimodalConfig,
     hooks: Option<Arc<crate::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
+    triage_model: Option<String>,
 }
 
 #[derive(Clone)]
@@ -281,6 +299,12 @@ pub fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
 
 fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
     format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
+}
+
+/// Parse a triage response. Returns true (respond) if the response
+/// starts with "YES" (case-insensitive). Anything else = false (skip).
+fn parse_triage_response(response: &str) -> bool {
+    response.trim().to_uppercase().starts_with("YES")
 }
 
 /// Strip tool-call XML tags from outgoing messages.
@@ -1516,6 +1540,57 @@ async fn process_channel_message(
 ) {
     if cancellation_token.is_cancelled() {
         return;
+    }
+
+    // Triage gate: if message requires triage, check with LLM first
+    if msg.triage_required {
+        if let Some(ref triage_model) = ctx.triage_model {
+            let thread_context = msg.thread_history.as_deref().unwrap_or("");
+            let triage_input = format!(
+                "{}\n\nThread context:\n{}\n\nNew message:\n{}",
+                TRIAGE_PROMPT, thread_context, msg.content
+            );
+
+            let should_respond = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                ctx.provider.chat_with_history(
+                    &[crate::providers::ChatMessage {
+                        role: "user".to_string(),
+                        content: triage_input,
+                    }],
+                    triage_model,
+                    0.0,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(response)) => parse_triage_response(&response),
+                Ok(Err(e)) => {
+                    tracing::debug!("Triage LLM error, skipping: {e}");
+                    false
+                }
+                Err(_) => {
+                    tracing::debug!("Triage LLM timeout, skipping");
+                    false
+                }
+            };
+
+            if !should_respond {
+                tracing::debug!(
+                    "Triage: skipping message from {} in thread {:?}",
+                    msg.sender,
+                    msg.thread_ts
+                );
+                return;
+            }
+        } else {
+            // triage_model not configured — skip silently (backward-compatible)
+            tracing::debug!(
+                "Triage required but no triage_model configured, skipping message from {}",
+                msg.sender
+            );
+            return;
+        }
     }
 
     println!(
@@ -3344,6 +3419,11 @@ pub async fn start_channels(config: Config) -> Result<()> {
             None
         },
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
+        triage_model: config
+            .channels_config
+            .slack
+            .as_ref()
+            .and_then(|sl| sl.triage_model.clone()),
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
@@ -3557,6 +3637,7 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -3606,6 +3687,7 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -3658,6 +3740,7 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -4133,6 +4216,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4195,6 +4279,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4271,6 +4356,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4333,6 +4419,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4404,6 +4491,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4496,6 +4584,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4570,6 +4659,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4659,6 +4749,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4733,6 +4824,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4796,6 +4888,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -4970,6 +5063,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -5056,6 +5150,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -5154,6 +5249,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -5234,6 +5330,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -5296,6 +5393,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -5830,6 +5928,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -5921,6 +6020,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -6009,6 +6109,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -6561,6 +6662,7 @@ This is an example JSON object for profile settings."#;
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -6630,6 +6732,7 @@ This is an example JSON object for profile settings."#;
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
         });
 
         process_channel_message(
@@ -6698,5 +6801,34 @@ This is an example JSON object for profile settings."#;
             turns.iter().all(|turn| !turn.content.contains("[IMAGE:")),
             "failed vision turn must not persist image marker content"
         );
+    }
+}
+
+#[cfg(test)]
+mod triage_tests {
+    use super::parse_triage_response;
+
+    #[test]
+    fn triage_response_yes_returns_true() {
+        assert!(parse_triage_response("YES"));
+        assert!(parse_triage_response("yes"));
+        assert!(parse_triage_response("Yes"));
+        assert!(parse_triage_response("YES, they need my help"));
+    }
+
+    #[test]
+    fn triage_response_no_returns_false() {
+        assert!(!parse_triage_response("NO"));
+        assert!(!parse_triage_response("no"));
+        assert!(!parse_triage_response("No"));
+        assert!(!parse_triage_response("NO, they're fine"));
+    }
+
+    #[test]
+    fn triage_response_empty_or_error_returns_false() {
+        assert!(!parse_triage_response(""));
+        assert!(!parse_triage_response("   "));
+        assert!(!parse_triage_response("maybe"));
+        assert!(!parse_triage_response("I think so"));
     }
 }
