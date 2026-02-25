@@ -109,7 +109,7 @@ pub fn handle_command(cmd: crate::HardwareCommands, _config: &Config) -> Result<
         let _ = &cmd;
         println!("Hardware discovery requires the 'hardware' feature.");
         println!("Build with: cargo build --features hardware");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(all(
@@ -120,7 +120,7 @@ pub fn handle_command(cmd: crate::HardwareCommands, _config: &Config) -> Result<
         let _ = &cmd;
         println!("Hardware USB discovery is not supported on this platform.");
         println!("Supported platforms: Linux, macOS, Windows.");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(all(
@@ -145,7 +145,7 @@ fn run_discover() -> Result<()> {
         println!("No USB devices found.");
         println!();
         println!("Connect a board (e.g. Nucleo-F401RE) via USB and try again.");
-        return Ok(());
+        Ok(())
     }
 
     println!("USB devices:");
