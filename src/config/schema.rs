@@ -2373,6 +2373,82 @@ pub struct EmbeddingRouteConfig {
 
 // ── Query Classification ─────────────────────────────────────────
 
+/// Classification mode: rule-based (default, backward-compatible) or weighted scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassificationMode {
+    Rules,
+    Weighted,
+}
+
+impl Default for ClassificationMode {
+    fn default() -> Self {
+        Self::Rules
+    }
+}
+
+/// Tier-to-hint mapping for weighted classification.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ClassificationTiers {
+    #[serde(default)]
+    pub simple: Option<String>,
+    #[serde(default)]
+    pub medium: Option<String>,
+    #[serde(default)]
+    pub complex: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+}
+
+/// Dimension weights for weighted classification scoring.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClassificationWeights {
+    #[serde(default = "default_weight_length")]
+    pub length: f64,
+    #[serde(default = "default_weight_code_density")]
+    pub code_density: f64,
+    #[serde(default = "default_weight_question_complexity")]
+    pub question_complexity: f64,
+    #[serde(default = "default_weight_conversation_depth")]
+    pub conversation_depth: f64,
+    #[serde(default = "default_weight_tool_hint")]
+    pub tool_hint: f64,
+    #[serde(default = "default_weight_domain_specificity")]
+    pub domain_specificity: f64,
+}
+
+fn default_weight_length() -> f64 {
+    0.20
+}
+fn default_weight_code_density() -> f64 {
+    0.25
+}
+fn default_weight_question_complexity() -> f64 {
+    0.20
+}
+fn default_weight_conversation_depth() -> f64 {
+    0.10
+}
+fn default_weight_tool_hint() -> f64 {
+    0.10
+}
+fn default_weight_domain_specificity() -> f64 {
+    0.15
+}
+
+impl Default for ClassificationWeights {
+    fn default() -> Self {
+        Self {
+            length: default_weight_length(),
+            code_density: default_weight_code_density(),
+            question_complexity: default_weight_question_complexity(),
+            conversation_depth: default_weight_conversation_depth(),
+            tool_hint: default_weight_tool_hint(),
+            domain_specificity: default_weight_domain_specificity(),
+        }
+    }
+}
+
 /// Automatic query classification — classifies user messages by keyword/pattern
 /// and routes to the appropriate model hint. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2380,9 +2456,18 @@ pub struct QueryClassificationConfig {
     /// Enable automatic query classification. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Classification mode: "rules" (default) or "weighted".
+    #[serde(default)]
+    pub mode: ClassificationMode,
     /// Classification rules evaluated in priority order.
     #[serde(default)]
     pub rules: Vec<ClassificationRule>,
+    /// Tier-to-hint mapping (only used in weighted mode).
+    #[serde(default)]
+    pub tiers: ClassificationTiers,
+    /// Dimension weights (only used in weighted mode).
+    #[serde(default)]
+    pub weights: ClassificationWeights,
 }
 
 /// A single classification rule mapping message patterns to a model hint.
@@ -7755,5 +7840,48 @@ require_otp_to_resume = true
     async fn reliability_provider_fallbacks_defaults_to_empty() {
         let config = ReliabilityConfig::default();
         assert!(config.provider_fallbacks.is_empty());
+    }
+
+    // ── Query classification weighted mode ──────────────────
+
+    #[test]
+    async fn query_classification_weighted_mode_parses() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            query_classification: QueryClassificationConfig,
+        }
+        let toml_str = r#"
+            [query_classification]
+            enabled = true
+            mode = "weighted"
+
+            [query_classification.tiers]
+            simple = "hint:simple"
+            medium = "hint:medium"
+            complex = "hint:complex"
+            reasoning = "hint:reasoning"
+
+            [query_classification.weights]
+            length = 0.20
+            code_density = 0.25
+            question_complexity = 0.20
+            conversation_depth = 0.10
+            tool_hint = 0.10
+            domain_specificity = 0.15
+        "#;
+        let w: Wrapper = toml::from_str(toml_str).expect("should parse weighted mode");
+        assert_eq!(w.query_classification.mode, ClassificationMode::Weighted);
+        assert_eq!(
+            w.query_classification.tiers.simple,
+            Some("hint:simple".into())
+        );
+        assert!(w.query_classification.weights.length > 0.0);
+    }
+
+    #[test]
+    async fn query_classification_mode_defaults_to_rules() {
+        let config = QueryClassificationConfig::default();
+        assert_eq!(config.mode, ClassificationMode::Rules);
+        assert!(config.tiers.simple.is_none());
     }
 }

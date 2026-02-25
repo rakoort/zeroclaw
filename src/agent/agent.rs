@@ -881,6 +881,7 @@ mod tests {
                     max_length: None,
                     priority: 10,
                 }],
+                ..Default::default()
             })
             .available_hints(vec!["fast".to_string()])
             .route_model_by_hint(route_model_by_hint)

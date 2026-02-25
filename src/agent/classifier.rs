@@ -71,7 +71,11 @@ mod tests {
     use crate::config::schema::{ClassificationRule, QueryClassificationConfig};
 
     fn make_config(enabled: bool, rules: Vec<ClassificationRule>) -> QueryClassificationConfig {
-        QueryClassificationConfig { enabled, rules }
+        QueryClassificationConfig {
+            enabled,
+            rules,
+            ..Default::default()
+        }
     }
 
     #[test]
