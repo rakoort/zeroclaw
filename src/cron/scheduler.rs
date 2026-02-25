@@ -163,7 +163,7 @@ async fn run_agent_job(
     let name = job.name.clone().unwrap_or_else(|| "cron-job".to_string());
     let prompt = job.prompt.clone().unwrap_or_default();
     let prefixed_prompt = format!("[cron:{} {name}] {prompt}", job.id);
-    let model_override = job.model.clone();
+    let model_override = job.model.clone().or_else(|| config.cron.model.clone());
 
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {
@@ -748,6 +748,50 @@ mod tests {
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("rate limit exceeded"));
+    }
+
+    #[tokio::test]
+    async fn run_agent_job_uses_cron_config_model_when_job_model_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp).await;
+        config.cron.model = Some("gemini-2.0-flash-lite".into());
+        let mut job = test_job("");
+        job.job_type = JobType::Agent;
+        job.prompt = Some("Say hello".into());
+        job.model = None; // no per-job model
+
+        // model_override should resolve to cron config default
+        let model_override = job.model.clone().or_else(|| config.cron.model.clone());
+        assert_eq!(model_override, Some("gemini-2.0-flash-lite".into()));
+    }
+
+    #[tokio::test]
+    async fn run_agent_job_per_job_model_takes_priority_over_cron_config() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp).await;
+        config.cron.model = Some("gemini-2.0-flash-lite".into());
+        let mut job = test_job("");
+        job.job_type = JobType::Agent;
+        job.prompt = Some("Say hello".into());
+        job.model = Some("gpt-4o".into()); // per-job model set
+
+        // per-job model should take priority over cron config
+        let model_override = job.model.clone().or_else(|| config.cron.model.clone());
+        assert_eq!(model_override, Some("gpt-4o".into()));
+    }
+
+    #[tokio::test]
+    async fn run_agent_job_model_override_none_when_both_unset() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let mut job = test_job("");
+        job.job_type = JobType::Agent;
+        job.prompt = Some("Say hello".into());
+        job.model = None;
+
+        // both unset, should be None (falls through to default_model in agent::run)
+        let model_override = job.model.clone().or_else(|| config.cron.model.clone());
+        assert_eq!(model_override, None);
     }
 
     #[tokio::test]

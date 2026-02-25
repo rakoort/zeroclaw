@@ -2439,6 +2439,9 @@ pub struct CronConfig {
     /// Maximum number of historical cron run records to retain. Default: `50`.
     #[serde(default = "default_max_run_history")]
     pub max_run_history: u32,
+    /// Default model for cron jobs that don't specify their own. Falls back to `default_model`.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 fn default_max_run_history() -> u32 {
@@ -2450,6 +2453,7 @@ impl Default for CronConfig {
         Self {
             enabled: true,
             max_run_history: default_max_run_history(),
+            model: None,
         }
     }
 }
@@ -5023,6 +5027,7 @@ recipient = "42"
         let c = CronConfig {
             enabled: false,
             max_run_history: 100,
+            model: None,
         };
         let json = serde_json::to_string(&c).unwrap();
         let parsed: CronConfig = serde_json::from_str(&json).unwrap();
@@ -7681,6 +7686,29 @@ require_otp_to_resume = true
     #[test]
     async fn heartbeat_config_model_defaults_to_none() {
         let config = HeartbeatConfig::default();
+        assert_eq!(config.model, None);
+    }
+
+    // ── CronConfig model field ──────────────────────────────────
+
+    #[test]
+    async fn cron_config_model_field_parses() {
+        let toml_str = r#"
+            [cron]
+            enabled = true
+            model = "gemini-2.0-flash-lite"
+        "#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            cron: CronConfig,
+        }
+        let w: Wrapper = toml::from_str(toml_str).expect("should parse cron with model");
+        assert_eq!(w.cron.model, Some("gemini-2.0-flash-lite".to_string()));
+    }
+
+    #[test]
+    async fn cron_config_model_defaults_to_none() {
+        let config = CronConfig::default();
         assert_eq!(config.model, None);
     }
 }
