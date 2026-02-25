@@ -137,9 +137,15 @@ fn is_mention(text: &str, bot_user_id: &str, mention_regex: Option<&regex::Regex
     false
 }
 
-/// Check if message is an implicit mention (reply in bot's thread).
-fn is_implicit_mention(bot_user_id: &str, parent_user_id: Option<&str>) -> bool {
-    parent_user_id == Some(bot_user_id)
+/// Result of mention-gating evaluation for an inbound message.
+#[derive(Debug, PartialEq)]
+enum MentionGateResult {
+    /// Explicit @mention — respond immediately, no triage needed.
+    ExplicitMention(String),
+    /// Bot participated in thread but was not explicitly mentioned — needs triage.
+    ParticipatedThread(String),
+    /// Not mentioned, not a participated thread — buffer silently.
+    Buffer,
 }
 
 /// Slack channel — polls conversations.history via Web API
@@ -356,6 +362,40 @@ impl SlackChannel {
     fn participated_threads(&self) -> std::collections::HashSet<String> {
         self.participated_threads.lock().unwrap().clone()
     }
+
+    /// Evaluate mention gating for an inbound message.
+    ///
+    /// Returns a `MentionGateResult` indicating how the message should be handled:
+    /// - `ExplicitMention(cleaned)`: bot was @mentioned, respond with cleaned text
+    /// - `ParticipatedThread(text)`: bot participated in thread, triage needed
+    /// - `Buffer`: no mention and no participation, buffer silently
+    fn resolve_mention_gate(
+        &self,
+        text: &str,
+        bot_user_id: &str,
+        thread_ts: Option<&str>,
+    ) -> MentionGateResult {
+        let explicit = is_mention(text, bot_user_id, self.mention_regex.as_ref());
+
+        if explicit {
+            let cleaned = text
+                .replace(&format!("<@{bot_user_id}>"), "")
+                .trim()
+                .to_string();
+            return MentionGateResult::ExplicitMention(cleaned);
+        }
+
+        // Check if bot has participated in this thread
+        let is_participant = thread_ts
+            .map(|ts| self.has_participated(ts))
+            .unwrap_or(false);
+
+        if is_participant {
+            return MentionGateResult::ParticipatedThread(text.to_string());
+        }
+
+        MentionGateResult::Buffer
+    }
 }
 
 #[async_trait]
@@ -557,29 +597,28 @@ impl Channel for SlackChannel {
                         };
 
                         // Mention gating: buffer non-mention messages when enabled
-                        let text = if self.mention_only {
-                            let parent_uid = msg.get("parent_user_id").and_then(|v| v.as_str());
-                            let was_mentioned =
-                                is_mention(text, &bot_user_id, self.mention_regex.as_ref())
-                                    || is_implicit_mention(&bot_user_id, parent_uid);
+                        let (text, triage_required) = if self.mention_only {
+                            let thread_ts_val = msg.get("thread_ts").and_then(|v| v.as_str());
 
-                            if !was_mentioned {
-                                // Buffer for pending history context
-                                let buffer = pending_history
-                                    .entry(channel_id.clone())
-                                    .or_insert_with(|| PendingHistoryBuffer::new(50));
-                                let envelope =
-                                    format_message_envelope(&channel_id, user, &ts_display, text);
-                                buffer.push(envelope);
-                                continue;
+                            match self.resolve_mention_gate(text, &bot_user_id, thread_ts_val) {
+                                MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
+                                MentionGateResult::ParticipatedThread(text) => (text, true),
+                                MentionGateResult::Buffer => {
+                                    let buffer = pending_history
+                                        .entry(channel_id.clone())
+                                        .or_insert_with(|| PendingHistoryBuffer::new(50));
+                                    let envelope = format_message_envelope(
+                                        &channel_id,
+                                        user,
+                                        &ts_display,
+                                        text,
+                                    );
+                                    buffer.push(envelope);
+                                    continue;
+                                }
                             }
-
-                            // Strip @mention from text before sending to LLM
-                            text.replace(&format!("<@{bot_user_id}>"), "")
-                                .trim()
-                                .to_string()
                         } else {
-                            text.to_string()
+                            (text.to_string(), false)
                         };
 
                         // Drain pending history and wrap content with context
@@ -652,7 +691,7 @@ impl Channel for SlackChannel {
                             thread_ts: inbound_thread,
                             thread_starter_body: starter_body,
                             thread_history: history_body,
-                            triage_required: false,
+                            triage_required,
                         };
 
                         if tx.send(channel_msg).await.is_err() {
@@ -922,11 +961,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_implicit_mention_in_bot_thread() {
-        assert!(is_implicit_mention("U_BOT", Some("U_BOT")));
-    }
-
-    #[test]
     fn no_mention_for_regular_message() {
         assert!(!is_mention("hey everyone", "U_BOT", None));
     }
@@ -1018,5 +1052,124 @@ mod tests {
     fn has_participated_returns_false_for_unknown_thread() {
         let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
         assert!(!channel.has_participated("unknown.thread"));
+    }
+
+    // -- Participation-based triage routing ------------------------------------
+
+    #[test]
+    fn participated_thread_message_sets_triage_required() {
+        // When bot has participated in a thread, messages in that thread
+        // without explicit @mention should set triage_required = true
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        channel.record_participation("1234.5678");
+
+        // The message is in a participated thread but doesn't @mention the bot
+        let text = "hey can someone help with this?";
+        let is_explicit = is_mention(text, "U_BOT", None);
+        let is_participant = channel.has_participated("1234.5678");
+
+        assert!(!is_explicit, "should not be an explicit mention");
+        assert!(is_participant, "should detect participation");
+        // triage_required = is_participant && !is_explicit
+        assert!(is_participant && !is_explicit);
+    }
+
+    #[test]
+    fn explicit_mention_in_participated_thread_skips_triage() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        channel.record_participation("1234.5678");
+
+        let text = "<@U_BOT> what do you think?";
+        let is_explicit = is_mention(text, "U_BOT", None);
+
+        assert!(is_explicit);
+        // triage_required should be false when explicitly mentioned
+    }
+
+    #[test]
+    fn non_participated_thread_message_is_buffered() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        // Bot has NOT participated in thread "9999.0000"
+
+        let text = "just chatting";
+        let is_explicit = is_mention(text, "U_BOT", None);
+        let is_participant = channel.has_participated("9999.0000");
+
+        assert!(!is_explicit);
+        assert!(!is_participant);
+        // Neither mention nor participant -> buffer silently
+    }
+
+    // -- resolve_mention_gate behavior ----------------------------------------
+
+    #[test]
+    fn mention_gate_explicit_mention_returns_cleaned_text() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let result =
+            channel.resolve_mention_gate("<@U_BOT> what do you think?", "U_BOT", Some("1234.5678"));
+        assert_eq!(
+            result,
+            MentionGateResult::ExplicitMention("what do you think?".to_string())
+        );
+    }
+
+    #[test]
+    fn mention_gate_explicit_mention_in_participated_thread_no_triage() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        channel.record_participation("1234.5678");
+
+        let result = channel.resolve_mention_gate("<@U_BOT> help me", "U_BOT", Some("1234.5678"));
+        // Explicit mention takes priority — no triage needed
+        assert_eq!(
+            result,
+            MentionGateResult::ExplicitMention("help me".to_string())
+        );
+    }
+
+    #[test]
+    fn mention_gate_participated_thread_without_mention_returns_triage() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        channel.record_participation("1234.5678");
+
+        let result = channel.resolve_mention_gate(
+            "hey can someone help with this?",
+            "U_BOT",
+            Some("1234.5678"),
+        );
+        // Bot participated in thread, no explicit mention — needs triage
+        assert_eq!(
+            result,
+            MentionGateResult::ParticipatedThread("hey can someone help with this?".to_string())
+        );
+    }
+
+    #[test]
+    fn mention_gate_non_participated_thread_buffers() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        // Bot has NOT participated in thread "9999.0000"
+
+        let result = channel.resolve_mention_gate("just chatting", "U_BOT", Some("9999.0000"));
+        assert_eq!(result, MentionGateResult::Buffer);
+    }
+
+    #[test]
+    fn mention_gate_no_thread_no_mention_buffers() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+
+        let result = channel.resolve_mention_gate("random message", "U_BOT", None);
+        assert_eq!(result, MentionGateResult::Buffer);
+    }
+
+    #[test]
+    fn mention_gate_regex_mention_returns_explicit() {
+        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()])
+            .with_mention_config(true, Some(r"(?i)\brain\b".into()));
+
+        let result =
+            channel.resolve_mention_gate("Rain what do you think?", "U_BOT", Some("1234.5678"));
+        assert_eq!(
+            result,
+            MentionGateResult::ExplicitMention("Rain what do you think?".to_string())
+        );
     }
 }
