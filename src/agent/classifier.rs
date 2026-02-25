@@ -587,4 +587,61 @@ mod tests {
         };
         assert_eq!(classify_with_context(&config, "hi", 0), None);
     }
+
+    /// Integration test: exercises the full classification routing stack
+    /// (weighted mode, rules mode, and disabled mode) in a single flow.
+    /// This is a post-implementation regression test for Tasks 7-10;
+    /// no new production code is introduced.
+    #[test]
+    fn full_weighted_classification_flow() {
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers: ClassificationTiers {
+                simple: Some("hint:simple".into()),
+                medium: Some("hint:medium".into()),
+                complex: Some("hint:complex".into()),
+                reasoning: Some("hint:reasoning".into()),
+            },
+            weights: ClassificationWeights::default(),
+        };
+
+        // Short greeting → simple
+        assert_eq!(classify(&config, "hi"), Some("hint:simple".into()));
+
+        // Long complex reasoning request → reasoning or complex
+        let reasoning_msg = "Compare and contrast the tradeoffs between microservices and monolithic \
+            architecture for a high-traffic e-commerce platform. Consider scalability, deployment \
+            complexity, data consistency, team organization, and latency implications. Explain your \
+            recommendation with specific design patterns.";
+        let result = classify_with_context(&config, reasoning_msg, 15);
+        assert!(
+            result.as_ref().map(|d| d.hint.as_str()) == Some("hint:reasoning")
+                || result.as_ref().map(|d| d.hint.as_str()) == Some("hint:complex"),
+            "Long reasoning request should be complex or reasoning tier, got: {:?}",
+            result
+        );
+
+        // Verify rules mode still works alongside weighted
+        let rules_config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Rules,
+            rules: vec![ClassificationRule {
+                hint: "fast".into(),
+                keywords: vec!["hello".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(classify(&rules_config, "hello world"), Some("fast".into()));
+
+        // Verify disabled returns None in both modes
+        let disabled_weighted = QueryClassificationConfig {
+            enabled: false,
+            mode: ClassificationMode::Weighted,
+            ..Default::default()
+        };
+        assert_eq!(classify(&disabled_weighted, "anything"), None);
+    }
 }
