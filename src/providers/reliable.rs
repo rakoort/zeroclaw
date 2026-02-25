@@ -231,6 +231,8 @@ pub struct ReliableProvider {
     key_index: AtomicUsize,
     /// Per-model fallback chains: model_name → [fallback_model_1, fallback_model_2, ...]
     model_fallbacks: HashMap<String, Vec<String>>,
+    /// Cross-provider fallback entries: (primary_model, provider_index, fallback_model)
+    provider_fallback_models: Vec<(String, usize, String)>,
 }
 
 impl ReliableProvider {
@@ -246,6 +248,7 @@ impl ReliableProvider {
             api_keys: Vec::new(),
             key_index: AtomicUsize::new(0),
             model_fallbacks: HashMap::new(),
+            provider_fallback_models: Vec::new(),
         }
     }
 
@@ -261,11 +264,37 @@ impl ReliableProvider {
         self
     }
 
+    /// Set cross-provider fallback entries: (primary_model, provider_index, fallback_model).
+    /// When `primary_model` fails across all providers, try `fallback_model` on the provider
+    /// at `provider_index` only.
+    pub fn with_provider_fallbacks(mut self, entries: Vec<(String, usize, String)>) -> Self {
+        self.provider_fallback_models = entries;
+        self
+    }
+
     /// Build the list of models to try: [original, fallback1, fallback2, ...]
     fn model_chain<'a>(&'a self, model: &'a str) -> Vec<&'a str> {
         let mut chain = vec![model];
         if let Some(fallbacks) = self.model_fallbacks.get(model) {
             chain.extend(fallbacks.iter().map(|s| s.as_str()));
+        }
+        chain
+    }
+
+    /// Build model chain with optional provider constraints.
+    /// Returns (optional_provider_index, model_name) pairs.
+    /// None = try all providers. Some(idx) = try only that provider.
+    fn model_chain_with_providers<'a>(&'a self, model: &'a str) -> Vec<(Option<usize>, &'a str)> {
+        let mut chain: Vec<(Option<usize>, &str)> = vec![(None, model)];
+        // Same-provider model fallbacks (try all providers)
+        if let Some(fallbacks) = self.model_fallbacks.get(model) {
+            chain.extend(fallbacks.iter().map(|s| (None, s.as_str())));
+        }
+        // Cross-provider fallbacks (constrained to specific provider)
+        for (primary, provider_idx, fallback_model) in &self.provider_fallback_models {
+            if primary == model {
+                chain.push((Some(*provider_idx), fallback_model.as_str()));
+            }
         }
         chain
     }
@@ -309,15 +338,29 @@ impl Provider for ReliableProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let models = self.model_chain(model);
+        let models_with_providers = self.model_chain_with_providers(model);
         let mut failures = Vec::new();
 
-        // Outer: model fallback chain. Middle: provider priority. Inner: retries.
-        // Each iteration: attempt one (provider, model) call. On success, return
-        // immediately. On non-retryable error, break to next provider. On
-        // retryable error, sleep with exponential backoff and retry.
-        for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+        // Outer: model fallback chain (with optional provider constraint).
+        // Middle: provider priority. Inner: retries.
+        for (provider_constraint, current_model) in &models_with_providers {
+            let providers_to_try: Vec<(usize, &str, &dyn Provider)> = match provider_constraint {
+                Some(idx) => {
+                    if let Some((name, provider)) = self.providers.get(*idx) {
+                        vec![(*idx, name.as_str(), provider.as_ref())]
+                    } else {
+                        continue;
+                    }
+                }
+                None => self
+                    .providers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, p))| (i, name.as_str(), p.as_ref()))
+                    .collect(),
+            };
+
+            for (_idx, provider_name, provider) in &providers_to_try {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
@@ -328,7 +371,7 @@ impl Provider for ReliableProvider {
                         Ok(resp) => {
                             if attempt > 0 || *current_model != model {
                                 tracing::info!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt,
                                     original_model = model,
@@ -359,7 +402,7 @@ impl Provider for ReliableProvider {
                             if rate_limited && !non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
-                                        provider = provider_name,
+                                        provider = *provider_name,
                                         error = %error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
@@ -371,7 +414,7 @@ impl Provider for ReliableProvider {
 
                             if non_retryable {
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     error = %error_detail,
                                     "Non-retryable error, moving on"
@@ -390,7 +433,7 @@ impl Provider for ReliableProvider {
                             if attempt < self.max_retries {
                                 let wait = self.compute_backoff(backoff_ms, &e);
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
@@ -406,7 +449,7 @@ impl Provider for ReliableProvider {
                 }
 
                 tracing::warn!(
-                    provider = provider_name,
+                    provider = *provider_name,
                     model = *current_model,
                     "Exhausted retries, trying next provider/model"
                 );
@@ -433,11 +476,27 @@ impl Provider for ReliableProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let models = self.model_chain(model);
+        let models_with_providers = self.model_chain_with_providers(model);
         let mut failures = Vec::new();
 
-        for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+        for (provider_constraint, current_model) in &models_with_providers {
+            let providers_to_try: Vec<(usize, &str, &dyn Provider)> = match provider_constraint {
+                Some(idx) => {
+                    if let Some((name, provider)) = self.providers.get(*idx) {
+                        vec![(*idx, name.as_str(), provider.as_ref())]
+                    } else {
+                        continue;
+                    }
+                }
+                None => self
+                    .providers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, p))| (i, name.as_str(), p.as_ref()))
+                    .collect(),
+            };
+
+            for (_idx, provider_name, provider) in &providers_to_try {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
@@ -524,9 +583,17 @@ impl Provider for ReliableProvider {
                 }
 
                 tracing::warn!(
-                    provider = provider_name,
+                    provider = *provider_name,
                     model = *current_model,
                     "Exhausted retries, trying next provider/model"
+                );
+            }
+
+            if *current_model != model {
+                tracing::warn!(
+                    original_model = model,
+                    fallback_model = *current_model,
+                    "Model fallback exhausted all providers, trying next fallback model"
                 );
             }
         }
@@ -557,11 +624,27 @@ impl Provider for ReliableProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let models = self.model_chain(model);
+        let models_with_providers = self.model_chain_with_providers(model);
         let mut failures = Vec::new();
 
-        for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+        for (provider_constraint, current_model) in &models_with_providers {
+            let providers_to_try: Vec<(usize, &str, &dyn Provider)> = match provider_constraint {
+                Some(idx) => {
+                    if let Some((name, provider)) = self.providers.get(*idx) {
+                        vec![(*idx, name.as_str(), provider.as_ref())]
+                    } else {
+                        continue;
+                    }
+                }
+                None => self
+                    .providers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, p))| (i, name.as_str(), p.as_ref()))
+                    .collect(),
+            };
+
+            for (_idx, provider_name, provider) in &providers_to_try {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
@@ -572,7 +655,7 @@ impl Provider for ReliableProvider {
                         Ok(resp) => {
                             if attempt > 0 || *current_model != model {
                                 tracing::info!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt,
                                     original_model = model,
@@ -601,7 +684,7 @@ impl Provider for ReliableProvider {
                             if rate_limited && !non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
-                                        provider = provider_name,
+                                        provider = *provider_name,
                                         error = %error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
@@ -613,7 +696,7 @@ impl Provider for ReliableProvider {
 
                             if non_retryable {
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     error = %error_detail,
                                     "Non-retryable error, moving on"
@@ -632,7 +715,7 @@ impl Provider for ReliableProvider {
                             if attempt < self.max_retries {
                                 let wait = self.compute_backoff(backoff_ms, &e);
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
@@ -648,7 +731,7 @@ impl Provider for ReliableProvider {
                 }
 
                 tracing::warn!(
-                    provider = provider_name,
+                    provider = *provider_name,
                     model = *current_model,
                     "Exhausted retries, trying next provider/model"
                 );
@@ -667,11 +750,27 @@ impl Provider for ReliableProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let models = self.model_chain(model);
+        let models_with_providers = self.model_chain_with_providers(model);
         let mut failures = Vec::new();
 
-        for current_model in &models {
-            for (provider_name, provider) in &self.providers {
+        for (provider_constraint, current_model) in &models_with_providers {
+            let providers_to_try: Vec<(usize, &str, &dyn Provider)> = match provider_constraint {
+                Some(idx) => {
+                    if let Some((name, provider)) = self.providers.get(*idx) {
+                        vec![(*idx, name.as_str(), provider.as_ref())]
+                    } else {
+                        continue;
+                    }
+                }
+                None => self
+                    .providers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, p))| (i, name.as_str(), p.as_ref()))
+                    .collect(),
+            };
+
+            for (_idx, provider_name, provider) in &providers_to_try {
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {
@@ -683,7 +782,7 @@ impl Provider for ReliableProvider {
                         Ok(resp) => {
                             if attempt > 0 || *current_model != model {
                                 tracing::info!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt,
                                     original_model = model,
@@ -712,7 +811,7 @@ impl Provider for ReliableProvider {
                             if rate_limited && !non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
-                                        provider = provider_name,
+                                        provider = *provider_name,
                                         error = %error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
@@ -724,7 +823,7 @@ impl Provider for ReliableProvider {
 
                             if non_retryable {
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     error = %error_detail,
                                     "Non-retryable error, moving on"
@@ -743,7 +842,7 @@ impl Provider for ReliableProvider {
                             if attempt < self.max_retries {
                                 let wait = self.compute_backoff(backoff_ms, &e);
                                 tracing::warn!(
-                                    provider = provider_name,
+                                    provider = *provider_name,
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
@@ -759,7 +858,7 @@ impl Provider for ReliableProvider {
                 }
 
                 tracing::warn!(
-                    provider = provider_name,
+                    provider = *provider_name,
                     model = *current_model,
                     "Exhausted retries, trying next provider/model"
                 );
@@ -1979,5 +2078,49 @@ mod tests {
         // Primary should have been called only once (no retries)
         assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ── Cross-provider failover tests ──────────────────────────
+
+    #[tokio::test]
+    async fn cross_provider_failover_on_transient_error() {
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+
+        let provider = ReliableProvider::new(
+            vec![
+                (
+                    "gemini".into(),
+                    Box::new(MockProvider {
+                        calls: Arc::clone(&primary_calls),
+                        fail_until_attempt: usize::MAX, // always fails
+                        response: "",
+                        error: "500 Internal Server Error",
+                    }) as Box<dyn Provider>,
+                ),
+                (
+                    "openrouter".into(),
+                    Box::new(MockProvider {
+                        calls: Arc::clone(&fallback_calls),
+                        fail_until_attempt: 0,
+                        response: "ok from fallback",
+                        error: "",
+                    }) as Box<dyn Provider>,
+                ),
+            ],
+            1, // max 1 retry
+            10,
+        )
+        .with_provider_fallbacks(vec![(
+            "gemini-2.5-pro".to_string(),
+            1,
+            "google/gemini-2.5-pro".to_string(),
+        )]);
+
+        let result = provider
+            .simple_chat("hello", "gemini-2.5-pro", 0.0)
+            .await
+            .unwrap();
+        assert_eq!(result, "ok from fallback");
     }
 }
