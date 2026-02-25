@@ -1,5 +1,5 @@
 use crate::config::schema::{
-    ClassificationTiers, ClassificationWeights, QueryClassificationConfig,
+    ClassificationMode, ClassificationTiers, ClassificationWeights, QueryClassificationConfig,
 };
 
 // ── Weighted scorer ──────────────────────────────────────────────
@@ -181,7 +181,7 @@ impl<'a> WeightedScorer<'a> {
     }
 }
 
-// ── Rule-based classifier ────────────────────────────────────────
+// ── Classifier dispatch ──────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassificationDecision {
@@ -200,11 +200,42 @@ pub fn classify(config: &QueryClassificationConfig, message: &str) -> Option<Str
 
 /// Classify a user message and return the matched hint together with
 /// match metadata for observability.
+///
+/// Delegates to `classify_with_context` with `turn_count = 0`.
 pub fn classify_with_decision(
     config: &QueryClassificationConfig,
     message: &str,
 ) -> Option<ClassificationDecision> {
-    if !config.enabled || config.rules.is_empty() {
+    classify_with_context(config, message, 0)
+}
+
+/// Classify with conversation context (turn count for weighted mode).
+pub fn classify_with_context(
+    config: &QueryClassificationConfig,
+    message: &str,
+    turn_count: usize,
+) -> Option<ClassificationDecision> {
+    if !config.enabled {
+        return None;
+    }
+
+    match config.mode {
+        ClassificationMode::Weighted => {
+            let scorer = WeightedScorer::new(&config.weights, &config.tiers);
+            scorer
+                .classify(message, turn_count)
+                .map(|hint| ClassificationDecision { hint, priority: 0 })
+        }
+        ClassificationMode::Rules => classify_rules(config, message),
+    }
+}
+
+/// Rule-based classification logic (extracted helper).
+fn classify_rules(
+    config: &QueryClassificationConfig,
+    message: &str,
+) -> Option<ClassificationDecision> {
+    if config.rules.is_empty() {
         return None;
     }
 
@@ -252,7 +283,8 @@ pub fn classify_with_decision(
 mod tests {
     use super::*;
     use crate::config::schema::{
-        ClassificationRule, ClassificationTiers, ClassificationWeights, QueryClassificationConfig,
+        ClassificationMode, ClassificationRule, ClassificationTiers, ClassificationWeights,
+        QueryClassificationConfig,
     };
 
     fn make_config(enabled: bool, rules: Vec<ClassificationRule>) -> QueryClassificationConfig {
@@ -468,5 +500,91 @@ mod tests {
         let scorer = WeightedScorer::new(&weights, &tiers);
         let result = scorer.classify("hello", 0);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn classify_weighted_mode_returns_tier_hint() {
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers: ClassificationTiers {
+                simple: Some("hint:simple".into()),
+                medium: Some("hint:medium".into()),
+                complex: Some("hint:complex".into()),
+                reasoning: Some("hint:reasoning".into()),
+            },
+            weights: ClassificationWeights::default(),
+        };
+        let result = classify(&config, "hi");
+        assert_eq!(result, Some("hint:simple".to_string()));
+    }
+
+    #[test]
+    fn classify_rules_mode_still_works() {
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Rules,
+            rules: vec![ClassificationRule {
+                hint: "fast".into(),
+                keywords: vec!["hello".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(classify(&config, "hello"), Some("fast".into()));
+    }
+
+    #[test]
+    fn classify_with_context_weighted_dispatches() {
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers: ClassificationTiers {
+                simple: Some("hint:simple".into()),
+                medium: Some("hint:medium".into()),
+                complex: Some("hint:complex".into()),
+                reasoning: Some("hint:reasoning".into()),
+            },
+            weights: ClassificationWeights::default(),
+        };
+        let decision = classify_with_context(&config, "hi", 0)
+            .expect("weighted classification should return a decision");
+        assert_eq!(decision.hint, "hint:simple");
+        assert_eq!(decision.priority, 0);
+    }
+
+    #[test]
+    fn classify_with_context_rules_dispatches() {
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Rules,
+            rules: vec![ClassificationRule {
+                hint: "fast".into(),
+                keywords: vec!["hello".into()],
+                priority: 5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let decision = classify_with_context(&config, "hello", 0)
+            .expect("rules classification should return a decision");
+        assert_eq!(decision.hint, "fast");
+        assert_eq!(decision.priority, 5);
+    }
+
+    #[test]
+    fn classify_with_context_disabled_returns_none() {
+        let config = QueryClassificationConfig {
+            enabled: false,
+            mode: ClassificationMode::Weighted,
+            tiers: ClassificationTiers {
+                simple: Some("hint:simple".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(classify_with_context(&config, "hi", 0), None);
     }
 }
