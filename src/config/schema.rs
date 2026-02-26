@@ -2892,7 +2892,7 @@ pub struct SlackConfig {
     /// Slack bot OAuth token (xoxb-...).
     pub bot_token: String,
     /// Slack app-level token for Socket Mode (xapp-...).
-    pub app_token: Option<String>,
+    pub app_token: String,
     /// Optional channel ID to restrict the bot to a single channel.
     /// Omit (or set `"*"`) to listen across all accessible channels.
     pub channel_id: Option<String>,
@@ -5841,14 +5841,14 @@ allowed_users = ["@ops:matrix.org"]
 
     #[test]
     async fn slack_config_deserializes_without_allowed_users() {
-        let json = r#"{"bot_token":"xoxb-tok"}"#;
+        let json = r#"{"bot_token":"xoxb-tok","app_token":"xapp-test"}"#;
         let parsed: SlackConfig = serde_json::from_str(json).unwrap();
         assert!(parsed.allowed_users.is_empty());
     }
 
     #[test]
     async fn slack_config_deserializes_with_allowed_users() {
-        let json = r#"{"bot_token":"xoxb-tok","allowed_users":["U111"]}"#;
+        let json = r#"{"bot_token":"xoxb-tok","app_token":"xapp-test","allowed_users":["U111"]}"#;
         let parsed: SlackConfig = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.allowed_users, vec!["U111"]);
     }
@@ -5868,6 +5868,7 @@ guild_id = "123"
     async fn slack_config_toml_backward_compat() {
         let toml_str = r#"
 bot_token = "xoxb-tok"
+app_token = "xapp-test"
 channel_id = "C123"
 "#;
         let parsed: SlackConfig = toml::from_str(toml_str).unwrap();
@@ -5879,6 +5880,7 @@ channel_id = "C123"
     async fn slack_config_triage_model_parses() {
         let toml_str = r#"
 bot_token = "xoxb-test"
+app_token = "xapp-test"
 triage_model = "gemini-2.5-flash-lite"
 "#;
         let config: SlackConfig = toml::from_str(toml_str).unwrap();
@@ -5892,6 +5894,7 @@ triage_model = "gemini-2.5-flash-lite"
     async fn slack_config_triage_model_defaults_to_none() {
         let toml_str = r#"
 bot_token = "xoxb-test"
+app_token = "xapp-test"
 "#;
         let config: SlackConfig = toml::from_str(toml_str).unwrap();
         assert!(config.triage_model.is_none());

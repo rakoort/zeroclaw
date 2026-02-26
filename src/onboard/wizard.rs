@@ -3790,8 +3790,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                 }
 
                 let app_token: String = Input::new()
-                    .with_prompt("  App token (xapp-..., optional, Enter to skip)")
-                    .allow_empty(true)
+                    .with_prompt("  App token for Socket Mode (xapp-...)")
                     .interact_text()?;
 
                 let channel: String = Input::new()
@@ -3833,11 +3832,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
 
                 config.slack = Some(SlackConfig {
                     bot_token: token,
-                    app_token: if app_token.is_empty() {
-                        None
-                    } else {
-                        Some(app_token)
-                    },
+                    app_token,
                     channel_id: if channel.is_empty() {
                         None
                     } else {
