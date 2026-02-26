@@ -9,6 +9,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 const SLACK_RETRY_MAX: u32 = 3;
 const SLACK_RETRY_DEFAULT_SECS: u64 = 5;
 const SLACK_RETRY_JITTER_MS: u64 = 500;
+const MAX_PARTICIPATED_THREADS: usize = 1000;
 
 /// Parse the `Retry-After` header value as seconds.
 fn parse_retry_after_secs(value: Option<&str>) -> Option<u64> {
@@ -454,10 +455,13 @@ impl SlackChannel {
 
     /// Record that the bot has participated in a thread.
     pub fn record_participation(&self, thread_ts: &str) {
-        self.participated_threads
-            .lock()
-            .unwrap()
-            .insert(thread_ts.to_string());
+        let mut set = self.participated_threads.lock().unwrap();
+        if set.len() >= MAX_PARTICIPATED_THREADS {
+            if let Some(oldest) = set.iter().next().cloned() {
+                set.remove(&oldest);
+            }
+        }
+        set.insert(thread_ts.to_string());
     }
 
     /// Check if the bot has participated in a thread.
@@ -1253,6 +1257,18 @@ mod tests {
             vec!["*".into()],
         );
         assert!(!channel.has_participated("unknown.thread"));
+    }
+
+    #[test]
+    fn participated_threads_capped_at_limit() {
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        for i in 0..1100 {
+            channel.record_participation(&format!("{i}.0000"));
+        }
+        let threads = channel.participated_threads();
+        assert!(threads.len() <= 1000, "expected <= 1000, got {}", threads.len());
+        // Most recent should be present
+        assert!(channel.has_participated("1099.0000"));
     }
 
     // -- Participation-based triage routing ------------------------------------
