@@ -205,25 +205,33 @@ async fn fetch_thread_replies(
     thread_ts: &str,
     limit: usize,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let resp = client
-        .get("https://slack.com/api/conversations.replies")
-        .bearer_auth(bot_token)
-        .query(&[
-            ("channel", channel),
-            ("ts", thread_ts),
-            ("limit", &limit.to_string()),
-            ("inclusive", "true"),
-        ])
-        .send()
-        .await?;
+    let query = vec![
+        ("channel", channel.to_string()),
+        ("ts", thread_ts.to_string()),
+        ("limit", limit.to_string()),
+    ];
 
-    let body: serde_json::Value = resp.json().await?;
-    if body["ok"].as_bool() != Some(true) {
-        let err = body["error"].as_str().unwrap_or("unknown");
+    let data = slack_api_get(
+        client,
+        "https://slack.com/api/conversations.replies",
+        bot_token,
+        &query,
+    )
+    .await?;
+
+    if data.get("ok") == Some(&serde_json::Value::Bool(false)) {
+        let err = data
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown");
         anyhow::bail!("Slack conversations.replies failed: {err}");
     }
 
-    Ok(body["messages"].as_array().cloned().unwrap_or_default())
+    Ok(data
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Per-channel ring buffer for non-mention messages.
@@ -354,18 +362,16 @@ impl SlackChannel {
 
     /// Get the bot's own user ID so we can ignore our own messages
     async fn get_bot_user_id(&self) -> Option<String> {
-        let resp: serde_json::Value = self
-            .client
-            .get("https://slack.com/api/auth.test")
-            .bearer_auth(&self.bot_token)
-            .send()
-            .await
-            .ok()?
-            .json()
-            .await
-            .ok()?;
+        let data = slack_api_get(
+            &self.client,
+            "https://slack.com/api/auth.test",
+            &self.bot_token,
+            &[],
+        )
+        .await
+        .ok()?;
 
-        resp.get("user_id")
+        data.get("user_id")
             .and_then(|u| u.as_str())
             .map(String::from)
     }
@@ -549,13 +555,14 @@ impl Channel for SlackChannel {
     }
 
     async fn health_check(&self) -> bool {
-        self.client
-            .get("https://slack.com/api/auth.test")
-            .bearer_auth(&self.bot_token)
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
+        slack_api_get(
+            &self.client,
+            "https://slack.com/api/auth.test",
+            &self.bot_token,
+            &[],
+        )
+        .await
+        .is_ok()
     }
 }
 
