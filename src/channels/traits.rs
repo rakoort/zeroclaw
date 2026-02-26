@@ -27,6 +27,9 @@ pub struct SendMessage {
     pub subject: Option<String>,
     /// Platform thread identifier for threaded replies (e.g. Slack `thread_ts`).
     pub thread_ts: Option<String>,
+    /// Original message timestamp for ack reaction removal (Slack-specific).
+    /// When set, the channel removes the ack reaction after sending the reply.
+    pub ack_reaction_ts: Option<String>,
 }
 
 impl SendMessage {
@@ -37,6 +40,7 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: None,
             thread_ts: None,
+            ack_reaction_ts: None,
         }
     }
 
@@ -51,12 +55,19 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: Some(subject.into()),
             thread_ts: None,
+            ack_reaction_ts: None,
         }
     }
 
     /// Set the thread identifier for threaded replies.
     pub fn in_thread(mut self, thread_ts: Option<String>) -> Self {
         self.thread_ts = thread_ts;
+        self
+    }
+
+    /// Set the ack reaction timestamp for reaction removal after reply.
+    pub fn with_ack_reaction(mut self, ts: Option<String>) -> Self {
+        self.ack_reaction_ts = ts;
         self
     }
 }
