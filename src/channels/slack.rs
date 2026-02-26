@@ -446,58 +446,103 @@ impl SlackChannel {
     }
 }
 
+
+const SLACK_MESSAGE_CHUNK_LIMIT: usize = 4000;
+
+/// Split a message into chunks at paragraph boundaries.
+///
+/// Tries to split at `\n\n`, falls back to `\n`, then hard-splits at the limit.
+fn chunk_message(text: &str, limit: usize) -> Vec<&str> {
+    if text.len() <= limit {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+
+    while remaining.len() > limit {
+        let search_range = &remaining[..limit];
+
+        let split_at = search_range
+            .rfind("\n\n")
+            .or_else(|| search_range.rfind('\n'))
+            .unwrap_or(limit);
+
+        let split_at = if split_at == 0 { limit } else { split_at };
+
+        chunks.push(remaining[..split_at].trim_end());
+        remaining = remaining[split_at..].trim_start();
+    }
+
+    if !remaining.is_empty() {
+        chunks.push(remaining);
+    }
+
+    chunks
+}
+
 #[async_trait]
 impl Channel for SlackChannel {
     fn name(&self) -> &str {
         "slack"
     }
 
+
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let mut body = serde_json::json!({
-            "channel": message.recipient,
-            "text": message.content
-        });
+        let chunks = chunk_message(&message.content, SLACK_MESSAGE_CHUNK_LIMIT);
 
-        if let Some(ref ts) = message.thread_ts {
-            body["thread_ts"] = serde_json::json!(ts);
-        }
+        for chunk in &chunks {
+            let mut body = serde_json::json!({
+                "channel": message.recipient,
+                "text": chunk
+            });
+            if let Some(ref ts) = message.thread_ts {
+                body["thread_ts"] = serde_json::json!(ts);
+            }
 
-        let resp = self
-            .client
-            .post("https://slack.com/api/chat.postMessage")
-            .bearer_auth(&self.bot_token)
-            .json(&body)
-            .send()
+            let result = slack_api_post(
+                &self.client,
+                "https://slack.com/api/chat.postMessage",
+                &self.bot_token,
+                &body,
+            )
             .await?;
 
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
-
-        if !status.is_success() {
-            anyhow::bail!("Slack chat.postMessage failed ({status}): {body}");
+            if result.get("ok") == Some(&serde_json::Value::Bool(false)) {
+                let err = result
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown");
+                anyhow::bail!("Slack chat.postMessage failed: {err}");
+            }
         }
 
-        // Slack returns 200 for most app-level errors; check JSON "ok" field
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-        if parsed.get("ok") == Some(&serde_json::Value::Bool(false)) {
-            let err = parsed
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown");
-            anyhow::bail!("Slack chat.postMessage failed: {err}");
-        }
-
-        // Record thread participation for triage tracking
+        // Record thread participation
         if let Some(ref ts) = message.thread_ts {
             self.record_participation(ts);
         }
 
+        // Remove ack reaction after reply
+        if let Some(ref ack_ts) = message.ack_reaction_ts {
+            let remove_body = serde_json::json!({
+                "channel": message.recipient,
+                "name": "eyes",
+                "timestamp": ack_ts
+            });
+            if let Err(e) = slack_api_post(
+                &self.client,
+                "https://slack.com/api/reactions.remove",
+                &self.bot_token,
+                &remove_body,
+            )
+            .await
+            {
+                tracing::warn!("Failed to remove ack reaction: {e}");
+            }
+        }
+
         Ok(())
     }
-
     async fn listen(&self, _tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
         // TODO(task-8): replace with Socket Mode event loop
         anyhow::bail!("Slack listen() not yet implemented — Socket Mode migration in progress")
@@ -986,5 +1031,66 @@ mod tests {
             "ok": true
         });
         assert!(!is_slack_ratelimited(&body));
+    }
+
+    // -- Message chunking tests -----------------------------------------------
+
+    #[test]
+    fn chunk_message_under_limit() {
+        let text = "Short message.";
+        let chunks = chunk_message(text, 4000);
+        assert_eq!(chunks, vec!["Short message."]);
+    }
+
+    #[test]
+    fn chunk_message_splits_at_paragraph() {
+        let text = format!("{}\n\n{}", "a".repeat(3000), "b".repeat(2000));
+        let chunks = chunk_message(&text, 4000);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], "a".repeat(3000));
+        assert_eq!(chunks[1], "b".repeat(2000));
+    }
+
+    #[test]
+    fn chunk_message_falls_back_to_newline() {
+        let text = format!("{}\n{}", "a".repeat(3000), "b".repeat(2000));
+        let chunks = chunk_message(&text, 4000);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], "a".repeat(3000));
+        assert_eq!(chunks[1], "b".repeat(2000));
+    }
+
+    #[test]
+    fn chunk_message_hard_splits_no_newlines() {
+        let text = "a".repeat(5000);
+        let chunks = chunk_message(&text, 4000);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 4000);
+        assert_eq!(chunks[1].len(), 1000);
+    }
+
+    #[test]
+    fn chunk_message_empty_string() {
+        let chunks = chunk_message("", 4000);
+        assert_eq!(chunks, vec![""]);
+    }
+
+    #[test]
+    fn chunk_message_exact_limit() {
+        let text = "a".repeat(4000);
+        let chunks = chunk_message(&text, 4000);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn chunk_message_multiple_splits() {
+        let text = format!(
+            "{}\n\n{}\n\n{}",
+            "a".repeat(3500),
+            "b".repeat(3500),
+            "c".repeat(3500)
+        );
+        let chunks = chunk_message(&text, 4000);
+        assert_eq!(chunks.len(), 3);
     }
 }
