@@ -1261,12 +1261,21 @@ mod tests {
 
     #[test]
     fn participated_threads_capped_at_limit() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         for i in 0..1100 {
             channel.record_participation(&format!("{i}.0000"));
         }
         let threads = channel.participated_threads();
-        assert!(threads.len() <= 1000, "expected <= 1000, got {}", threads.len());
+        assert!(
+            threads.len() <= 1000,
+            "expected <= 1000, got {}",
+            threads.len()
+        );
         // Most recent should be present
         assert!(channel.has_participated("1099.0000"));
     }
