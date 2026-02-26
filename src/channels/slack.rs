@@ -308,6 +308,63 @@ enum MentionGateResult {
     Buffer,
 }
 
+/// Parse a Socket Mode envelope and extract the inner `message` event.
+///
+/// Returns `Some((envelope_id, event))` for `events_api` envelopes that contain
+/// a `"type": "message"` event. Returns `None` for all other envelope types
+/// (hello, disconnect, interactive, slash_commands) and non-message events
+/// (reaction_added, member_joined, etc.).
+fn parse_socket_event(envelope: &serde_json::Value) -> Option<(String, serde_json::Value)> {
+    let envelope_type = envelope.get("type")?.as_str()?;
+    if envelope_type != "events_api" {
+        return None;
+    }
+
+    let envelope_id = envelope.get("envelope_id")?.as_str()?.to_string();
+
+    let event = envelope
+        .get("payload")
+        .and_then(|p| p.get("event"))?;
+
+    let event_type = event.get("type")?.as_str()?;
+    if event_type != "message" {
+        return None;
+    }
+
+    Some((envelope_id, event.clone()))
+}
+
+/// Bounded deduplication tracker for Socket Mode envelope IDs.
+///
+/// Keeps a rolling window of seen IDs. When the capacity is reached,
+/// the oldest ID is evicted to make room for new ones.
+struct EnvelopeDedup {
+    seen: Vec<String>,
+    max: usize,
+}
+
+impl EnvelopeDedup {
+    fn new(max: usize) -> Self {
+        Self {
+            seen: Vec::with_capacity(max),
+            max,
+        }
+    }
+
+    /// Returns `true` if this ID has not been seen before.
+    /// Tracks the ID and evicts the oldest entry when at capacity.
+    fn is_new(&mut self, id: &str) -> bool {
+        if self.seen.iter().any(|s| s == id) {
+            return false;
+        }
+        if self.seen.len() >= self.max {
+            self.seen.remove(0);
+        }
+        self.seen.push(id.to_string());
+        true
+    }
+}
+
 /// Slack channel — polls conversations.history via Web API
 pub struct SlackChannel {
     bot_token: String,
@@ -1100,4 +1157,102 @@ mod tests {
         let chunks = chunk_message(&text, 4000);
         assert_eq!(chunks.len(), 3);
     }
+
+    // -- Socket Mode envelope parsing -----------------------------------------
+
+    #[test]
+    fn parse_socket_envelope_valid_message() {
+        let envelope = serde_json::json!({
+            "type": "events_api",
+            "envelope_id": "env-001",
+            "payload": {
+                "event": {
+                    "type": "message",
+                    "user": "U_ALICE",
+                    "text": "hello world",
+                    "channel": "C12345",
+                    "ts": "1234567890.000100"
+                }
+            }
+        });
+        let result = parse_socket_event(&envelope);
+        assert!(result.is_some(), "should parse valid message envelope");
+        let (id, event) = result.unwrap();
+        assert_eq!(id, "env-001");
+        assert_eq!(event["type"].as_str(), Some("message"));
+        assert_eq!(event["text"].as_str(), Some("hello world"));
+    }
+
+    #[test]
+    fn parse_socket_envelope_non_message_event() {
+        let envelope = serde_json::json!({
+            "type": "events_api",
+            "envelope_id": "env-002",
+            "payload": {
+                "event": {
+                    "type": "reaction_added",
+                    "user": "U_ALICE",
+                    "reaction": "thumbsup"
+                }
+            }
+        });
+        let result = parse_socket_event(&envelope);
+        assert!(result.is_none(), "should skip non-message events");
+    }
+
+    #[test]
+    fn parse_socket_envelope_hello() {
+        let envelope = serde_json::json!({
+            "type": "hello",
+            "num_connections": 1,
+            "debug_info": {}
+        });
+        let result = parse_socket_event(&envelope);
+        assert!(result.is_none(), "should skip hello envelopes");
+    }
+
+    #[test]
+    fn parse_socket_envelope_missing_payload() {
+        let envelope = serde_json::json!({
+            "type": "events_api",
+            "envelope_id": "env-003"
+        });
+        let result = parse_socket_event(&envelope);
+        assert!(result.is_none(), "should return None when payload is missing");
+    }
+
+    #[test]
+    fn parse_socket_envelope_disconnect() {
+        let envelope = serde_json::json!({
+            "type": "disconnect",
+            "reason": "link_disabled"
+        });
+        let result = parse_socket_event(&envelope);
+        assert!(result.is_none(), "should skip disconnect envelopes");
+    }
+
+    // -- Envelope deduplication -----------------------------------------------
+
+    #[test]
+    fn envelope_dedup_tracks_ids() {
+        let mut dedup = EnvelopeDedup::new(10);
+        assert!(dedup.is_new("a"), "first insert of 'a' should be new");
+        assert!(dedup.is_new("b"), "first insert of 'b' should be new");
+        assert!(!dedup.is_new("a"), "second insert of 'a' should NOT be new");
+    }
+
+    #[test]
+    fn envelope_dedup_evicts_oldest() {
+        let mut dedup = EnvelopeDedup::new(3);
+        assert!(dedup.is_new("a"));
+        assert!(dedup.is_new("b"));
+        assert!(dedup.is_new("c"));
+        // At capacity: [a, b, c]. Inserting d evicts a.
+        assert!(dedup.is_new("d"));
+        // a was evicted, so it should be new again
+        assert!(dedup.is_new("a"), "'a' should be new after eviction");
+        // d is still tracked
+        assert!(!dedup.is_new("d"), "'d' should NOT be new");
+    }
+
 }
