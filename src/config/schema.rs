@@ -2447,7 +2447,7 @@ impl Default for ClassificationWeights {
 // ── 14-Dimension Scoring ─────────────────────────────────────────
 
 /// Complexity tier for query classification scoring.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     Simple,

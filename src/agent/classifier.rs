@@ -610,7 +610,7 @@ fn score_v2(
 
     // If confidence < threshold -> use ambiguous default tier
     let tier = if confidence < scoring.confidence_threshold {
-        overrides.ambiguous_default_tier.clone()
+        overrides.ambiguous_default_tier
     } else {
         tier
     };
@@ -648,7 +648,7 @@ fn apply_structured_output_override(
         return current;
     }
     let min_tier = &overrides.structured_output_min_tier;
-    tier_max(current, min_tier.clone())
+    tier_max(current, *min_tier)
 }
 
 /// Return the higher of two tiers (Simple < Medium < Complex < Reasoning).
