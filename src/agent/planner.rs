@@ -3,6 +3,10 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use crate::observability::{Observer, ObserverEvent};
+use crate::providers::{ChatMessage, ChatRequest, Provider};
+use crate::tools::{Tool, ToolSpec};
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Plan {
     #[serde(default)]
@@ -157,8 +161,186 @@ pub fn filter_tool_names(all_tool_names: &[String], wanted: &[String]) -> Vec<St
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Two-phase planner/executor orchestration
+// ---------------------------------------------------------------------------
+
+/// Two-phase planner/executor flow.
+///
+/// 1. Calls the planner model (no tools) to produce a JSON action plan.
+/// 2. Parses the response; returns `Passthrough` if the planner deems it simple.
+/// 3. Otherwise executes actions group-by-group via [`run_tool_call_loop`](super::loop_::run_tool_call_loop).
+#[allow(clippy::too_many_arguments)]
+pub async fn plan_then_execute(
+    provider: &dyn Provider,
+    planner_model: &str,
+    executor_model: &str,
+    system_prompt: &str,
+    user_message: &str,
+    memory_context: &str,
+    tools_registry: &[Box<dyn Tool>],
+    tool_specs: &[ToolSpec],
+    observer: &dyn Observer,
+    provider_name: &str,
+    temperature: f64,
+    max_tool_iterations: usize,
+) -> Result<PlanExecutionResult> {
+    // Build planner messages (system prompt + context + user message, NO tools)
+    let planner_system = format!(
+        "{system_prompt}\n\n\
+        You are in planning mode. Analyze the user's request and output a JSON action plan.\n\
+        Do NOT call tools or write final content. Only output the plan.\n\
+        If the request is simple (direct question, single lookup, casual conversation), \
+        return {{\"passthrough\": true}}.\n\
+        For multi-step tasks, break them into discrete actions with type, description, params, \
+        tools, and group fields.\n\
+        Assign group numbers: independent actions share a group, dependent actions get higher \
+        group numbers.\n\
+        Never fabricate data (URLs, IDs). If you need a value, add a lookup action before the \
+        action that needs it.\n\
+        Include all judgment calls in the plan. The executor follows instructions; it does not \
+        make decisions.\n\
+        Output ONLY valid JSON, no markdown fences, no commentary."
+    );
+
+    let planner_user = if memory_context.is_empty() {
+        user_message.to_string()
+    } else {
+        format!("{memory_context}\n{user_message}")
+    };
+
+    let planner_messages = vec![
+        ChatMessage::system(planner_system),
+        ChatMessage::user(planner_user),
+    ];
+
+    // Step 1: Call planner (no tools)
+    observer.record_event(&ObserverEvent::PlannerRequest {
+        model: planner_model.to_string(),
+    });
+
+    let response = provider
+        .chat(
+            ChatRequest {
+                messages: &planner_messages,
+                tools: None,
+            },
+            planner_model,
+            temperature,
+        )
+        .await?;
+
+    let response_text = response.text.unwrap_or_default();
+
+    observer.record_event(&ObserverEvent::PlannerResponse {
+        model: planner_model.to_string(),
+        plan_text: response_text.clone(),
+    });
+
+    // Step 2: Parse plan
+    let plan = match parse_plan_from_response(&response_text) {
+        Ok(plan) => plan,
+        Err(e) => {
+            tracing::warn!("Plan parse failed ({e}), falling back to passthrough");
+            return Ok(PlanExecutionResult::Passthrough);
+        }
+    };
+
+    // Step 3: Check passthrough
+    if plan.is_passthrough() {
+        return Ok(PlanExecutionResult::Passthrough);
+    }
+
+    // Step 4: Execute action-by-action, group-by-group
+    let groups = plan.grouped_actions();
+    let mut accumulated: Vec<String> = Vec::new();
+    let mut last_output = String::new();
+
+    let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
+
+    for group in &groups {
+        for action in group {
+            let executor_system = build_executor_prompt(action, &accumulated);
+            let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
+
+            // Build the excluded tools list (inverse of wanted) when action specifies tools.
+            let excluded_tools: Vec<String> = if action.tools.is_empty() {
+                Vec::new()
+            } else {
+                all_tool_names
+                    .iter()
+                    .filter(|name| !wanted_tools.contains(name))
+                    .cloned()
+                    .collect()
+            };
+
+            // Build messages for this action
+            let mut action_messages = vec![
+                ChatMessage::system(executor_system),
+                ChatMessage::user(action.description.clone()),
+            ];
+
+            let result = crate::agent::loop_::run_tool_call_loop(
+                provider,
+                &mut action_messages,
+                tools_registry,
+                observer,
+                provider_name,
+                executor_model,
+                temperature,
+                true, // silent -- suppress stdout during executor
+                None, // no approval manager
+                "",   // channel_name
+                &crate::config::MultimodalConfig::default(),
+                max_tool_iterations.min(5),
+                None, // no cancellation token
+                None, // no delta sender
+                None, // no hooks
+                &excluded_tools,
+            )
+            .await;
+
+            match result {
+                Ok(output) => {
+                    let action_result = ActionResult {
+                        action_type: action.action_type.clone(),
+                        group: action.group,
+                        success: true,
+                        summary: output.clone(),
+                        raw_output: output,
+                    };
+                    accumulated.push(action_result.to_accumulated_line());
+                    last_output = action_result.summary.clone();
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        action_type = action.action_type.as_str(),
+                        group = action.group,
+                        "Action execution failed: {e}"
+                    );
+                    let action_result = ActionResult {
+                        action_type: action.action_type.clone(),
+                        group: action.group,
+                        success: false,
+                        summary: e.to_string(),
+                        raw_output: String::new(),
+                    };
+                    accumulated.push(action_result.to_accumulated_line());
+                }
+            }
+        }
+    }
+
+    Ok(PlanExecutionResult::Executed {
+        output: last_output,
+        action_results: accumulated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn parse_passthrough_plan() {
         let json = r#"{"passthrough": true}"#;
@@ -299,5 +481,238 @@ mod tests {
         let all = vec!["linear".to_string(), "slack".to_string()];
         let filtered = super::filter_tool_names(&all, &[]);
         assert_eq!(filtered.len(), 2);
+    }
+
+    // Verification tests for plan_then_execute (required by verification-before-completion).
+    // The function exists but is dead code with no callers; these tests verify its contracts
+    // before wiring it into Agent::turn().
+
+    use async_trait::async_trait;
+    use parking_lot::Mutex;
+
+    struct MockPlannerProvider {
+        responses: Mutex<Vec<crate::providers::ChatResponse>>,
+    }
+
+    #[async_trait]
+    impl crate::providers::Provider for MockPlannerProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> Result<String> {
+            Ok("ok".into())
+        }
+
+        async fn chat(
+            &self,
+            _request: crate::providers::ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> Result<crate::providers::ChatResponse> {
+            let mut guard = self.responses.lock();
+            if guard.is_empty() {
+                return Ok(crate::providers::ChatResponse {
+                    text: Some("done".into()),
+                    tool_calls: vec![],
+                    usage: None,
+                    reasoning_content: None,
+                });
+            }
+            Ok(guard.remove(0))
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_then_execute_passthrough_json_returns_passthrough() {
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some(r#"{"passthrough": true}"#.into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "You are a helpful assistant.",
+            "What is 2+2?",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+        )
+        .await
+        .expect("should not error");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+    }
+
+    #[tokio::test]
+    async fn plan_then_execute_invalid_json_returns_passthrough() {
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some("Not valid JSON at all.".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+        )
+        .await
+        .expect("should not error on invalid JSON");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+    }
+
+    #[tokio::test]
+    async fn plan_then_execute_empty_actions_returns_passthrough() {
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some(r#"{"passthrough": false, "actions": []}"#.into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+        )
+        .await
+        .expect("should not error");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+    }
+
+    #[tokio::test]
+    async fn plan_then_execute_with_actions_returns_executed() {
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![
+                crate::providers::ChatResponse {
+                    text: Some(r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up the answer"}]}"#.into()),
+                    tool_calls: vec![], usage: None, reasoning_content: None,
+                },
+                crate::providers::ChatResponse {
+                    text: Some("The answer is 42.".into()),
+                    tool_calls: vec![], usage: None, reasoning_content: None,
+                },
+            ]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Meaning of life?",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+        )
+        .await
+        .expect("should succeed");
+        match result {
+            super::PlanExecutionResult::Executed {
+                output,
+                action_results,
+            } => {
+                assert_eq!(output, "The answer is 42.");
+                assert_eq!(action_results.len(), 1);
+                assert!(action_results[0].contains("lookup"));
+            }
+            super::PlanExecutionResult::Passthrough => panic!("Expected Executed"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_then_execute_emits_planner_observer_events() {
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl crate::observability::Observer for CapturingObserver {
+            fn record_event(&self, event: &crate::observability::ObserverEvent) {
+                let name = match event {
+                    crate::observability::ObserverEvent::PlannerRequest { .. } => "PlannerRequest",
+                    crate::observability::ObserverEvent::PlannerResponse { .. } => {
+                        "PlannerResponse"
+                    }
+                    _ => return,
+                };
+                self.events.lock().push(name.to_string());
+            }
+            fn record_metric(&self, _: &crate::observability::traits::ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some(r#"{"passthrough": true}"#.into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        };
+        let observer = CapturingObserver {
+            events: Mutex::new(Vec::new()),
+        };
+        let _ = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+        )
+        .await
+        .expect("should not error");
+        let events = observer.events.lock().clone();
+        assert!(events.contains(&"PlannerRequest".to_string()));
+        assert!(events.contains(&"PlannerResponse".to_string()));
     }
 }

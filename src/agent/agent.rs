@@ -527,6 +527,63 @@ impl Agent {
 
         let effective_model = self.classify_model(user_message);
 
+        // -- Planner activation gate --
+        // If a "planner" route exists and the agentic score is high enough,
+        // try the two-phase planner/executor flow before the normal tool loop.
+        let has_planner_route = self.available_hints.contains(&"planner".to_string());
+        if has_planner_route
+            && self.last_agentic_score >= self.classification_config.planning.activate_threshold
+        {
+            let planner_model = self
+                .route_model_by_hint
+                .get("planner")
+                .cloned()
+                .unwrap_or_else(|| "hint:planner".to_string());
+            let system_prompt = self.build_system_prompt()?;
+
+            let plan_result = super::planner::plan_then_execute(
+                self.provider.as_ref(),
+                &planner_model,
+                &effective_model,
+                &system_prompt,
+                user_message,
+                &context,
+                &self.tools,
+                &self.tool_specs,
+                self.observer.as_ref(),
+                "router",
+                self.temperature,
+                self.config.max_tool_iterations,
+            )
+            .await;
+
+            match plan_result {
+                Ok(super::planner::PlanExecutionResult::Passthrough) => {
+                    tracing::info!("Planner returned passthrough, using normal agent flow");
+                    // Fall through to existing tool loop below
+                }
+                Ok(super::planner::PlanExecutionResult::Executed {
+                    output,
+                    action_results,
+                }) => {
+                    tracing::info!(
+                        actions_completed = action_results.len(),
+                        "Planner/executor completed"
+                    );
+                    self.history
+                        .push(ConversationMessage::Chat(ChatMessage::assistant(
+                            output.clone(),
+                        )));
+                    self.trim_history();
+                    return Ok(output);
+                }
+                Err(e) => {
+                    tracing::warn!("Planner failed ({e}), falling back to normal agent flow");
+                    // Fall through to existing tool loop
+                }
+            }
+        }
+
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
             let response = match self
@@ -1129,6 +1186,165 @@ mod tests {
             agent.last_confidence > 0.0,
             "classification should produce non-zero confidence, got {}",
             agent.last_confidence
+        );
+    }
+}
+
+// TDD-RED: This test verifies new planner activation behavior that does not
+// exist yet in turn(). It MUST fail until the wiring is added.
+#[cfg(test)]
+mod planner_activation_tests {
+    use super::*;
+    use crate::agent::dispatcher::NativeToolDispatcher;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    struct PlannerTestProvider {
+        responses: Mutex<Vec<crate::providers::ChatResponse>>,
+        seen_models: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::Provider for PlannerTestProvider {
+        async fn chat_with_system(
+            &self,
+            _: Option<&str>,
+            _: &str,
+            _: &str,
+            _: f64,
+        ) -> Result<String> {
+            Ok("ok".into())
+        }
+
+        async fn chat(
+            &self,
+            _: crate::providers::ChatRequest<'_>,
+            model: &str,
+            _: f64,
+        ) -> Result<crate::providers::ChatResponse> {
+            self.seen_models.lock().push(model.to_string());
+            let mut guard = self.responses.lock();
+            if guard.is_empty() {
+                return Ok(crate::providers::ChatResponse {
+                    text: Some("done".into()),
+                    tool_calls: vec![],
+                    usage: None,
+                    reasoning_content: None,
+                });
+            }
+            Ok(guard.remove(0))
+        }
+    }
+
+    struct PlannerMockTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for PlannerMockTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(&self, _: serde_json::Value) -> Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_activates_planner_when_agentic_score_meets_threshold() {
+        use crate::config::schema::{ClassificationMode, ClassificationTiers, PlanningConfig};
+        use crate::config::QueryClassificationConfig;
+
+        let seen_models = Arc::new(Mutex::new(Vec::new()));
+        let provider = Box::new(PlannerTestProvider {
+            responses: Mutex::new(vec![
+                crate::providers::ChatResponse {
+                    text: Some(
+                        r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up data"}]}"#.into(),
+                    ),
+                    tool_calls: vec![], usage: None, reasoning_content: None,
+                },
+                crate::providers::ChatResponse {
+                    text: Some("Planner-executed result.".into()),
+                    tool_calls: vec![], usage: None, reasoning_content: None,
+                },
+            ]),
+            seen_models: seen_models.clone(),
+        });
+
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+
+        let tiers = ClassificationTiers {
+            simple: Some("hint:simple".into()),
+            medium: Some("hint:medium".into()),
+            complex: Some("hint:complex".into()),
+            reasoning: Some("hint:reasoning".into()),
+        };
+
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers,
+            planning: PlanningConfig {
+                skip_threshold: 0.0,
+                activate_threshold: 0.3,
+            },
+            ..Default::default()
+        };
+
+        let mut route_map = HashMap::new();
+        route_map.insert("hint:simple".into(), "model-simple".into());
+        route_map.insert("hint:medium".into(), "model-medium".into());
+        route_map.insert("hint:complex".into(), "model-complex".into());
+        route_map.insert("hint:reasoning".into(), "model-reasoning".into());
+        route_map.insert("planner".into(), "model-planner".into());
+
+        let available = vec![
+            "hint:simple".into(),
+            "hint:medium".into(),
+            "hint:complex".into(),
+            "hint:reasoning".into(),
+            "planner".into(),
+        ];
+
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(PlannerMockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .classification_config(config)
+            .available_hints(available)
+            .route_model_by_hint(route_map)
+            .build()
+            .expect("agent build should succeed");
+
+        let agentic_msg =
+            "edit the config file, deploy to staging, then verify the endpoint works and report";
+        let result = agent.turn(agentic_msg).await.unwrap();
+
+        assert_eq!(
+            result, "Planner-executed result.",
+            "Agent should return the planner-executed output, not the raw plan JSON"
         );
     }
 }
