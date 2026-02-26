@@ -535,9 +535,7 @@ impl Agent {
         if has_planner_route
             && self.last_agentic_score >= self.classification_config.planning.skip_threshold
         {
-            if self.last_agentic_score
-                >= self.classification_config.planning.activate_threshold
-            {
+            if self.last_agentic_score >= self.classification_config.planning.activate_threshold {
                 tracing::info!(
                     agentic_score = self.last_agentic_score,
                     "Planner activated (agentic_score >= activate_threshold)"
