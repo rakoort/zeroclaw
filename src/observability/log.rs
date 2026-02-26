@@ -97,6 +97,16 @@ impl Observer for LogObserver {
                     "classification.result"
                 );
             }
+            ObserverEvent::PlannerRequest { model } => {
+                info!(model = %model, "planner.request");
+            }
+            ObserverEvent::PlannerResponse { model, plan_text } => {
+                info!(
+                    model = %model,
+                    plan_text_len = plan_text.len(),
+                    "planner.response"
+                );
+            }
         }
     }
 

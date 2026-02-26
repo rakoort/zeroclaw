@@ -72,6 +72,10 @@ pub enum ObserverEvent {
         agentic_score: f64,
         signals: Vec<String>,
     },
+    /// Planner model request (before planning call).
+    PlannerRequest { model: String },
+    /// Planner model response with the plan JSON.
+    PlannerResponse { model: String, plan_text: String },
 }
 
 /// Numeric metrics emitted by the agent runtime.
@@ -215,5 +219,24 @@ mod tests {
         };
         let cloned = event.clone();
         assert!(matches!(cloned, ObserverEvent::ClassificationResult { .. }));
+    }
+
+    #[test]
+    fn planner_request_event_is_cloneable() {
+        let event = ObserverEvent::PlannerRequest {
+            model: "hint:planner".into(),
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::PlannerRequest { .. }));
+    }
+
+    #[test]
+    fn planner_response_event_is_cloneable() {
+        let event = ObserverEvent::PlannerResponse {
+            model: "hint:planner".into(),
+            plan_text: r#"{"passthrough": true}"#.into(),
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::PlannerResponse { .. }));
     }
 }
