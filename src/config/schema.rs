@@ -2321,6 +2321,24 @@ pub struct ModelRouteConfig {
     /// Optional API key override for this route's provider
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Ordered fallback models tried when primary fails.
+    #[serde(default)]
+    pub fallbacks: Vec<FallbackModelConfig>,
+    /// Context window size in tokens. Used for filtering.
+    #[serde(default)]
+    pub context_window: Option<usize>,
+}
+
+/// A fallback model entry within a route.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FallbackModelConfig {
+    /// Provider to use for this fallback.
+    pub provider: String,
+    /// Model name for this fallback.
+    pub model: String,
+    /// Context window size in tokens.
+    #[serde(default)]
+    pub context_window: Option<usize>,
 }
 
 // ── Embedding routing ───────────────────────────────────────────
@@ -8197,5 +8215,63 @@ require_otp_to_resume = true
             (sum - 1.0).abs() < 0.001,
             "Weights sum to {sum}, expected 1.0"
         );
+    }
+
+    // ── ModelRouteConfig fallbacks ──────────────────────────────
+
+    #[test]
+    async fn model_route_config_with_fallbacks_deserializes() {
+        let toml_str = r#"
+            hint = "fast"
+            provider = "groq"
+            model = "llama-3-70b"
+            context_window = 131072
+
+            [[fallbacks]]
+            provider = "openrouter"
+            model = "deepseek-chat"
+            context_window = 131072
+        "#;
+        let config: ModelRouteConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.fallbacks.len(), 1);
+        assert_eq!(config.context_window, Some(131_072));
+        assert_eq!(config.fallbacks[0].provider, "openrouter");
+        assert_eq!(config.fallbacks[0].model, "deepseek-chat");
+    }
+
+    #[test]
+    async fn model_route_config_without_fallbacks_still_works() {
+        let toml_str = r#"
+            hint = "fast"
+            provider = "groq"
+            model = "llama-3-70b"
+        "#;
+        let config: ModelRouteConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.fallbacks.is_empty());
+        assert!(config.context_window.is_none());
+    }
+
+    #[test]
+    async fn model_route_config_multiple_fallbacks() {
+        let toml_str = r#"
+            hint = "reasoning"
+            provider = "openrouter"
+            model = "claude-sonnet"
+            context_window = 200000
+
+            [[fallbacks]]
+            provider = "openrouter"
+            model = "gemini-pro"
+            context_window = 1048576
+
+            [[fallbacks]]
+            provider = "groq"
+            model = "llama-3-70b"
+        "#;
+        let config: ModelRouteConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.fallbacks.len(), 2);
+        assert_eq!(config.fallbacks[0].model, "gemini-pro");
+        assert_eq!(config.fallbacks[1].model, "llama-3-70b");
+        assert!(config.fallbacks[1].context_window.is_none());
     }
 }

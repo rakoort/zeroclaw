@@ -902,29 +902,16 @@ mod tests {
         assert_eq!(seen.as_slice(), &["hint:fast".to_string()]);
     }
 
-    /// RED: Verify that conversation history depth influences weighted classification.
+    /// Verify that the 14-dimension weighted scorer classifies a simple
+    /// message as simple and a complex analytical message at a higher tier.
     ///
-    /// Currently `classify_model` calls `classify_with_decision` which always
-    /// passes `turn_count = 0`, ignoring conversation history. This test
-    /// asserts that a deep conversation (20 prior user turns) classifies
-    /// differently from a fresh one — it will FAIL until classify_model is
-    /// updated to pass the actual turn count via `classify_with_context`.
+    /// This replaces the earlier conversation-depth test now that the scorer
+    /// uses 14 text-analysis dimensions instead of the old 6-dimension scorer
+    /// (which included a conversation_depth dimension removed in the upgrade).
     #[tokio::test]
-    async fn classify_model_accounts_for_conversation_depth() {
-        use crate::config::schema::{
-            ClassificationMode, ClassificationTiers, ClassificationWeights,
-        };
+    async fn classify_model_distinguishes_simple_from_complex() {
+        use crate::config::schema::{ClassificationMode, ClassificationTiers};
         use crate::config::QueryClassificationConfig;
-
-        // Weights: only conversation_depth matters.
-        let weights = ClassificationWeights {
-            length: 0.0,
-            code_density: 0.0,
-            question_complexity: 0.0,
-            conversation_depth: 1.0,
-            tool_hint: 0.0,
-            domain_specificity: 0.0,
-        };
 
         let tiers = ClassificationTiers {
             simple: Some("hint:simple".into()),
@@ -938,20 +925,19 @@ mod tests {
             mode: ClassificationMode::Weighted,
             rules: vec![],
             tiers,
-            weights,
             ..Default::default()
         };
 
-        // ── First agent: fresh conversation (no history) ──
-        let seen_models_fresh = Arc::new(Mutex::new(Vec::new()));
-        let provider_fresh = Box::new(ModelCaptureProvider {
+        // ── First agent: simple message ──
+        let seen_models_simple = Arc::new(Mutex::new(Vec::new()));
+        let provider_simple = Box::new(ModelCaptureProvider {
             responses: Mutex::new(vec![crate::providers::ChatResponse {
                 text: Some("ok".into()),
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
             }]),
-            seen_models: seen_models_fresh.clone(),
+            seen_models: seen_models_simple.clone(),
         });
 
         let memory_cfg = crate::config::MemoryConfig {
@@ -976,8 +962,8 @@ mod tests {
         route_map.insert("hint:complex".into(), "model-complex".into());
         route_map.insert("hint:reasoning".into(), "model-reasoning".into());
 
-        let mut agent_fresh = Agent::builder()
-            .provider(provider_fresh)
+        let mut agent_simple = Agent::builder()
+            .provider(provider_simple)
             .tools(vec![Box::new(MockTool)])
             .memory(mem.clone())
             .observer(observer.clone())
@@ -989,25 +975,23 @@ mod tests {
             .build()
             .expect("agent build should succeed");
 
-        // First turn — no prior history, turn_count = 0.
-        // depth_score = (0/10) - 0.5 = -0.5  -> tier = simple  (< -0.1)
-        let _ = agent_fresh.turn("hi").await.unwrap();
-        let fresh_model = seen_models_fresh.lock()[0].clone();
+        let _ = agent_simple.turn("hi").await.unwrap();
+        let simple_model = seen_models_simple.lock()[0].clone();
         assert_eq!(
-            fresh_model, "hint:hint:simple",
-            "Fresh conversation should classify as simple"
+            simple_model, "hint:hint:simple",
+            "Short greeting should classify as simple"
         );
 
-        // ── Second agent: pre-populated with 20 user turns ──
-        let seen_models_deep = Arc::new(Mutex::new(Vec::new()));
-        let provider_deep = Box::new(ModelCaptureProvider {
+        // ── Second agent: complex analytical message ──
+        let seen_models_complex = Arc::new(Mutex::new(Vec::new()));
+        let provider_complex = Box::new(ModelCaptureProvider {
             responses: Mutex::new(vec![crate::providers::ChatResponse {
                 text: Some("ok".into()),
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
             }]),
-            seen_models: seen_models_deep.clone(),
+            seen_models: seen_models_complex.clone(),
         });
 
         let mem2: Arc<dyn Memory> = Arc::from(
@@ -1016,8 +1000,8 @@ mod tests {
         );
         let observer2: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
 
-        let mut agent_deep = Agent::builder()
-            .provider(provider_deep)
+        let mut agent_complex = Agent::builder()
+            .provider(provider_complex)
             .tools(vec![Box::new(MockTool)])
             .memory(mem2)
             .observer(observer2)
@@ -1029,40 +1013,18 @@ mod tests {
             .build()
             .expect("agent build should succeed");
 
-        // Seed the agent with a system message + 20 user/assistant turn pairs.
-        agent_deep
-            .history
-            .push(ConversationMessage::Chat(ChatMessage::system(
-                "system prompt",
-            )));
-        for i in 0..20 {
-            agent_deep
-                .history
-                .push(ConversationMessage::Chat(ChatMessage::user(format!(
-                    "user turn {i}"
-                ))));
-            agent_deep
-                .history
-                .push(ConversationMessage::Chat(ChatMessage::assistant(format!(
-                    "assistant turn {i}"
-                ))));
-        }
+        // A message with strong analytical signals should classify higher.
+        let complex_msg = "Compare and contrast the tradeoffs between microservices and \
+            monolithic architecture. Consider scalability, deployment complexity, \
+            data consistency, and latency. Explain your recommendation with \
+            specific design patterns.";
+        let _ = agent_complex.turn(complex_msg).await.unwrap();
+        let complex_model = seen_models_complex.lock()[0].clone();
 
-        // Next turn — 20 prior user messages in history.
-        // depth_score = (20/10) - 0.5 = 1.5, clamped to 1.0  -> tier = reasoning  (>= 0.4)
-        let _ = agent_deep.turn("hi").await.unwrap();
-        let deep_model = seen_models_deep.lock()[0].clone();
-
-        // With conversation depth awareness, the deep conversation should NOT
-        // classify the same as a fresh one.
+        // The complex message should NOT classify the same as a short greeting.
         assert_ne!(
-            deep_model, fresh_model,
-            "Deep conversation should classify differently from fresh conversation"
-        );
-        // Specifically, 20 prior user turns should push into reasoning tier.
-        assert_eq!(
-            deep_model, "hint:hint:reasoning",
-            "Deep conversation (20 user turns) should classify as reasoning"
+            complex_model, simple_model,
+            "Complex analytical message should classify differently from simple greeting"
         );
     }
 }

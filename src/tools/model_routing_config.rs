@@ -467,6 +467,8 @@ impl ModelRoutingConfigTool {
             provider: provider.clone(),
             model: model.clone(),
             api_key: None,
+            fallbacks: vec![],
+            context_window: None,
         });
 
         next_route.hint = hint.clone();

@@ -1032,6 +1032,8 @@ mod tests {
             provider: "openrouter".to_string(),
             model: "anthropic/claude-sonnet-4.6".to_string(),
             api_key: Some("route-model-key".to_string()),
+            fallbacks: vec![],
+            context_window: None,
         }];
         cfg.embedding_routes = vec![crate::config::schema::EmbeddingRouteConfig {
             hint: "semantic".to_string(),
@@ -1166,12 +1168,16 @@ mod tests {
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
+                fallbacks: vec![],
+                context_window: None,
             },
             crate::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
                 api_key: Some("route-model-key-2".to_string()),
+                fallbacks: vec![],
+                context_window: None,
             },
         ];
         current.embedding_routes = vec![
@@ -1318,12 +1324,16 @@ mod tests {
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
+                fallbacks: vec![],
+                context_window: None,
             },
             crate::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
                 api_key: Some("route-model-key-2".to_string()),
+                fallbacks: vec![],
+                context_window: None,
             },
         ];
         current.embedding_routes = vec![
@@ -1353,6 +1363,8 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-4.1".to_string(),
                 api_key: Some(MASKED_SECRET.to_string()),
+                fallbacks: vec![],
+                context_window: None,
             });
         incoming
             .embedding_routes
