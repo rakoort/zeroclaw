@@ -1,7 +1,7 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 
 /// Format a single thread reply with role label and envelope.
 fn format_thread_reply(
@@ -151,6 +151,8 @@ enum MentionGateResult {
 /// Slack channel — polls conversations.history via Web API
 pub struct SlackChannel {
     bot_token: String,
+    app_token: String,
+    client: reqwest::Client,
     channel_id: Option<String>,
     allowed_users: Vec<String>,
     mention_only: bool,
@@ -159,9 +161,16 @@ pub struct SlackChannel {
 }
 
 impl SlackChannel {
-    pub fn new(bot_token: String, channel_id: Option<String>, allowed_users: Vec<String>) -> Self {
+    pub fn new(
+        bot_token: String,
+        app_token: String,
+        channel_id: Option<String>,
+        allowed_users: Vec<String>,
+    ) -> Self {
         Self {
+            client: crate::config::build_runtime_proxy_client("channel.slack"),
             bot_token,
+            app_token,
             channel_id,
             allowed_users,
             mention_only: true,
@@ -184,10 +193,6 @@ impl SlackChannel {
         self
     }
 
-    fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.slack")
-    }
-
     /// Check if a Slack user ID is in the allowlist.
     /// Empty list means deny everyone until explicitly configured.
     /// `"*"` means allow everyone.
@@ -198,7 +203,7 @@ impl SlackChannel {
     /// Get the bot's own user ID so we can ignore our own messages
     async fn get_bot_user_id(&self) -> Option<String> {
         let resp: serde_json::Value = self
-            .http_client()
+            .client
             .get("https://slack.com/api/auth.test")
             .bearer_auth(&self.bot_token)
             .send()
@@ -231,115 +236,6 @@ impl SlackChannel {
 
     fn configured_channel_id(&self) -> Option<String> {
         Self::normalized_channel_id(self.channel_id.as_deref())
-    }
-
-    fn extract_channel_ids(list_payload: &serde_json::Value) -> Vec<String> {
-        let mut ids = list_payload
-            .get("channels")
-            .and_then(|c| c.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|channel| {
-                let id = channel.get("id").and_then(|id| id.as_str())?;
-                let is_archived = channel
-                    .get("is_archived")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let is_member = channel
-                    .get("is_member")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-                if is_archived || !is_member {
-                    return None;
-                }
-                Some(id.to_string())
-            })
-            .collect::<Vec<_>>();
-        ids.sort();
-        ids.dedup();
-        ids
-    }
-
-    async fn list_accessible_channels(&self) -> anyhow::Result<Vec<String>> {
-        let mut channels = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let mut query_params = vec![
-                ("exclude_archived", "true".to_string()),
-                ("limit", "200".to_string()),
-                (
-                    "types",
-                    "public_channel,private_channel,mpim,im".to_string(),
-                ),
-            ];
-            if let Some(ref next) = cursor {
-                query_params.push(("cursor", next.clone()));
-            }
-
-            let resp = self
-                .http_client()
-                .get("https://slack.com/api/conversations.list")
-                .bearer_auth(&self.bot_token)
-                .query(&query_params)
-                .send()
-                .await?;
-
-            let status = resp.status();
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
-
-            if !status.is_success() {
-                anyhow::bail!("Slack conversations.list failed ({status}): {body}");
-            }
-
-            let data: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            if data.get("ok") == Some(&serde_json::Value::Bool(false)) {
-                let err = data
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("unknown");
-                anyhow::bail!("Slack conversations.list failed: {err}");
-            }
-
-            channels.extend(Self::extract_channel_ids(&data));
-
-            cursor = data
-                .get("response_metadata")
-                .and_then(|rm| rm.get("next_cursor"))
-                .and_then(|c| c.as_str())
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .map(ToOwned::to_owned);
-
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        channels.sort();
-        channels.dedup();
-        Ok(channels)
-    }
-
-    fn slack_now_ts() -> String {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        format!("{}.{:06}", now.as_secs(), now.subsec_micros())
-    }
-
-    fn ensure_poll_cursor(
-        cursors: &mut HashMap<String, String>,
-        channel_id: &str,
-        now_ts: &str,
-    ) -> String {
-        cursors
-            .entry(channel_id.to_string())
-            .or_insert_with(|| now_ts.to_string())
-            .clone()
     }
 
     /// Record that the bot has participated in a thread.
@@ -415,7 +311,7 @@ impl Channel for SlackChannel {
         }
 
         let resp = self
-            .http_client()
+            .client
             .post("https://slack.com/api/chat.postMessage")
             .bearer_auth(&self.bot_token)
             .json(&body)
@@ -450,275 +346,13 @@ impl Channel for SlackChannel {
         Ok(())
     }
 
-    async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        let bot_user_id = match self.get_bot_user_id().await {
-            Some(id) => {
-                tracing::info!("Slack: resolved bot user ID: {id}");
-                id
-            }
-            None => {
-                tracing::warn!("Slack: failed to resolve bot user ID via auth.test — bot_id field check will still filter own messages");
-                String::new()
-            }
-        };
-        let scoped_channel = self.configured_channel_id();
-        let mut discovered_channels: Vec<String> = Vec::new();
-        let mut last_discovery = Instant::now();
-        let mut last_ts_by_channel: HashMap<String, String> = HashMap::new();
-        let mut pending_history: HashMap<String, PendingHistoryBuffer> = HashMap::new();
-
-        if let Some(ref channel_id) = scoped_channel {
-            tracing::info!("Slack channel listening on #{channel_id}...");
-        } else {
-            tracing::info!(
-                "Slack channel_id not set (or '*'); listening across all accessible channels."
-            );
-        }
-
-        loop {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-
-            let target_channels = if let Some(ref channel_id) = scoped_channel {
-                vec![channel_id.clone()]
-            } else {
-                if discovered_channels.is_empty()
-                    || last_discovery.elapsed() >= Duration::from_secs(60)
-                {
-                    match self.list_accessible_channels().await {
-                        Ok(channels) => {
-                            if channels != discovered_channels {
-                                tracing::info!(
-                                    "Slack auto-discovery refreshed: listening on {} channel(s).",
-                                    channels.len()
-                                );
-                            }
-                            discovered_channels = channels;
-                        }
-                        Err(e) => {
-                            tracing::warn!("Slack channel discovery failed: {e}");
-                        }
-                    }
-                    last_discovery = Instant::now();
-                }
-
-                discovered_channels.clone()
-            };
-
-            if target_channels.is_empty() {
-                tracing::debug!("Slack: no accessible channels discovered yet");
-                continue;
-            }
-
-            for channel_id in target_channels {
-                let had_cursor = last_ts_by_channel.contains_key(&channel_id);
-                let bootstrap_ts = Self::slack_now_ts();
-                let cursor_ts =
-                    Self::ensure_poll_cursor(&mut last_ts_by_channel, &channel_id, &bootstrap_ts);
-                if !had_cursor {
-                    tracing::debug!(
-                        "Slack: initialized cursor for channel {} at {} to prevent historical replay",
-                        channel_id,
-                        cursor_ts
-                    );
-                }
-                let params = vec![
-                    ("channel", channel_id.clone()),
-                    ("limit", "10".to_string()),
-                    ("oldest", cursor_ts),
-                ];
-
-                let resp = match self
-                    .http_client()
-                    .get("https://slack.com/api/conversations.history")
-                    .bearer_auth(&self.bot_token)
-                    .query(&params)
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("Slack poll error for channel {channel_id}: {e}");
-                        continue;
-                    }
-                };
-
-                let data: serde_json::Value = match resp.json().await {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!("Slack parse error for channel {channel_id}: {e}");
-                        continue;
-                    }
-                };
-
-                if data.get("ok") == Some(&serde_json::Value::Bool(false)) {
-                    let err = data
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .unwrap_or("unknown");
-                    tracing::warn!("Slack history error for channel {channel_id}: {err}");
-                    continue;
-                }
-
-                if let Some(messages) = data.get("messages").and_then(|m| m.as_array()) {
-                    // Messages come newest-first, reverse to process oldest first
-                    for msg in messages.iter().rev() {
-                        let ts = msg.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-                        let user = msg
-                            .get("user")
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("unknown");
-                        let text = msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        let last_ts = last_ts_by_channel
-                            .get(&channel_id)
-                            .map(String::as_str)
-                            .unwrap_or("");
-
-                        // Skip all bot messages (bot_id field is present on every bot-posted message)
-                        if msg.get("bot_id").is_some() {
-                            continue;
-                        }
-
-                        // Skip bot's own messages (fallback for edge cases without bot_id)
-                        if !bot_user_id.is_empty() && user == bot_user_id {
-                            continue;
-                        }
-
-                        // Sender validation
-                        if !self.is_user_allowed(user) {
-                            tracing::warn!(
-                                "Slack: ignoring message from unauthorized user: {user}"
-                            );
-                            continue;
-                        }
-
-                        // Skip empty or already-seen
-                        if text.is_empty() || ts <= last_ts {
-                            continue;
-                        }
-
-                        last_ts_by_channel.insert(channel_id.clone(), ts.to_string());
-
-                        // Format timestamp from Slack ts for envelope
-                        let ts_secs = ts
-                            .split('.')
-                            .next()
-                            .and_then(|s| s.parse::<i64>().ok())
-                            .unwrap_or(0);
-                        let ts_display = {
-                            let dt =
-                                chrono::DateTime::from_timestamp(ts_secs, 0).unwrap_or_default();
-                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                        };
-
-                        // Mention gating: buffer non-mention messages when enabled
-                        let (text, triage_required) = if self.mention_only {
-                            let thread_ts_val = msg.get("thread_ts").and_then(|v| v.as_str());
-
-                            match self.resolve_mention_gate(text, &bot_user_id, thread_ts_val) {
-                                MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
-                                MentionGateResult::ParticipatedThread(text) => (text, true),
-                                MentionGateResult::Buffer => {
-                                    let buffer = pending_history
-                                        .entry(channel_id.clone())
-                                        .or_insert_with(|| PendingHistoryBuffer::new(50));
-                                    let envelope = format_message_envelope(
-                                        &channel_id,
-                                        user,
-                                        &ts_display,
-                                        text,
-                                    );
-                                    buffer.push(envelope);
-                                    continue;
-                                }
-                            }
-                        } else {
-                            (text.to_string(), false)
-                        };
-
-                        // Drain pending history and wrap content with context
-                        let text = {
-                            let pending = pending_history
-                                .get_mut(&channel_id)
-                                .map(|b| b.drain())
-                                .unwrap_or_default();
-                            if pending.is_empty() {
-                                text
-                            } else {
-                                let current_envelope =
-                                    format_message_envelope(&channel_id, user, &ts_display, &text);
-                                format!(
-                                    "[Chat messages since your last reply - for context]\n{}\n\n[Current message - respond to this]\n{}",
-                                    pending.join("\n"),
-                                    current_envelope
-                                )
-                            }
-                        };
-
-                        let inbound_thread = Self::inbound_thread_ts(msg, ts);
-
-                        // Thread hydration: fetch replies when message is threaded
-                        let (starter_body, history_body) = if let Some(ref tts) = inbound_thread {
-                            match fetch_thread_replies(
-                                &self.http_client(),
-                                &self.bot_token,
-                                &channel_id,
-                                tts,
-                                20,
-                            )
-                            .await
-                            {
-                                Ok(replies) => {
-                                    let starter = replies
-                                        .first()
-                                        .and_then(|r| r["text"].as_str())
-                                        .map(String::from);
-                                    let history = format_thread_history(
-                                        &replies,
-                                        &bot_user_id,
-                                        "assistant",
-                                        &channel_id,
-                                        &HashMap::new(),
-                                    );
-                                    (starter, Some(history))
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Slack thread hydration failed for {channel_id}/{tts}: {e}"
-                                    );
-                                    (None, None)
-                                }
-                            }
-                        } else {
-                            (None, None)
-                        };
-
-                        let channel_msg = ChannelMessage {
-                            id: format!("slack_{channel_id}_{ts}"),
-                            sender: user.to_string(),
-                            reply_target: channel_id.clone(),
-                            content: text,
-                            channel: "slack".to_string(),
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                            thread_ts: inbound_thread,
-                            thread_starter_body: starter_body,
-                            thread_history: history_body,
-                            triage_required,
-                        };
-
-                        if tx.send(channel_msg).await.is_err() {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
+    async fn listen(&self, _tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+        // TODO(task-8): replace with Socket Mode event loop
+        anyhow::bail!("Slack listen() not yet implemented — Socket Mode migration in progress")
     }
 
     async fn health_check(&self) -> bool {
-        self.http_client()
+        self.client
             .get("https://slack.com/api/auth.test")
             .bearer_auth(&self.bot_token)
             .send()
@@ -734,13 +368,13 @@ mod tests {
 
     #[test]
     fn slack_channel_name() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec![]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec![]);
         assert_eq!(ch.name(), "slack");
     }
 
     #[test]
     fn slack_channel_with_channel_id() {
-        let ch = SlackChannel::new("xoxb-fake".into(), Some("C12345".into()), vec![]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), Some("C12345".into()), vec![]);
         assert_eq!(ch.channel_id, Some("C12345".to_string()));
     }
 
@@ -758,36 +392,21 @@ mod tests {
     }
 
     #[test]
-    fn extract_channel_ids_filters_archived_and_non_member_entries() {
-        let payload = serde_json::json!({
-            "channels": [
-                {"id": "C1", "is_archived": false, "is_member": true},
-                {"id": "C2", "is_archived": true, "is_member": true},
-                {"id": "C3", "is_archived": false, "is_member": false},
-                {"id": "C1", "is_archived": false, "is_member": true},
-                {"id": "C4"}
-            ]
-        });
-        let ids = SlackChannel::extract_channel_ids(&payload);
-        assert_eq!(ids, vec!["C1".to_string(), "C4".to_string()]);
-    }
-
-    #[test]
     fn empty_allowlist_denies_everyone() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec![]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec![]);
         assert!(!ch.is_user_allowed("U12345"));
         assert!(!ch.is_user_allowed("anyone"));
     }
 
     #[test]
     fn wildcard_allows_everyone() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["*".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["*".into()]);
         assert!(ch.is_user_allowed("U12345"));
     }
 
     #[test]
     fn specific_allowlist_filters() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into(), "U222".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into(), "U222".into()]);
         assert!(ch.is_user_allowed("U111"));
         assert!(ch.is_user_allowed("U222"));
         assert!(!ch.is_user_allowed("U333"));
@@ -795,27 +414,27 @@ mod tests {
 
     #[test]
     fn allowlist_exact_match_not_substring() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
         assert!(!ch.is_user_allowed("U1111"));
         assert!(!ch.is_user_allowed("U11"));
     }
 
     #[test]
     fn allowlist_empty_user_id() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
         assert!(!ch.is_user_allowed(""));
     }
 
     #[test]
     fn allowlist_case_sensitive() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
         assert!(ch.is_user_allowed("U111"));
         assert!(!ch.is_user_allowed("u111"));
     }
 
     #[test]
     fn allowlist_wildcard_and_specific() {
-        let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into(), "*".into()]);
+        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into(), "*".into()]);
         assert!(ch.is_user_allowed("U111"));
         assert!(ch.is_user_allowed("anyone"));
     }
@@ -896,28 +515,6 @@ mod tests {
 
         let thread_ts = SlackChannel::inbound_thread_ts(&msg, "");
         assert_eq!(thread_ts, None);
-    }
-
-    #[test]
-    fn ensure_poll_cursor_bootstraps_new_channel() {
-        let mut cursors = HashMap::new();
-        let now_ts = "1700000000.123456";
-
-        let cursor = SlackChannel::ensure_poll_cursor(&mut cursors, "C123", now_ts);
-        assert_eq!(cursor, now_ts);
-        assert_eq!(cursors.get("C123").map(String::as_str), Some(now_ts));
-    }
-
-    #[test]
-    fn ensure_poll_cursor_keeps_existing_cursor() {
-        let mut cursors = HashMap::from([("C123".to_string(), "1700000000.000001".to_string())]);
-        let cursor = SlackChannel::ensure_poll_cursor(&mut cursors, "C123", "9999999999.999999");
-
-        assert_eq!(cursor, "1700000000.000001");
-        assert_eq!(
-            cursors.get("C123").map(String::as_str),
-            Some("1700000000.000001")
-        );
     }
 
     // ── Thread hydration formatting ─────────────────────────────────
@@ -1051,20 +648,20 @@ mod tests {
 
     #[test]
     fn participated_threads_empty_on_init() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         assert!(channel.participated_threads().is_empty());
     }
 
     #[test]
     fn record_participation_tracks_thread() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         channel.record_participation("1234.5678");
         assert!(channel.has_participated("1234.5678"));
     }
 
     #[test]
     fn has_participated_returns_false_for_unknown_thread() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         assert!(!channel.has_participated("unknown.thread"));
     }
 
@@ -1074,7 +671,7 @@ mod tests {
     fn participated_thread_message_sets_triage_required() {
         // When bot has participated in a thread, messages in that thread
         // without explicit @mention should set triage_required = true
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         channel.record_participation("1234.5678");
 
         // The message is in a participated thread but doesn't @mention the bot
@@ -1090,7 +687,7 @@ mod tests {
 
     #[test]
     fn explicit_mention_in_participated_thread_skips_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         channel.record_participation("1234.5678");
 
         let text = "<@U_BOT> what do you think?";
@@ -1102,7 +699,7 @@ mod tests {
 
     #[test]
     fn non_participated_thread_message_is_buffered() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         // Bot has NOT participated in thread "9999.0000"
 
         let text = "just chatting";
@@ -1118,7 +715,7 @@ mod tests {
 
     #[test]
     fn mention_gate_explicit_mention_returns_cleaned_text() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         let result =
             channel.resolve_mention_gate("<@U_BOT> what do you think?", "U_BOT", Some("1234.5678"));
         assert_eq!(
@@ -1129,7 +726,7 @@ mod tests {
 
     #[test]
     fn mention_gate_explicit_mention_in_participated_thread_no_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         channel.record_participation("1234.5678");
 
         let result = channel.resolve_mention_gate("<@U_BOT> help me", "U_BOT", Some("1234.5678"));
@@ -1142,7 +739,7 @@ mod tests {
 
     #[test]
     fn mention_gate_participated_thread_without_mention_returns_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         channel.record_participation("1234.5678");
 
         let result = channel.resolve_mention_gate(
@@ -1159,7 +756,7 @@ mod tests {
 
     #[test]
     fn mention_gate_non_participated_thread_buffers() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
         // Bot has NOT participated in thread "9999.0000"
 
         let result = channel.resolve_mention_gate("just chatting", "U_BOT", Some("9999.0000"));
@@ -1168,7 +765,7 @@ mod tests {
 
     #[test]
     fn mention_gate_no_thread_no_mention_buffers() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
 
         let result = channel.resolve_mention_gate("random message", "U_BOT", None);
         assert_eq!(result, MentionGateResult::Buffer);
@@ -1176,7 +773,7 @@ mod tests {
 
     #[test]
     fn mention_gate_regex_mention_returns_explicit() {
-        let channel = SlackChannel::new("xoxb-test".into(), None, vec!["*".into()])
+        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()])
             .with_mention_config(true, Some(r"(?i)\brain\b".into()));
 
         let result =
