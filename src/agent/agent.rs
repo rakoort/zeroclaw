@@ -587,7 +587,7 @@ impl Agent {
                             output.clone(),
                         )));
                     self.trim_history();
-                    return Ok(output);
+                    return Ok(super::sanitize::sanitize_model_response(&output));
                 }
                 Err(e) => {
                     tracing::warn!("Planner failed ({e}), falling back to normal agent flow");
@@ -632,7 +632,7 @@ impl Agent {
                     )));
                 self.trim_history();
 
-                return Ok(final_text);
+                return Ok(super::sanitize::sanitize_model_response(&final_text));
             }
 
             if !text.is_empty() {

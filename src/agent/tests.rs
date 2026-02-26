@@ -1336,3 +1336,52 @@ async fn run_single_delegates_to_turn() {
         "Expected non-empty response from run_single"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 26. Response sanitization strips model-internal artifacts
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn turn_strips_thinking_tags_from_response() {
+    let provider = Box::new(ScriptedProvider::new(vec![text_response(
+        "<thinking>internal reasoning</thinking>The answer is 42.",
+    )]));
+    let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
+
+    let result = agent.turn("question").await.unwrap();
+    assert_eq!(
+        result, "The answer is 42.",
+        "turn() should strip <thinking> tags from response"
+    );
+}
+
+#[tokio::test]
+async fn turn_strips_tool_code_from_response() {
+    let provider = Box::new(ScriptedProvider::new(vec![text_response(
+        "<tool_code>print('debug')</tool_code>Here is the result.",
+    )]));
+    let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
+
+    let result = agent.turn("question").await.unwrap();
+    assert_eq!(
+        result, "Here is the result.",
+        "turn() should strip <tool_code> tags from response"
+    );
+}
+
+#[tokio::test]
+async fn turn_preserves_history_unsanitized() {
+    let raw = "<thinking>secret</thinking>visible";
+    let provider = Box::new(ScriptedProvider::new(vec![text_response(raw)]));
+    let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
+
+    let result = agent.turn("question").await.unwrap();
+    assert_eq!(result, "visible", "Returned text should be sanitized");
+
+    // History should contain the raw unsanitized text
+    let has_raw = agent.history().iter().any(|msg| match msg {
+        ConversationMessage::Chat(chat) => chat.content.contains("<thinking>"),
+        _ => false,
+    });
+    assert!(has_raw, "History should preserve raw unsanitized text");
+}
