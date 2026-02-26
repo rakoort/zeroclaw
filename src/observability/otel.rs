@@ -191,7 +191,8 @@ impl Observer for OtelObserver {
             | ObserverEvent::TurnComplete
             | ObserverEvent::ClassificationResult { .. }
             | ObserverEvent::PlannerRequest { .. }
-            | ObserverEvent::PlannerResponse { .. } => {}
+            | ObserverEvent::PlannerResponse { .. }
+            | ObserverEvent::FallbackTriggered { .. } => {}
             ObserverEvent::LlmResponse {
                 provider,
                 model,

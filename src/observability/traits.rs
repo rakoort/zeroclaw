@@ -76,6 +76,13 @@ pub enum ObserverEvent {
     PlannerRequest { model: String },
     /// Planner model response with the plan JSON.
     PlannerResponse { model: String, plan_text: String },
+    /// A model fallback was triggered after the primary model failed.
+    FallbackTriggered {
+        hint: String,
+        failed_model: String,
+        fallback_model: String,
+        error: String,
+    },
 }
 
 /// Numeric metrics emitted by the agent runtime.
@@ -238,5 +245,17 @@ mod tests {
         };
         let cloned = event.clone();
         assert!(matches!(cloned, ObserverEvent::PlannerResponse { .. }));
+    }
+
+    #[test]
+    fn fallback_triggered_event_is_cloneable() {
+        let event = ObserverEvent::FallbackTriggered {
+            hint: "fast".into(),
+            failed_model: "llama-3-70b".into(),
+            fallback_model: "deepseek-chat".into(),
+            error: "connection timeout".into(),
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::FallbackTriggered { .. }));
     }
 }

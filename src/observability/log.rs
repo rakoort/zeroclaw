@@ -1,6 +1,6 @@
 use super::traits::{Observer, ObserverEvent, ObserverMetric};
 use std::any::Any;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Log-based observer — uses tracing, zero external deps
 pub struct LogObserver;
@@ -105,6 +105,20 @@ impl Observer for LogObserver {
                     model = %model,
                     plan_text_len = plan_text.len(),
                     "planner.response"
+                );
+            }
+            ObserverEvent::FallbackTriggered {
+                hint,
+                failed_model,
+                fallback_model,
+                error,
+            } => {
+                warn!(
+                    hint = %hint,
+                    failed_model = %failed_model,
+                    fallback_model = %fallback_model,
+                    error = %error,
+                    "fallback.triggered"
                 );
             }
         }
