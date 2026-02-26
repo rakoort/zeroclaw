@@ -515,6 +515,7 @@ mod tests {
                 reasoning: Some("hint:reasoning".into()),
             },
             weights: ClassificationWeights::default(),
+            ..Default::default()
         };
         let result = classify(&config, "hi");
         assert_eq!(result, Some("hint:simple".to_string()));
@@ -548,6 +549,7 @@ mod tests {
                 reasoning: Some("hint:reasoning".into()),
             },
             weights: ClassificationWeights::default(),
+            ..Default::default()
         };
         let decision = classify_with_context(&config, "hi", 0)
             .expect("weighted classification should return a decision");
@@ -605,6 +607,7 @@ mod tests {
                 reasoning: Some("hint:reasoning".into()),
             },
             weights: ClassificationWeights::default(),
+            ..Default::default()
         };
 
         // Short greeting → simple

@@ -2426,6 +2426,244 @@ impl Default for ClassificationWeights {
     }
 }
 
+// ── 14-Dimension Scoring ─────────────────────────────────────────
+
+/// Complexity tier for query classification scoring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Simple,
+    #[default]
+    Medium,
+    Complex,
+    Reasoning,
+}
+
+/// Score boundaries between adjacent tiers.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TierBoundaries {
+    #[serde(default = "default_tier_simple_medium")]
+    pub simple_medium: f64,
+    #[serde(default = "default_tier_medium_complex")]
+    pub medium_complex: f64,
+    #[serde(default = "default_tier_complex_reasoning")]
+    pub complex_reasoning: f64,
+}
+
+fn default_tier_simple_medium() -> f64 {
+    0.0
+}
+fn default_tier_medium_complex() -> f64 {
+    0.3
+}
+fn default_tier_complex_reasoning() -> f64 {
+    0.5
+}
+
+impl Default for TierBoundaries {
+    fn default() -> Self {
+        Self {
+            simple_medium: default_tier_simple_medium(),
+            medium_complex: default_tier_medium_complex(),
+            complex_reasoning: default_tier_complex_reasoning(),
+        }
+    }
+}
+
+/// Hard-coded overrides that bypass scoring.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScoringOverrides {
+    /// Force complex tier when token count exceeds this. Default: `100_000`.
+    #[serde(default = "default_max_tokens_force_complex")]
+    pub max_tokens_force_complex: usize,
+    /// Minimum tier for structured-output requests. Default: `medium`.
+    #[serde(default)]
+    pub structured_output_min_tier: Tier,
+    /// Default tier when classification is ambiguous. Default: `medium`.
+    #[serde(default)]
+    pub ambiguous_default_tier: Tier,
+}
+
+fn default_max_tokens_force_complex() -> usize {
+    100_000
+}
+
+impl Default for ScoringOverrides {
+    fn default() -> Self {
+        Self {
+            max_tokens_force_complex: default_max_tokens_force_complex(),
+            structured_output_min_tier: Tier::default(),
+            ambiguous_default_tier: Tier::default(),
+        }
+    }
+}
+
+/// 14-dimension weights for scoring-based classification. Sum must equal 1.0.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DimensionWeights {
+    #[serde(default = "default_dw_token_count")]
+    pub token_count: f64,
+    #[serde(default = "default_dw_code_presence")]
+    pub code_presence: f64,
+    #[serde(default = "default_dw_reasoning_markers")]
+    pub reasoning_markers: f64,
+    #[serde(default = "default_dw_technical_terms")]
+    pub technical_terms: f64,
+    #[serde(default = "default_dw_creative_markers")]
+    pub creative_markers: f64,
+    #[serde(default = "default_dw_simple_indicators")]
+    pub simple_indicators: f64,
+    #[serde(default = "default_dw_multi_step_patterns")]
+    pub multi_step_patterns: f64,
+    #[serde(default = "default_dw_question_complexity")]
+    pub question_complexity: f64,
+    #[serde(default = "default_dw_imperative_verbs")]
+    pub imperative_verbs: f64,
+    #[serde(default = "default_dw_constraint_count")]
+    pub constraint_count: f64,
+    #[serde(default = "default_dw_output_format")]
+    pub output_format: f64,
+    #[serde(default = "default_dw_reference_complexity")]
+    pub reference_complexity: f64,
+    #[serde(default = "default_dw_negation_complexity")]
+    pub negation_complexity: f64,
+    #[serde(default = "default_dw_domain_specificity")]
+    pub domain_specificity: f64,
+    #[serde(default = "default_dw_agentic_task")]
+    pub agentic_task: f64,
+}
+
+fn default_dw_token_count() -> f64 {
+    0.08
+}
+fn default_dw_code_presence() -> f64 {
+    0.15
+}
+fn default_dw_reasoning_markers() -> f64 {
+    0.18
+}
+fn default_dw_technical_terms() -> f64 {
+    0.10
+}
+fn default_dw_creative_markers() -> f64 {
+    0.05
+}
+fn default_dw_simple_indicators() -> f64 {
+    0.02
+}
+fn default_dw_multi_step_patterns() -> f64 {
+    0.12
+}
+fn default_dw_question_complexity() -> f64 {
+    0.05
+}
+fn default_dw_imperative_verbs() -> f64 {
+    0.03
+}
+fn default_dw_constraint_count() -> f64 {
+    0.04
+}
+fn default_dw_output_format() -> f64 {
+    0.03
+}
+fn default_dw_reference_complexity() -> f64 {
+    0.02
+}
+fn default_dw_negation_complexity() -> f64 {
+    0.01
+}
+fn default_dw_domain_specificity() -> f64 {
+    0.02
+}
+fn default_dw_agentic_task() -> f64 {
+    0.10
+}
+
+impl Default for DimensionWeights {
+    fn default() -> Self {
+        Self {
+            token_count: default_dw_token_count(),
+            code_presence: default_dw_code_presence(),
+            reasoning_markers: default_dw_reasoning_markers(),
+            technical_terms: default_dw_technical_terms(),
+            creative_markers: default_dw_creative_markers(),
+            simple_indicators: default_dw_simple_indicators(),
+            multi_step_patterns: default_dw_multi_step_patterns(),
+            question_complexity: default_dw_question_complexity(),
+            imperative_verbs: default_dw_imperative_verbs(),
+            constraint_count: default_dw_constraint_count(),
+            output_format: default_dw_output_format(),
+            reference_complexity: default_dw_reference_complexity(),
+            negation_complexity: default_dw_negation_complexity(),
+            domain_specificity: default_dw_domain_specificity(),
+            agentic_task: default_dw_agentic_task(),
+        }
+    }
+}
+
+/// Top-level scoring configuration for 14-dimension classification.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScoringConfig {
+    #[serde(default)]
+    pub dimension_weights: DimensionWeights,
+    #[serde(default)]
+    pub tier_boundaries: TierBoundaries,
+    #[serde(default)]
+    pub overrides: ScoringOverrides,
+    /// Steepness of the sigmoid confidence curve. Default: `12.0`.
+    #[serde(default = "default_confidence_steepness")]
+    pub confidence_steepness: f64,
+    /// Confidence threshold below which the result is treated as uncertain. Default: `0.7`.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+}
+
+fn default_confidence_steepness() -> f64 {
+    12.0
+}
+fn default_confidence_threshold() -> f64 {
+    0.7
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            dimension_weights: DimensionWeights::default(),
+            tier_boundaries: TierBoundaries::default(),
+            overrides: ScoringOverrides::default(),
+            confidence_steepness: default_confidence_steepness(),
+            confidence_threshold: default_confidence_threshold(),
+        }
+    }
+}
+
+/// Planning activation thresholds based on classification score.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanningConfig {
+    /// Score below which planning is skipped entirely. Default: `0.3`.
+    #[serde(default = "default_planning_skip_threshold")]
+    pub skip_threshold: f64,
+    /// Score at or above which planning activates. Default: `0.5`.
+    #[serde(default = "default_planning_activate_threshold")]
+    pub activate_threshold: f64,
+}
+
+fn default_planning_skip_threshold() -> f64 {
+    0.3
+}
+fn default_planning_activate_threshold() -> f64 {
+    0.5
+}
+
+impl Default for PlanningConfig {
+    fn default() -> Self {
+        Self {
+            skip_threshold: default_planning_skip_threshold(),
+            activate_threshold: default_planning_activate_threshold(),
+        }
+    }
+}
+
 /// Automatic query classification — classifies user messages by keyword/pattern
 /// and routes to the appropriate model hint. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2445,6 +2683,12 @@ pub struct QueryClassificationConfig {
     /// Dimension weights (only used in weighted mode).
     #[serde(default)]
     pub weights: ClassificationWeights,
+    /// 14-dimension scoring configuration.
+    #[serde(default)]
+    pub scoring: ScoringConfig,
+    /// Planning activation thresholds.
+    #[serde(default)]
+    pub planning: PlanningConfig,
 }
 
 /// A single classification rule mapping message patterns to a model hint.
@@ -7890,5 +8134,68 @@ require_otp_to_resume = true
         let config = QueryClassificationConfig::default();
         assert_eq!(config.mode, ClassificationMode::Rules);
         assert!(config.tiers.simple.is_none());
+    }
+
+    // ── Scoring config (14-dimension) ───────────────────────────
+
+    #[test]
+    async fn scoring_config_deserializes_with_defaults() {
+        let config: ScoringConfig = toml::from_str("").unwrap();
+        assert!((config.dimension_weights.token_count - 0.08).abs() < 0.001);
+        assert!((config.confidence_steepness - 12.0).abs() < 0.001);
+        assert!((config.confidence_threshold - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    async fn tier_boundaries_deserialize_with_defaults() {
+        let config: ScoringConfig = toml::from_str("").unwrap();
+        assert!((config.tier_boundaries.simple_medium - 0.0).abs() < 0.001);
+        assert!((config.tier_boundaries.medium_complex - 0.3).abs() < 0.001);
+        assert!((config.tier_boundaries.complex_reasoning - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    async fn overrides_config_deserializes_with_defaults() {
+        let config: ScoringConfig = toml::from_str("").unwrap();
+        assert_eq!(config.overrides.max_tokens_force_complex, 100_000);
+        assert_eq!(config.overrides.ambiguous_default_tier, Tier::Medium);
+    }
+
+    #[test]
+    async fn planning_config_deserializes_with_defaults() {
+        let config: PlanningConfig = toml::from_str("").unwrap();
+        assert!((config.skip_threshold - 0.3).abs() < 0.001);
+        assert!((config.activate_threshold - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    async fn tier_enum_serializes_lowercase() {
+        let tier = Tier::Reasoning;
+        let json = serde_json::to_string(&tier).unwrap();
+        assert_eq!(json, "\"reasoning\"");
+    }
+
+    #[test]
+    async fn dimension_weights_sum_to_one() {
+        let w = DimensionWeights::default();
+        let sum = w.token_count
+            + w.code_presence
+            + w.reasoning_markers
+            + w.technical_terms
+            + w.creative_markers
+            + w.simple_indicators
+            + w.multi_step_patterns
+            + w.question_complexity
+            + w.imperative_verbs
+            + w.constraint_count
+            + w.output_format
+            + w.reference_complexity
+            + w.negation_complexity
+            + w.domain_specificity
+            + w.agentic_task;
+        assert!(
+            (sum - 1.0).abs() < 0.001,
+            "Weights sum to {sum}, expected 1.0"
+        );
     }
 }

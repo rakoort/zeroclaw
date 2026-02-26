@@ -939,6 +939,7 @@ mod tests {
             rules: vec![],
             tiers,
             weights,
+            ..Default::default()
         };
 
         // ── First agent: fresh conversation (no history) ──
