@@ -2376,7 +2376,9 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
             history.push(ChatMessage::assistant(response_text.clone()));
-            return Ok(display_text);
+            return Ok(crate::agent::sanitize::sanitize_model_response(
+                &display_text,
+            ));
         }
 
         // Print any text the LLM produced alongside tool calls (unless silent)
@@ -5593,5 +5595,52 @@ Let me check the result."#;
         let parsed: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
         assert!(parsed.get("reasoning_content").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_loop_sanitizes_model_artifacts_from_gateway_return() {
+        // Provider returns a response containing a <thinking> tag that should be
+        // stripped before the final return value reaches the gateway/webhook caller.
+        let provider = ScriptedProvider::from_text_responses(vec![
+            "<thinking>internal reasoning</thinking>Here is the result.",
+        ]);
+
+        let mut history = vec![
+            ChatMessage::system("test-system"),
+            ChatMessage::user("query"),
+        ];
+        let tools_registry: Vec<Box<dyn Tool>> = Vec::new();
+        let observer = NoopObserver;
+
+        let result = run_tool_call_loop(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock-provider",
+            "mock-model",
+            0.0,
+            true,
+            None,
+            "cli",
+            &crate::config::MultimodalConfig::default(),
+            3,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("tool loop should complete successfully");
+
+        assert!(
+            !result.contains("<thinking>"),
+            "gateway return must not contain <thinking> tags, got: {result}"
+        );
+        assert!(
+            !result.contains("internal reasoning"),
+            "gateway return must not leak internal reasoning, got: {result}"
+        );
+        assert_eq!(result, "Here is the result.");
     }
 }
