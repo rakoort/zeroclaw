@@ -6,6 +6,7 @@ pub mod loop_;
 pub mod memory_loader;
 pub mod planner;
 pub mod prompt;
+pub mod sanitize;
 
 #[cfg(test)]
 mod tests;
