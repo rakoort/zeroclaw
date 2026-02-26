@@ -188,7 +188,8 @@ impl Observer for OtelObserver {
             }
             ObserverEvent::LlmRequest { .. }
             | ObserverEvent::ToolCallStart { .. }
-            | ObserverEvent::TurnComplete => {}
+            | ObserverEvent::TurnComplete
+            | ObserverEvent::ClassificationResult { .. } => {}
             ObserverEvent::LlmResponse {
                 provider,
                 model,

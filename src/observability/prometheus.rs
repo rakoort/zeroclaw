@@ -223,7 +223,8 @@ impl Observer for PrometheusObserver {
             }
             ObserverEvent::ToolCallStart { tool: _ }
             | ObserverEvent::TurnComplete
-            | ObserverEvent::LlmRequest { .. } => {}
+            | ObserverEvent::LlmRequest { .. }
+            | ObserverEvent::ClassificationResult { .. } => {}
             ObserverEvent::ToolCall {
                 tool,
                 duration,

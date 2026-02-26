@@ -37,6 +37,10 @@ pub struct Agent {
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
+    /// Agentic score from the last classification (0.0..1.0).
+    last_agentic_score: f64,
+    /// Confidence from the last classification (0.0..1.0).
+    last_confidence: f64,
 }
 
 pub struct AgentBuilder {
@@ -223,6 +227,8 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
+            last_agentic_score: 0.0,
+            last_confidence: 0.0,
         })
     }
 }
@@ -440,7 +446,7 @@ impl Agent {
         futures_util::future::join_all(futs).await
     }
 
-    fn classify_model(&self, user_message: &str) -> String {
+    fn classify_model(&mut self, user_message: &str) -> String {
         let turn_count = self
             .history
             .iter()
@@ -452,6 +458,10 @@ impl Agent {
             user_message,
             turn_count,
         ) {
+            // Store scoring metadata for downstream planner activation.
+            self.last_agentic_score = decision.agentic_score;
+            self.last_confidence = decision.confidence;
+
             if self.available_hints.contains(&decision.hint) {
                 let resolved_model = self
                     .route_model_by_hint
@@ -463,9 +473,20 @@ impl Agent {
                     hint = decision.hint.as_str(),
                     model = resolved_model,
                     rule_priority = decision.priority,
+                    tier = ?decision.tier,
+                    confidence = decision.confidence,
+                    agentic_score = decision.agentic_score,
+                    signals = ?decision.signals,
                     message_length = user_message.len(),
                     "Classified message route"
                 );
+                self.observer
+                    .record_event(&ObserverEvent::ClassificationResult {
+                        tier: format!("{:?}", decision.tier),
+                        confidence: decision.confidence,
+                        agentic_score: decision.agentic_score,
+                        signals: decision.signals.clone(),
+                    });
                 return format!("hint:{}", decision.hint);
             }
         }
@@ -1025,6 +1046,89 @@ mod tests {
         assert_ne!(
             complex_model, simple_model,
             "Complex analytical message should classify differently from simple greeting"
+        );
+    }
+
+    /// Verify that classify_model stores agentic_score and confidence on the
+    /// Agent struct after weighted classification, so the planner can read them.
+    #[tokio::test]
+    async fn classify_model_stores_agentic_score_and_confidence() {
+        use crate::config::schema::{ClassificationMode, ClassificationTiers};
+        use crate::config::QueryClassificationConfig;
+
+        let tiers = ClassificationTiers {
+            simple: Some("hint:simple".into()),
+            medium: Some("hint:medium".into()),
+            complex: Some("hint:complex".into()),
+            reasoning: Some("hint:reasoning".into()),
+        };
+
+        let config = QueryClassificationConfig {
+            enabled: true,
+            mode: ClassificationMode::Weighted,
+            rules: vec![],
+            tiers,
+            ..Default::default()
+        };
+
+        let provider = Box::new(MockProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some("ok".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        });
+
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+
+        let available = vec![
+            "hint:simple".into(),
+            "hint:medium".into(),
+            "hint:complex".into(),
+            "hint:reasoning".into(),
+        ];
+        let mut route_map = HashMap::new();
+        route_map.insert("hint:simple".into(), "model-simple".into());
+        route_map.insert("hint:medium".into(), "model-medium".into());
+        route_map.insert("hint:complex".into(), "model-complex".into());
+        route_map.insert("hint:reasoning".into(), "model-reasoning".into());
+
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .classification_config(config)
+            .available_hints(available)
+            .route_model_by_hint(route_map)
+            .build()
+            .expect("agent build should succeed");
+
+        // Send an agentic message to get a non-zero agentic score
+        let agentic_msg = "edit the config file, deploy to staging, then verify the endpoint works";
+        let _ = agent.turn(agentic_msg).await.unwrap();
+
+        // last_agentic_score and last_confidence should be set
+        assert!(
+            agent.last_agentic_score > 0.0,
+            "agentic message should produce non-zero agentic_score, got {}",
+            agent.last_agentic_score
+        );
+        assert!(
+            agent.last_confidence > 0.0,
+            "classification should produce non-zero confidence, got {}",
+            agent.last_confidence
         );
     }
 }

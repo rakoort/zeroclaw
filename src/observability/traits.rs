@@ -65,6 +65,13 @@ pub enum ObserverEvent {
         /// Human-readable error description. Must not contain secrets or tokens.
         message: String,
     },
+    /// Result of query classification scoring.
+    ClassificationResult {
+        tier: String,
+        confidence: f64,
+        agentic_score: f64,
+        signals: Vec<String>,
+    },
 }
 
 /// Numeric metrics emitted by the agent runtime.
@@ -196,5 +203,17 @@ mod tests {
 
         assert!(matches!(cloned_event, ObserverEvent::ToolCall { .. }));
         assert!(matches!(cloned_metric, ObserverMetric::RequestLatency(_)));
+    }
+
+    #[test]
+    fn classification_result_event_is_cloneable() {
+        let event = ObserverEvent::ClassificationResult {
+            tier: "medium".into(),
+            confidence: 0.85,
+            agentic_score: 0.3,
+            signals: vec!["code".into(), "technical".into()],
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::ClassificationResult { .. }));
     }
 }

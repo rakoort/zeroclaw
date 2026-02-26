@@ -83,6 +83,20 @@ impl Observer for LogObserver {
                     "llm.response"
                 );
             }
+            ObserverEvent::ClassificationResult {
+                tier,
+                confidence,
+                agentic_score,
+                signals,
+            } => {
+                info!(
+                    tier = %tier,
+                    confidence = confidence,
+                    agentic_score = agentic_score,
+                    signals = ?signals,
+                    "classification.result"
+                );
+            }
         }
     }
 
