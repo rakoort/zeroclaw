@@ -88,6 +88,70 @@ impl RouterProvider {
         // Not a hint or hint not found — use default provider with the model as-is
         (self.default_index, model.to_string())
     }
+
+    /// Resolve a hint to an ordered list of (provider_index, model, context_window).
+    ///
+    /// Returns the primary model first, followed by fallbacks in order.
+    pub fn resolve_with_fallbacks(
+        &self,
+        model: &str,
+        fallbacks: &[crate::config::schema::FallbackModelConfig],
+    ) -> Vec<(usize, String, Option<usize>)> {
+        let (primary_idx, primary_model) = self.resolve(model);
+        let mut chain = vec![(primary_idx, primary_model, None)];
+
+        // Build provider name -> index lookup
+        let name_to_index: std::collections::HashMap<&str, usize> = self
+            .providers
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _))| (name.as_str(), i))
+            .collect();
+
+        for fb in fallbacks {
+            if let Some(&idx) = name_to_index.get(fb.provider.as_str()) {
+                chain.push((idx, fb.model.clone(), fb.context_window));
+            } else {
+                tracing::warn!(
+                    provider = fb.provider.as_str(),
+                    model = fb.model.as_str(),
+                    "Fallback references unknown provider, skipping"
+                );
+            }
+        }
+
+        chain
+    }
+
+    /// Filter a fallback chain by estimated token count.
+    ///
+    /// Excludes models whose context_window is less than estimated_tokens * 1.1.
+    /// Models with `None` context_window are always included (unknown = assume capable).
+    /// If all models would be filtered out, returns the full chain unfiltered.
+    pub fn filter_by_context(
+        chain: &[(usize, String, Option<usize>)],
+        estimated_tokens: usize,
+    ) -> Vec<(usize, String)> {
+        let threshold = estimated_tokens + estimated_tokens / 10;
+        let filtered: Vec<(usize, String)> = chain
+            .iter()
+            .filter(|(_, _, ctx)| match ctx {
+                Some(window) => *window >= threshold,
+                None => true, // unknown context window = include
+            })
+            .map(|(idx, model, _)| (*idx, model.clone()))
+            .collect();
+
+        if filtered.is_empty() {
+            // All filtered out — return full chain (best effort)
+            chain
+                .iter()
+                .map(|(idx, model, _)| (*idx, model.clone()))
+                .collect()
+        } else {
+            filtered
+        }
+    }
 }
 
 #[async_trait]
@@ -460,5 +524,78 @@ mod tests {
         assert_eq!(mocks[1].call_count(), 1);
         assert_eq!(mocks[1].last_model(), "claude-opus");
         assert_eq!(mocks[0].call_count(), 0);
+    }
+
+    #[test]
+    fn resolve_with_fallbacks_returns_ordered_chain() {
+        let mock_primary = Arc::new(MockProvider::new("primary-response"));
+        let mock_fallback = Arc::new(MockProvider::new("fallback-response"));
+
+        let routes = vec![(
+            "fast".to_string(),
+            Route {
+                provider_name: "primary".to_string(),
+                model: "llama-3-70b".to_string(),
+            },
+        )];
+
+        let fallbacks = vec![crate::config::schema::FallbackModelConfig {
+            provider: "fallback".to_string(),
+            model: "deepseek-chat".to_string(),
+            context_window: Some(131_072),
+        }];
+
+        let router = RouterProvider::new(
+            vec![
+                (
+                    "primary".into(),
+                    Box::new(Arc::clone(&mock_primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "fallback".into(),
+                    Box::new(Arc::clone(&mock_fallback)) as Box<dyn Provider>,
+                ),
+            ],
+            routes,
+            "llama-3-70b".to_string(),
+        );
+
+        let chain = router.resolve_with_fallbacks("hint:fast", &fallbacks);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].1, "llama-3-70b");
+        assert_eq!(chain[1].1, "deepseek-chat");
+    }
+
+    #[test]
+    fn context_filter_removes_small_context_models() {
+        let chain = vec![
+            (0, "small-model".to_string(), Some(128_000_usize)),
+            (1, "large-model".to_string(), Some(1_000_000)),
+        ];
+        let filtered = RouterProvider::filter_by_context(&chain, 200_000);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1, "large-model");
+    }
+
+    #[test]
+    fn context_filter_returns_all_when_all_filtered_out() {
+        let chain = vec![
+            (0, "small-model".to_string(), Some(32_000_usize)),
+            (1, "medium-model".to_string(), Some(64_000)),
+        ];
+        // 200k estimated tokens -- both models too small, so keep all
+        let filtered = RouterProvider::filter_by_context(&chain, 200_000);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn context_filter_includes_none_context_window() {
+        let chain = vec![
+            (0, "unknown-model".to_string(), None),
+            (1, "large-model".to_string(), Some(1_000_000)),
+        ];
+        let filtered = RouterProvider::filter_by_context(&chain, 200_000);
+        // None context_window means unknown -- include it
+        assert_eq!(filtered.len(), 2);
     }
 }
