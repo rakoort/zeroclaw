@@ -647,6 +647,8 @@ impl Channel for MatrixChannel {
                     thread_ts: None,
                     thread_starter_body: None,
                     thread_history: None,
+                    triage_required: false,
+                    ack_reaction_ts: None,
                 };
 
                 let _ = tx.send(msg).await;

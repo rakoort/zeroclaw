@@ -28,6 +28,7 @@ fn channel_message_sender_field_holds_platform_user_id() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
 
     assert_eq!(msg.sender, "123456789");
@@ -53,6 +54,7 @@ fn channel_message_reply_target_distinct_from_sender() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
 
     assert_ne!(
@@ -76,6 +78,7 @@ fn channel_message_fields_not_swapped() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
 
     assert_eq!(
@@ -105,6 +108,7 @@ fn channel_message_preserves_all_fields_on_clone() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
 
     let cloned = original.clone();
@@ -201,6 +205,7 @@ impl Channel for CapturingChannel {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         })
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -351,6 +356,7 @@ fn conversation_history_key_is_per_thread_not_per_sender() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
     let msg_bob = ChannelMessage {
         id: "2".into(),
@@ -363,6 +369,7 @@ fn conversation_history_key_is_per_thread_not_per_sender() {
         thread_starter_body: None,
         thread_history: None,
         triage_required: false,
+        ack_reaction_ts: None,
     };
     let key_alice = zeroclaw::channels::conversation_history_key(&msg_alice);
     let key_bob = zeroclaw::channels::conversation_history_key(&msg_bob);

@@ -388,6 +388,8 @@ impl Channel for WhatsAppWebChannel {
                                         thread_ts: None,
                                         thread_starter_body: None,
                                         thread_history: None,
+                                        triage_required: false,
+                                        ack_reaction_ts: None,
                                     })
                                     .await
                                 {

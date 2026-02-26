@@ -1090,7 +1090,11 @@ async fn handle_runtime_command_if_needed(
     };
 
     if let Err(err) = channel
-        .send(&SendMessage::new(response, &msg.reply_target).in_thread(msg.thread_ts.clone()))
+        .send(
+            &SendMessage::new(response, &msg.reply_target)
+                .in_thread(msg.thread_ts.clone())
+                .with_ack_reaction(msg.ack_reaction_ts.clone()),
+        )
         .await
     {
         tracing::warn!(
@@ -1649,7 +1653,8 @@ async fn process_channel_message(
                 let _ = channel
                     .send(
                         &SendMessage::new(message, &msg.reply_target)
-                            .in_thread(msg.thread_ts.clone()),
+                            .in_thread(msg.thread_ts.clone())
+                            .with_ack_reaction(msg.ack_reaction_ts.clone()),
                     )
                     .await;
             }
@@ -1745,7 +1750,9 @@ async fn process_channel_message(
         if let Some(channel) = target_channel.as_ref() {
             match channel
                 .send_draft(
-                    &SendMessage::new("...", &msg.reply_target).in_thread(msg.thread_ts.clone()),
+                    &SendMessage::new("...", &msg.reply_target)
+                        .in_thread(msg.thread_ts.clone())
+                        .with_ack_reaction(msg.ack_reaction_ts.clone()),
                 )
                 .await
             {
@@ -2006,14 +2013,16 @@ async fn process_channel_message(
                         let _ = channel
                             .send(
                                 &SendMessage::new(&delivered_response, &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
+                                    .in_thread(msg.thread_ts.clone())
+                                    .with_ack_reaction(msg.ack_reaction_ts.clone()),
                             )
                             .await;
                     }
                 } else if let Err(e) = channel
                     .send(
                         &SendMessage::new(delivered_response, &msg.reply_target)
-                            .in_thread(msg.thread_ts.clone()),
+                            .in_thread(msg.thread_ts.clone())
+                            .with_ack_reaction(msg.ack_reaction_ts.clone()),
                     )
                     .await
                 {
@@ -2084,7 +2093,8 @@ async fn process_channel_message(
                         let _ = channel
                             .send(
                                 &SendMessage::new(error_text, &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
+                                    .in_thread(msg.thread_ts.clone())
+                                    .with_ack_reaction(msg.ack_reaction_ts.clone()),
                             )
                             .await;
                     }
@@ -2132,7 +2142,8 @@ async fn process_channel_message(
                         let _ = channel
                             .send(
                                 &SendMessage::new(format!("⚠️ Error: {e}"), &msg.reply_target)
-                                    .in_thread(msg.thread_ts.clone()),
+                                    .in_thread(msg.thread_ts.clone())
+                                    .with_ack_reaction(msg.ack_reaction_ts.clone()),
                             )
                             .await;
                     }
@@ -2180,7 +2191,8 @@ async fn process_channel_message(
                     let _ = channel
                         .send(
                             &SendMessage::new(error_text, &msg.reply_target)
-                                .in_thread(msg.thread_ts.clone()),
+                                .in_thread(msg.thread_ts.clone())
+                                .with_ack_reaction(msg.ack_reaction_ts.clone()),
                         )
                         .await;
                 }
@@ -4232,6 +4244,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4295,6 +4308,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4372,6 +4386,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4435,6 +4450,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4507,6 +4523,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4600,6 +4617,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4675,6 +4693,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4765,6 +4784,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4840,6 +4860,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -4904,6 +4925,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -5078,6 +5100,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         })
         .await
         .unwrap();
@@ -5092,6 +5115,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         })
         .await
         .unwrap();
@@ -5166,6 +5190,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             })
             .await
             .unwrap();
@@ -5181,6 +5206,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             })
             .await
             .unwrap();
@@ -5265,6 +5291,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             })
             .await
             .unwrap();
@@ -5280,6 +5307,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             })
             .await
             .unwrap();
@@ -5346,6 +5374,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -5409,6 +5438,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -5788,6 +5818,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
 
         assert_eq!(conversation_memory_key(&msg), "slack_U123_msg_abc123");
@@ -5806,6 +5837,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -5818,6 +5850,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
 
         assert_ne!(
@@ -5842,6 +5875,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -5854,6 +5888,7 @@ BTC is currently around $65,000 based on latest tool output."#
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
 
         mem.store(
@@ -5944,6 +5979,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -5962,6 +5998,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -6036,6 +6073,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -6125,6 +6163,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -6679,6 +6718,7 @@ This is an example JSON object for profile settings."#;
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -6748,6 +6788,7 @@ This is an example JSON object for profile settings."#;
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )
@@ -6766,6 +6807,7 @@ This is an example JSON object for profile settings."#;
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             },
             CancellationToken::new(),
         )

@@ -51,6 +51,7 @@ impl Channel for CliChannel {
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             };
 
             if tx.send(msg).await.is_err() {
@@ -119,6 +120,7 @@ mod tests {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
         assert_eq!(msg.id, "test-id");
         assert_eq!(msg.sender, "user");
@@ -141,6 +143,7 @@ mod tests {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
         let cloned = msg.clone();
         assert_eq!(cloned.id, msg.id);

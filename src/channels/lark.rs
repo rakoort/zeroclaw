@@ -790,6 +790,8 @@ impl LarkChannel {
                         thread_ts: None,
                         thread_starter_body: None,
                         thread_history: None,
+                        triage_required: false,
+                        ack_reaction_ts: None,
                     };
 
                     tracing::debug!("Lark WS: message in {}", lark_msg.chat_id);
@@ -1089,6 +1091,8 @@ impl LarkChannel {
             thread_ts: None,
             thread_starter_body: None,
             thread_history: None,
+            triage_required: false,
+            ack_reaction_ts: None,
         });
 
         messages

@@ -17,6 +17,9 @@ pub struct ChannelMessage {
     /// Whether this message requires LLM triage before responding.
     /// Set by channels that detect thread participation without explicit @mention.
     pub triage_required: bool,
+    /// Original message timestamp for ack reaction removal (Slack-specific).
+    /// When set, the reply's SendMessage should carry this for reaction cleanup.
+    pub ack_reaction_ts: Option<String>,
 }
 
 /// Message to send through a channel
@@ -191,6 +194,7 @@ mod tests {
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -210,6 +214,7 @@ mod tests {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
 
         let cloned = message.clone();
@@ -279,6 +284,7 @@ mod tests {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         };
         assert!(!message.triage_required);
     }

@@ -49,8 +49,7 @@ async fn slack_api_post(
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok());
-            let wait_secs =
-                parse_retry_after_secs(retry_after).unwrap_or(SLACK_RETRY_DEFAULT_SECS);
+            let wait_secs = parse_retry_after_secs(retry_after).unwrap_or(SLACK_RETRY_DEFAULT_SECS);
             let jitter = rand::random::<u64>() % SLACK_RETRY_JITTER_MS;
             tracing::warn!(
                 "Slack rate limited on {url} (attempt {}/{SLACK_RETRY_MAX}). Retry-After: {wait_secs}s",
@@ -116,8 +115,7 @@ async fn slack_api_get(
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok());
-            let wait_secs =
-                parse_retry_after_secs(retry_after).unwrap_or(SLACK_RETRY_DEFAULT_SECS);
+            let wait_secs = parse_retry_after_secs(retry_after).unwrap_or(SLACK_RETRY_DEFAULT_SECS);
             let jitter = rand::random::<u64>() % SLACK_RETRY_JITTER_MS;
             tracing::warn!(
                 "Slack rate limited on {url} (attempt {}/{SLACK_RETRY_MAX}). Retry-After: {wait_secs}s",
@@ -325,9 +323,7 @@ fn parse_socket_event(envelope: &serde_json::Value) -> Option<(String, serde_jso
 
     let envelope_id = envelope.get("envelope_id")?.as_str()?.to_string();
 
-    let event = envelope
-        .get("payload")
-        .and_then(|p| p.get("event"))?;
+    let event = envelope.get("payload").and_then(|p| p.get("event"))?;
 
     let event_type = event.get("type")?.as_str()?;
     if event_type != "message" {
@@ -550,7 +546,6 @@ impl SlackChannel {
     }
 }
 
-
 const SLACK_MESSAGE_CHUNK_LIMIT: usize = 4000;
 
 /// Split a message into chunks at paragraph boundaries.
@@ -590,7 +585,6 @@ impl Channel for SlackChannel {
     fn name(&self) -> &str {
         "slack"
     }
-
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let chunks = chunk_message(&message.content, SLACK_MESSAGE_CHUNK_LIMIT);
@@ -648,10 +642,7 @@ impl Channel for SlackChannel {
         Ok(())
     }
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        let bot_user_id = self
-            .get_bot_user_id()
-            .await
-            .unwrap_or_default();
+        let bot_user_id = self.get_bot_user_id().await.unwrap_or_default();
 
         if bot_user_id.is_empty() {
             tracing::warn!("Slack auth.test failed — bot_user_id unknown; self-message filtering may miss own messages");
@@ -713,10 +704,7 @@ impl Channel for SlackChannel {
                 // Acknowledge every envelope that carries an envelope_id
                 if let Some(eid) = envelope.get("envelope_id").and_then(|v| v.as_str()) {
                     let ack = serde_json::json!({ "envelope_id": eid });
-                    if let Err(e) = sink
-                        .send(WsMessage::Text(ack.to_string().into()))
-                        .await
-                    {
+                    if let Err(e) = sink.send(WsMessage::Text(ack.to_string().into())).await {
                         tracing::warn!("Slack envelope ack failed: {e}");
                         break;
                     }
@@ -756,10 +744,7 @@ impl Channel for SlackChannel {
                     }
                 }
 
-                let ts = event
-                    .get("ts")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default();
+                let ts = event.get("ts").and_then(|t| t.as_str()).unwrap_or_default();
                 let user = event
                     .get("user")
                     .and_then(|u| u.as_str())
@@ -793,9 +778,7 @@ impl Channel for SlackChannel {
                     .split('.')
                     .next()
                     .and_then(|s| s.parse::<i64>().ok())
-                    .and_then(|epoch| {
-                        chrono::DateTime::from_timestamp(epoch, 0)
-                    })
+                    .and_then(|epoch| chrono::DateTime::from_timestamp(epoch, 0))
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                     .unwrap_or_else(|| ts.to_string());
 
@@ -887,6 +870,7 @@ impl Channel for SlackChannel {
                     thread_starter_body,
                     thread_history,
                     triage_required,
+                    ack_reaction_ts: Some(ts.to_string()),
                 };
 
                 if tx.send(channel_message).await.is_err() {
@@ -930,7 +914,12 @@ mod tests {
 
     #[test]
     fn slack_channel_with_channel_id() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), Some("C12345".into()), vec![]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            Some("C12345".into()),
+            vec![],
+        );
         assert_eq!(ch.channel_id, Some("C12345".to_string()));
     }
 
@@ -956,13 +945,23 @@ mod tests {
 
     #[test]
     fn wildcard_allows_everyone() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["*".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["*".into()],
+        );
         assert!(ch.is_user_allowed("U12345"));
     }
 
     #[test]
     fn specific_allowlist_filters() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into(), "U222".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["U111".into(), "U222".into()],
+        );
         assert!(ch.is_user_allowed("U111"));
         assert!(ch.is_user_allowed("U222"));
         assert!(!ch.is_user_allowed("U333"));
@@ -970,27 +969,47 @@ mod tests {
 
     #[test]
     fn allowlist_exact_match_not_substring() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["U111".into()],
+        );
         assert!(!ch.is_user_allowed("U1111"));
         assert!(!ch.is_user_allowed("U11"));
     }
 
     #[test]
     fn allowlist_empty_user_id() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["U111".into()],
+        );
         assert!(!ch.is_user_allowed(""));
     }
 
     #[test]
     fn allowlist_case_sensitive() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["U111".into()],
+        );
         assert!(ch.is_user_allowed("U111"));
         assert!(!ch.is_user_allowed("u111"));
     }
 
     #[test]
     fn allowlist_wildcard_and_specific() {
-        let ch = SlackChannel::new("xoxb-fake".into(), "xapp-fake".into(), None, vec!["U111".into(), "*".into()]);
+        let ch = SlackChannel::new(
+            "xoxb-fake".into(),
+            "xapp-fake".into(),
+            None,
+            vec!["U111".into(), "*".into()],
+        );
         assert!(ch.is_user_allowed("U111"));
         assert!(ch.is_user_allowed("anyone"));
     }
@@ -1204,20 +1223,35 @@ mod tests {
 
     #[test]
     fn participated_threads_empty_on_init() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         assert!(channel.participated_threads().is_empty());
     }
 
     #[test]
     fn record_participation_tracks_thread() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         channel.record_participation("1234.5678");
         assert!(channel.has_participated("1234.5678"));
     }
 
     #[test]
     fn has_participated_returns_false_for_unknown_thread() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         assert!(!channel.has_participated("unknown.thread"));
     }
 
@@ -1227,7 +1261,12 @@ mod tests {
     fn participated_thread_message_sets_triage_required() {
         // When bot has participated in a thread, messages in that thread
         // without explicit @mention should set triage_required = true
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         channel.record_participation("1234.5678");
 
         // The message is in a participated thread but doesn't @mention the bot
@@ -1243,7 +1282,12 @@ mod tests {
 
     #[test]
     fn explicit_mention_in_participated_thread_skips_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         channel.record_participation("1234.5678");
 
         let text = "<@U_BOT> what do you think?";
@@ -1255,7 +1299,12 @@ mod tests {
 
     #[test]
     fn non_participated_thread_message_is_buffered() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         // Bot has NOT participated in thread "9999.0000"
 
         let text = "just chatting";
@@ -1271,7 +1320,12 @@ mod tests {
 
     #[test]
     fn mention_gate_explicit_mention_returns_cleaned_text() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         let result =
             channel.resolve_mention_gate("<@U_BOT> what do you think?", "U_BOT", Some("1234.5678"));
         assert_eq!(
@@ -1282,7 +1336,12 @@ mod tests {
 
     #[test]
     fn mention_gate_explicit_mention_in_participated_thread_no_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         channel.record_participation("1234.5678");
 
         let result = channel.resolve_mention_gate("<@U_BOT> help me", "U_BOT", Some("1234.5678"));
@@ -1295,7 +1354,12 @@ mod tests {
 
     #[test]
     fn mention_gate_participated_thread_without_mention_returns_triage() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         channel.record_participation("1234.5678");
 
         let result = channel.resolve_mention_gate(
@@ -1312,7 +1376,12 @@ mod tests {
 
     #[test]
     fn mention_gate_non_participated_thread_buffers() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
         // Bot has NOT participated in thread "9999.0000"
 
         let result = channel.resolve_mention_gate("just chatting", "U_BOT", Some("9999.0000"));
@@ -1321,7 +1390,12 @@ mod tests {
 
     #[test]
     fn mention_gate_no_thread_no_mention_buffers() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()]);
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
 
         let result = channel.resolve_mention_gate("random message", "U_BOT", None);
         assert_eq!(result, MentionGateResult::Buffer);
@@ -1329,8 +1403,13 @@ mod tests {
 
     #[test]
     fn mention_gate_regex_mention_returns_explicit() {
-        let channel = SlackChannel::new("xoxb-test".into(), "xapp-test".into(), None, vec!["*".into()])
-            .with_mention_config(true, Some(r"(?i)\brain\b".into()));
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        )
+        .with_mention_config(true, Some(r"(?i)\brain\b".into()));
 
         let result =
             channel.resolve_mention_gate("Rain what do you think?", "U_BOT", Some("1234.5678"));
@@ -1513,7 +1592,10 @@ mod tests {
             "envelope_id": "env-003"
         });
         let result = parse_socket_event(&envelope);
-        assert!(result.is_none(), "should return None when payload is missing");
+        assert!(
+            result.is_none(),
+            "should return None when payload is missing"
+        );
     }
 
     #[test]
@@ -1549,5 +1631,4 @@ mod tests {
         // d is still tracked
         assert!(!dedup.is_new("d"), "'d' should NOT be new");
     }
-
 }

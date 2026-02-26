@@ -463,6 +463,7 @@ impl EmailChannel {
                 thread_starter_body: None,
                 thread_history: None,
                 triage_required: false,
+                ack_reaction_ts: None,
             };
 
             if tx.send(msg).await.is_err() {

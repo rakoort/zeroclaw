@@ -216,6 +216,7 @@ impl LinqChannel {
             thread_starter_body: None,
             thread_history: None,
             triage_required: false,
+            ack_reaction_ts: None,
         });
 
         messages
