@@ -259,75 +259,91 @@ pub async fn plan_then_execute(
     let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
 
     for group in &groups {
-        for action in group {
-            let executor_system = build_executor_prompt(action, &accumulated);
-            let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
+        // Snapshot accumulated results before this group so all actions in the
+        // group see the same prior-group context (they are independent).
+        let group_accumulated = accumulated.clone();
 
-            // Build the excluded tools list (inverse of wanted) when action specifies tools.
-            let excluded_tools: Vec<String> = if action.tools.is_empty() {
-                Vec::new()
-            } else {
-                all_tool_names
-                    .iter()
-                    .filter(|name| !wanted_tools.contains(name))
-                    .cloned()
-                    .collect()
-            };
+        let futures: Vec<_> = group
+            .iter()
+            .map(|action| {
+                let executor_system = build_executor_prompt(action, &group_accumulated);
+                let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
 
-            // Build messages for this action
-            let mut action_messages = vec![
-                ChatMessage::system(executor_system),
-                ChatMessage::user(action.description.clone()),
-            ];
+                let excluded_tools: Vec<String> = if action.tools.is_empty() {
+                    Vec::new()
+                } else {
+                    all_tool_names
+                        .iter()
+                        .filter(|name| !wanted_tools.contains(name))
+                        .cloned()
+                        .collect()
+                };
 
-            let result = crate::agent::loop_::run_tool_call_loop(
-                provider,
-                &mut action_messages,
-                tools_registry,
-                observer,
-                provider_name,
-                executor_model,
-                temperature,
-                true, // silent -- suppress stdout during executor
-                None, // no approval manager
-                "",   // channel_name
-                &crate::config::MultimodalConfig::default(),
-                max_tool_iterations.min(5),
-                None, // no cancellation token
-                None, // no delta sender
-                None, // no hooks
-                &excluded_tools,
-            )
-            .await;
+                let mut action_messages = vec![
+                    ChatMessage::system(executor_system),
+                    ChatMessage::user(action.description.clone()),
+                ];
 
-            match result {
-                Ok(output) => {
-                    let action_result = ActionResult {
-                        action_type: action.action_type.clone(),
-                        group: action.group,
-                        success: true,
-                        summary: output.clone(),
-                        raw_output: output,
-                    };
-                    accumulated.push(action_result.to_accumulated_line());
-                    last_output = action_result.summary.clone();
+                // Clone action metadata for the async block so we don't hold
+                // a borrow on `group` across the await point.
+                let action_type = action.action_type.clone();
+                let action_group = action.group;
+
+                async move {
+                    let result = crate::agent::loop_::run_tool_call_loop(
+                        provider,
+                        &mut action_messages,
+                        tools_registry,
+                        observer,
+                        provider_name,
+                        executor_model,
+                        temperature,
+                        true, // silent -- suppress stdout during executor
+                        None, // no approval manager
+                        "",   // channel_name
+                        &crate::config::MultimodalConfig::default(),
+                        max_tool_iterations.min(5),
+                        None, // no cancellation token
+                        None, // no delta sender
+                        None, // no hooks
+                        &excluded_tools,
+                    )
+                    .await;
+
+                    match result {
+                        Ok(output) => ActionResult {
+                            action_type,
+                            group: action_group,
+                            success: true,
+                            summary: output.clone(),
+                            raw_output: output,
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                action_type = action_type.as_str(),
+                                group = action_group,
+                                "Action execution failed: {e}"
+                            );
+                            ActionResult {
+                                action_type,
+                                group: action_group,
+                                success: false,
+                                summary: e.to_string(),
+                                raw_output: String::new(),
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        action_type = action.action_type.as_str(),
-                        group = action.group,
-                        "Action execution failed: {e}"
-                    );
-                    let action_result = ActionResult {
-                        action_type: action.action_type.clone(),
-                        group: action.group,
-                        success: false,
-                        summary: e.to_string(),
-                        raw_output: String::new(),
-                    };
-                    accumulated.push(action_result.to_accumulated_line());
-                }
-            }
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(futures).await;
+
+        for result in &results {
+            accumulated.push(result.to_accumulated_line());
+        }
+        if let Some(last_success) = results.iter().rev().find(|r| r.success) {
+            last_output = last_success.summary.clone();
         }
     }
 
