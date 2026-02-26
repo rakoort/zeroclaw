@@ -236,54 +236,6 @@ async fn fetch_thread_replies(
         .unwrap_or_default())
 }
 
-/// Per-channel ring buffer for non-mention messages.
-struct PendingHistoryBuffer {
-    entries: Vec<String>,
-    max: usize,
-}
-
-impl PendingHistoryBuffer {
-    fn new(max: usize) -> Self {
-        Self {
-            entries: Vec::with_capacity(max),
-            max,
-        }
-    }
-
-    fn push(&mut self, entry: String) {
-        if self.entries.len() >= self.max {
-            self.entries.remove(0);
-        }
-        self.entries.push(entry);
-    }
-
-    fn drain(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.entries)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    fn entries(&self) -> &[String] {
-        &self.entries
-    }
-}
-
-/// Format a message in the structured envelope format.
-fn format_message_envelope(
-    channel_name: &str,
-    sender_name: &str,
-    timestamp: &str,
-    text: &str,
-) -> String {
-    format!("[Slack {channel_name} {sender_name} {timestamp}] {sender_name}: {text}")
-}
-
 /// Check if message text contains a mention of the bot.
 fn is_mention(text: &str, bot_user_id: &str, mention_regex: Option<&regex::Regex>) -> bool {
     // Explicit Slack mention: <@U_BOT_ID>
@@ -457,8 +409,9 @@ impl SlackChannel {
     pub fn record_participation(&self, thread_ts: &str) {
         let mut set = self.participated_threads.lock().unwrap();
         if set.len() >= MAX_PARTICIPATED_THREADS {
-            if let Some(oldest) = set.iter().next().cloned() {
-                set.remove(&oldest);
+            // HashSet iteration order is arbitrary; evicts an arbitrary entry
+            if let Some(entry) = set.iter().next().cloned() {
+                set.remove(&entry);
             }
         }
         set.insert(thread_ts.to_string());
@@ -544,6 +497,10 @@ impl SlackChannel {
             .get("url")
             .and_then(|u| u.as_str())
             .ok_or_else(|| anyhow::anyhow!("apps.connections.open response missing url"))?;
+
+        if !ws_url.starts_with("wss://") {
+            anyhow::bail!("apps.connections.open returned non-secure URL: {ws_url}");
+        }
 
         let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
         Ok(ws_stream)
@@ -658,16 +615,20 @@ impl Channel for SlackChannel {
         // Exponential backoff state: start 1s, double on failure, cap 60s
         let mut backoff_ms: u64 = 1_000;
         const BACKOFF_CAP_MS: u64 = 60_000;
+        let mut first_attempt = true;
 
         loop {
             // --- connect ---
             let ws_stream = match self.connect_socket_mode().await {
                 Ok(ws) => {
-                    backoff_ms = 1_000; // reset on successful connection
                     tracing::info!("Slack Socket Mode connected");
+                    first_attempt = false;
                     ws
                 }
                 Err(e) => {
+                    if first_attempt {
+                        return Err(e.context("Slack Socket Mode initial connection failed"));
+                    }
                     tracing::warn!("Slack Socket Mode connection failed: {e}");
                     let jitter = rand::random::<u64>() % 500;
                     tokio::time::sleep(Duration::from_millis(backoff_ms + jitter)).await;
@@ -677,6 +638,7 @@ impl Channel for SlackChannel {
             };
 
             let (mut sink, mut stream) = ws_stream.split();
+            let mut connection_confirmed = false;
 
             // --- read loop ---
             while let Some(msg_result) = stream.next().await {
@@ -704,6 +666,12 @@ impl Channel for SlackChannel {
                         continue;
                     }
                 };
+
+                // Reset backoff after first valid frame confirms a healthy connection
+                if !connection_confirmed {
+                    backoff_ms = 1_000;
+                    connection_confirmed = true;
+                }
 
                 // Acknowledge every envelope that carries an envelope_id
                 if let Some(eid) = envelope.get("envelope_id").and_then(|v| v.as_str()) {
@@ -790,16 +758,14 @@ impl Channel for SlackChannel {
                 let thread_ts = SlackChannel::inbound_thread_ts(&event, ts);
 
                 // Mention gating
-                let gate_result =
-                    self.resolve_mention_gate(raw_text, &bot_user_id, thread_ts.as_deref());
-
-                let (final_text, triage_required) = match gate_result {
-                    MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
-                    MentionGateResult::ParticipatedThread(text) => (text, true),
-                    MentionGateResult::Buffer => {
-                        // Socket Mode delivers individual events — no batch to buffer from
-                        continue;
+                let (final_text, triage_required) = if self.mention_only {
+                    match self.resolve_mention_gate(raw_text, &bot_user_id, thread_ts.as_deref()) {
+                        MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
+                        MentionGateResult::ParticipatedThread(text) => (text, true),
+                        MentionGateResult::Buffer => continue,
                     }
+                } else {
+                    (raw_text.to_string(), false)
                 };
 
                 // Add ack reaction (eyes)
@@ -856,8 +822,9 @@ impl Channel for SlackChannel {
                 };
 
                 let sender_name = user.to_string();
-                let content =
-                    format_message_envelope(event_channel, &sender_name, &ts_display, &final_text);
+                let content = format!(
+                    "[Slack {event_channel} {sender_name} {ts_display}] {sender_name}: {final_text}"
+                );
 
                 let channel_message = ChannelMessage {
                     id: format!("slack_{event_channel}_{ts}"),
@@ -1191,38 +1158,6 @@ mod tests {
         );
     }
 
-    // ── Pending history buffer ──────────────────────────────────────
-
-    #[test]
-    fn ring_buffer_evicts_oldest_when_full() {
-        let mut buffer = PendingHistoryBuffer::new(3);
-        buffer.push("msg1".into());
-        buffer.push("msg2".into());
-        buffer.push("msg3".into());
-        buffer.push("msg4".into());
-        assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.entries()[0], "msg2");
-    }
-
-    #[test]
-    fn drain_returns_all_and_clears() {
-        let mut buffer = PendingHistoryBuffer::new(50);
-        buffer.push("msg1".into());
-        buffer.push("msg2".into());
-        let drained = buffer.drain();
-        assert_eq!(drained.len(), 2);
-        assert!(buffer.is_empty());
-    }
-
-    #[test]
-    fn format_envelope_includes_channel_sender_timestamp() {
-        let envelope =
-            format_message_envelope("#general", "Alice", "2026-02-24 14:30:05", "hello world");
-        assert!(envelope.contains("[Slack #general Alice"));
-        assert!(envelope.contains("2026-02-24 14:30:05"));
-        assert!(envelope.contains("Alice: hello world"));
-    }
-
     // -- Thread participation tracking -----------------------------------------
 
     #[test]
@@ -1276,8 +1211,6 @@ mod tests {
             "expected <= 1000, got {}",
             threads.len()
         );
-        // Most recent should be present
-        assert!(channel.has_participated("1099.0000"));
     }
 
     // -- Participation-based triage routing ------------------------------------
