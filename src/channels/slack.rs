@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+
 const SLACK_RETRY_MAX: u32 = 3;
 const SLACK_RETRY_DEFAULT_SECS: u64 = 5;
 const SLACK_RETRY_JITTER_MS: u64 = 500;
@@ -365,7 +368,7 @@ impl EnvelopeDedup {
     }
 }
 
-/// Slack channel — polls conversations.history via Web API
+/// Slack channel — receives events via Socket Mode WebSocket.
 pub struct SlackChannel {
     bot_token: String,
     app_token: String,
@@ -507,6 +510,44 @@ impl SlackChannel {
 
         MentionGateResult::Buffer
     }
+
+    /// Open a Socket Mode WebSocket connection.
+    ///
+    /// Posts to `apps.connections.open` with the app-level token to obtain a
+    /// single-use WebSocket URL, then connects via `tokio_tungstenite`.
+    async fn connect_socket_mode(
+        &self,
+    ) -> anyhow::Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
+        let resp = self
+            .client
+            .post("https://slack.com/api/apps.connections.open")
+            .bearer_auth(&self.app_token)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .send()
+            .await?;
+
+        let body: serde_json::Value = resp.json().await?;
+
+        if body.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = body
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            anyhow::bail!("apps.connections.open failed: {err}");
+        }
+
+        let ws_url = body
+            .get("url")
+            .and_then(|u| u.as_str())
+            .ok_or_else(|| anyhow::anyhow!("apps.connections.open response missing url"))?;
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
+        Ok(ws_stream)
+    }
 }
 
 
@@ -606,9 +647,263 @@ impl Channel for SlackChannel {
 
         Ok(())
     }
-    async fn listen(&self, _tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        // TODO(task-8): replace with Socket Mode event loop
-        anyhow::bail!("Slack listen() not yet implemented — Socket Mode migration in progress")
+    async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+        let bot_user_id = self
+            .get_bot_user_id()
+            .await
+            .unwrap_or_default();
+
+        if bot_user_id.is_empty() {
+            tracing::warn!("Slack auth.test failed — bot_user_id unknown; self-message filtering may miss own messages");
+        }
+
+        let scoped_channel = self.configured_channel_id();
+        let mut dedup = EnvelopeDedup::new(100);
+
+        // Exponential backoff state: start 1s, double on failure, cap 60s
+        let mut backoff_ms: u64 = 1_000;
+        const BACKOFF_CAP_MS: u64 = 60_000;
+
+        loop {
+            // --- connect ---
+            let ws_stream = match self.connect_socket_mode().await {
+                Ok(ws) => {
+                    backoff_ms = 1_000; // reset on successful connection
+                    tracing::info!("Slack Socket Mode connected");
+                    ws
+                }
+                Err(e) => {
+                    tracing::warn!("Slack Socket Mode connection failed: {e}");
+                    let jitter = rand::random::<u64>() % 500;
+                    tokio::time::sleep(Duration::from_millis(backoff_ms + jitter)).await;
+                    backoff_ms = (backoff_ms * 2).min(BACKOFF_CAP_MS);
+                    continue;
+                }
+            };
+
+            let (mut sink, mut stream) = ws_stream.split();
+
+            // --- read loop ---
+            while let Some(msg_result) = stream.next().await {
+                let ws_msg = match msg_result {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("Slack WebSocket read error: {e}");
+                        break; // reconnect
+                    }
+                };
+
+                let text = match ws_msg {
+                    WsMessage::Text(t) => t,
+                    WsMessage::Close(_) => {
+                        tracing::info!("Slack WebSocket closed by server");
+                        break;
+                    }
+                    _ => continue,
+                };
+
+                let envelope: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("Slack WebSocket non-JSON frame: {e}");
+                        continue;
+                    }
+                };
+
+                // Acknowledge every envelope that carries an envelope_id
+                if let Some(eid) = envelope.get("envelope_id").and_then(|v| v.as_str()) {
+                    let ack = serde_json::json!({ "envelope_id": eid });
+                    if let Err(e) = sink
+                        .send(WsMessage::Text(ack.to_string().into()))
+                        .await
+                    {
+                        tracing::warn!("Slack envelope ack failed: {e}");
+                        break;
+                    }
+                }
+
+                // Handle disconnect envelope — break to reconnect
+                if envelope.get("type").and_then(|v| v.as_str()) == Some("disconnect") {
+                    let reason = envelope
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    tracing::info!("Slack Socket Mode disconnect: {reason}");
+                    break;
+                }
+
+                // Parse to (envelope_id, message event) — skip non-message envelopes
+                let (envelope_id, event) = match parse_socket_event(&envelope) {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+
+                // Deduplicate
+                if !dedup.is_new(&envelope_id) {
+                    tracing::debug!("Slack duplicate envelope skipped: {envelope_id}");
+                    continue;
+                }
+
+                // Channel scoping
+                let event_channel = event
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or_default();
+
+                if let Some(ref sc) = scoped_channel {
+                    if event_channel != sc.as_str() {
+                        continue;
+                    }
+                }
+
+                let ts = event
+                    .get("ts")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default();
+                let user = event
+                    .get("user")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or_default();
+                let raw_text = event
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default();
+
+                // Skip bot messages: bot_id field present or user matches our bot
+                if event.get("bot_id").is_some() {
+                    continue;
+                }
+                if !bot_user_id.is_empty() && user == bot_user_id {
+                    continue;
+                }
+
+                // Allowlist check
+                if !self.is_user_allowed(user) {
+                    tracing::debug!("Slack message from non-allowed user {user}, skipping");
+                    continue;
+                }
+
+                // Skip empty text
+                if raw_text.trim().is_empty() {
+                    continue;
+                }
+
+                // Format timestamp for display
+                let ts_display = ts
+                    .split('.')
+                    .next()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .and_then(|epoch| {
+                        chrono::DateTime::from_timestamp(epoch, 0)
+                    })
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| ts.to_string());
+
+                // Resolve thread
+                let thread_ts = SlackChannel::inbound_thread_ts(&event, ts);
+
+                // Mention gating
+                let gate_result =
+                    self.resolve_mention_gate(raw_text, &bot_user_id, thread_ts.as_deref());
+
+                let (final_text, triage_required) = match gate_result {
+                    MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
+                    MentionGateResult::ParticipatedThread(text) => (text, true),
+                    MentionGateResult::Buffer => {
+                        // Socket Mode delivers individual events — no batch to buffer from
+                        continue;
+                    }
+                };
+
+                // Add ack reaction (eyes)
+                let ack_body = serde_json::json!({
+                    "channel": event_channel,
+                    "name": "eyes",
+                    "timestamp": ts
+                });
+                if let Err(e) = slack_api_post(
+                    &self.client,
+                    "https://slack.com/api/reactions.add",
+                    &self.bot_token,
+                    &ack_body,
+                )
+                .await
+                {
+                    tracing::warn!("Failed to add ack reaction: {e}");
+                }
+
+                // Thread hydration
+                let (thread_starter_body, thread_history) = if let Some(ref tts) = thread_ts {
+                    match fetch_thread_replies(
+                        &self.client,
+                        &self.bot_token,
+                        event_channel,
+                        tts,
+                        50,
+                    )
+                    .await
+                    {
+                        Ok(replies) if !replies.is_empty() => {
+                            let starter_body = replies
+                                .first()
+                                .and_then(|r| r.get("text"))
+                                .and_then(|t| t.as_str())
+                                .map(String::from);
+                            let history = format_thread_history(
+                                &replies,
+                                &bot_user_id,
+                                "ZeroClaw",
+                                event_channel,
+                                &HashMap::new(),
+                            );
+                            (starter_body, Some(history))
+                        }
+                        Ok(_) => (None, None),
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch thread replies: {e}");
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+
+                let sender_name = user.to_string();
+                let content =
+                    format_message_envelope(event_channel, &sender_name, &ts_display, &final_text);
+
+                let channel_message = ChannelMessage {
+                    id: format!("slack_{event_channel}_{ts}"),
+                    sender: sender_name,
+                    reply_target: event_channel.to_string(),
+                    content,
+                    channel: "slack".to_string(),
+                    timestamp: ts
+                        .split('.')
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0),
+                    thread_ts,
+                    thread_starter_body,
+                    thread_history,
+                    triage_required,
+                };
+
+                if tx.send(channel_message).await.is_err() {
+                    tracing::info!("Slack listen channel closed, shutting down");
+                    return Ok(());
+                }
+            }
+
+            // WebSocket broke or disconnected — reconnect with backoff
+            let jitter = rand::random::<u64>() % 500;
+            tracing::info!(
+                "Slack Socket Mode reconnecting in {}ms",
+                backoff_ms + jitter
+            );
+            tokio::time::sleep(Duration::from_millis(backoff_ms + jitter)).await;
+            backoff_ms = (backoff_ms * 2).min(BACKOFF_CAP_MS);
+        }
     }
 
     async fn health_check(&self) -> bool {
