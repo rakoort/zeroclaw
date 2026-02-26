@@ -1450,7 +1450,7 @@ pub fn create_routed_provider_with_options(
         }
     }
 
-    // Build route table
+    // Build route table and fallback configs
     let routes: Vec<(String, router::Route)> = model_routes
         .iter()
         .map(|r| {
@@ -1464,10 +1464,20 @@ pub fn create_routed_provider_with_options(
         })
         .collect();
 
+    let fallback_configs: std::collections::HashMap<
+        String,
+        Vec<crate::config::schema::FallbackModelConfig>,
+    > = model_routes
+        .iter()
+        .filter(|r| !r.fallbacks.is_empty())
+        .map(|r| (r.hint.clone(), r.fallbacks.clone()))
+        .collect();
+
     Ok(Box::new(router::RouterProvider::new(
         providers,
         routes,
         default_model.to_string(),
+        fallback_configs,
     )))
 }
 

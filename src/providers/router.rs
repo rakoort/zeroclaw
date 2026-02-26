@@ -1,5 +1,6 @@
 use super::traits::{ChatMessage, ChatRequest, ChatResponse};
 use super::Provider;
+use crate::config::schema::FallbackModelConfig;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -18,11 +19,14 @@ pub struct Route {
 /// - A hint-prefixed string (e.g. "hint:reasoning") → resolves via route table
 ///
 /// This wraps multiple pre-created providers and selects the right one per request.
+/// When fallback configs are provided, failed requests automatically retry through
+/// the fallback chain in order.
 pub struct RouterProvider {
     routes: HashMap<String, (usize, String)>, // hint → (provider_index, model)
     providers: Vec<(String, Box<dyn Provider>)>,
     default_index: usize,
     default_model: String,
+    fallbacks: HashMap<String, Vec<FallbackModelConfig>>, // hint → ordered fallbacks
 }
 
 impl RouterProvider {
@@ -30,10 +34,12 @@ impl RouterProvider {
     ///
     /// `providers` is a list of (name, provider) pairs. The first one is the default.
     /// `routes` maps hint names to Route structs containing provider_name and model.
+    /// `fallback_configs` maps hint names to ordered fallback model configs.
     pub fn new(
         providers: Vec<(String, Box<dyn Provider>)>,
         routes: Vec<(String, Route)>,
         default_model: String,
+        fallback_configs: HashMap<String, Vec<FallbackModelConfig>>,
     ) -> Self {
         // Build provider name → index lookup
         let name_to_index: HashMap<&str, usize> = providers
@@ -66,6 +72,7 @@ impl RouterProvider {
             providers,
             default_index: 0,
             default_model,
+            fallbacks: fallback_configs,
         }
     }
 
@@ -152,6 +159,26 @@ impl RouterProvider {
             filtered
         }
     }
+
+    /// Build the full fallback chain for a model parameter.
+    ///
+    /// Returns an ordered list of (provider_index, model) pairs: primary first,
+    /// then any configured fallbacks for the resolved hint.
+    fn resolve_chain(&self, model: &str) -> Vec<(usize, String)> {
+        let hint = model.strip_prefix("hint:");
+        let fallbacks = hint.and_then(|h| self.fallbacks.get(h));
+
+        match fallbacks {
+            Some(fbs) if !fbs.is_empty() => {
+                let chain = self.resolve_with_fallbacks(model, fbs);
+                chain.into_iter().map(|(idx, m, _)| (idx, m)).collect()
+            }
+            _ => {
+                let (idx, resolved) = self.resolve(model);
+                vec![(idx, resolved)]
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -163,18 +190,37 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model);
+        let chain = self.resolve_chain(model);
+        let mut last_err = None;
 
-        let (provider_name, provider) = &self.providers[provider_idx];
-        tracing::info!(
-            provider = provider_name.as_str(),
-            model = resolved_model.as_str(),
-            "Router dispatching request"
-        );
+        for (i, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+            tracing::info!(
+                provider = provider_name.as_str(),
+                model = resolved_model.as_str(),
+                "Router dispatching request"
+            );
 
-        provider
-            .chat_with_system(system_prompt, message, &resolved_model, temperature)
-            .await
+            match provider
+                .chat_with_system(system_prompt, message, resolved_model, temperature)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if i < chain.len() - 1 {
+                        tracing::warn!(
+                            provider = provider_name.as_str(),
+                            model = resolved_model.as_str(),
+                            error = %e,
+                            "Primary model failed, trying fallback"
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No providers in fallback chain")))
     }
 
     async fn chat_with_history(
@@ -183,11 +229,32 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model);
-        let (_, provider) = &self.providers[provider_idx];
-        provider
-            .chat_with_history(messages, &resolved_model, temperature)
-            .await
+        let chain = self.resolve_chain(model);
+        let mut last_err = None;
+
+        for (i, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+
+            match provider
+                .chat_with_history(messages, resolved_model, temperature)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if i < chain.len() - 1 {
+                        tracing::warn!(
+                            provider = provider_name.as_str(),
+                            model = resolved_model.as_str(),
+                            error = %e,
+                            "chat_with_history failed, trying fallback"
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No providers in fallback chain")))
     }
 
     async fn chat(
@@ -196,9 +263,29 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model);
-        let (_, provider) = &self.providers[provider_idx];
-        provider.chat(request, &resolved_model, temperature).await
+        let chain = self.resolve_chain(model);
+        let mut last_err = None;
+
+        for (i, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+
+            match provider.chat(request, resolved_model, temperature).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if i < chain.len() - 1 {
+                        tracing::warn!(
+                            provider = provider_name.as_str(),
+                            model = resolved_model.as_str(),
+                            error = %e,
+                            "chat failed, trying fallback"
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No providers in fallback chain")))
     }
 
     async fn chat_with_tools(
@@ -208,11 +295,32 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model);
-        let (_, provider) = &self.providers[provider_idx];
-        provider
-            .chat_with_tools(messages, tools, &resolved_model, temperature)
-            .await
+        let chain = self.resolve_chain(model);
+        let mut last_err = None;
+
+        for (i, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+
+            match provider
+                .chat_with_tools(messages, tools, resolved_model, temperature)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if i < chain.len() - 1 {
+                        tracing::warn!(
+                            provider = provider_name.as_str(),
+                            model = resolved_model.as_str(),
+                            error = %e,
+                            "chat_with_tools failed, trying fallback"
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No providers in fallback chain")))
     }
 
     fn supports_native_tools(&self) -> bool {
@@ -317,7 +425,12 @@ mod tests {
             })
             .collect();
 
-        let router = RouterProvider::new(provider_list, route_list, "default-model".to_string());
+        let router = RouterProvider::new(
+            provider_list,
+            route_list,
+            "default-model".to_string(),
+            HashMap::new(),
+        );
 
         (router, mocks)
     }
@@ -457,6 +570,7 @@ mod tests {
             )],
             vec![],
             "model".into(),
+            HashMap::new(),
         );
 
         let result = router
@@ -477,6 +591,7 @@ mod tests {
             )],
             vec![],
             "model".into(),
+            HashMap::new(),
         );
 
         let messages = vec![ChatMessage {
@@ -558,6 +673,7 @@ mod tests {
             ],
             routes,
             "llama-3-70b".to_string(),
+            HashMap::new(),
         );
 
         let chain = router.resolve_with_fallbacks("hint:fast", &fallbacks);
@@ -597,5 +713,232 @@ mod tests {
         let filtered = RouterProvider::filter_by_context(&chain, 200_000);
         // None context_window means unknown -- include it
         assert_eq!(filtered.len(), 2);
+    }
+
+    // ── Fallback retry tests ──────────────────────────────────
+
+    /// A mock provider that always fails with an error message.
+    struct FailingMockProvider {
+        calls: Arc<AtomicUsize>,
+        error_msg: &'static str,
+    }
+
+    impl FailingMockProvider {
+        fn new(error_msg: &'static str) -> Self {
+            Self {
+                calls: Arc::new(AtomicUsize::new(0)),
+                error_msg,
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for FailingMockProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!("{}", self.error_msg))
+        }
+    }
+
+    #[async_trait]
+    impl Provider for Arc<FailingMockProvider> {
+        async fn chat_with_system(
+            &self,
+            system_prompt: Option<&str>,
+            message: &str,
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<String> {
+            self.as_ref()
+                .chat_with_system(system_prompt, message, model, temperature)
+                .await
+        }
+    }
+
+    /// Build a router with fallback configs for testing retry behavior.
+    fn make_router_with_fallbacks(
+        providers: Vec<(String, Box<dyn Provider>)>,
+        routes: Vec<(String, Route)>,
+        fallback_configs: HashMap<String, Vec<crate::config::schema::FallbackModelConfig>>,
+    ) -> RouterProvider {
+        RouterProvider::new(
+            providers,
+            routes,
+            "default-model".to_string(),
+            fallback_configs,
+        )
+    }
+
+    #[tokio::test]
+    async fn fallback_retry_primary_success_skips_fallback() {
+        let primary = Arc::new(MockProvider::new("primary-ok"));
+        let fallback = Arc::new(MockProvider::new("fallback-ok"));
+
+        let mut fb_map = HashMap::new();
+        fb_map.insert(
+            "fast".to_string(),
+            vec![crate::config::schema::FallbackModelConfig {
+                provider: "fb".to_string(),
+                model: "fallback-model".to_string(),
+                context_window: None,
+            }],
+        );
+
+        let router = make_router_with_fallbacks(
+            vec![
+                (
+                    "primary".into(),
+                    Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "fb".into(),
+                    Box::new(Arc::clone(&fallback)) as Box<dyn Provider>,
+                ),
+            ],
+            vec![(
+                "fast".to_string(),
+                Route {
+                    provider_name: "primary".into(),
+                    model: "llama-3-70b".into(),
+                },
+            )],
+            fb_map,
+        );
+
+        let result = router
+            .chat_with_system(None, "hello", "hint:fast", 0.5)
+            .await
+            .unwrap();
+        assert_eq!(result, "primary-ok");
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(fallback.call_count(), 0); // fallback never called
+    }
+
+    #[tokio::test]
+    async fn fallback_retry_primary_failure_triggers_fallback() {
+        let primary = Arc::new(FailingMockProvider::new("primary-down"));
+        let fallback = Arc::new(MockProvider::new("fallback-ok"));
+
+        let mut fb_map = HashMap::new();
+        fb_map.insert(
+            "fast".to_string(),
+            vec![crate::config::schema::FallbackModelConfig {
+                provider: "fb".to_string(),
+                model: "fallback-model".to_string(),
+                context_window: None,
+            }],
+        );
+
+        let router = make_router_with_fallbacks(
+            vec![
+                (
+                    "primary".into(),
+                    Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "fb".into(),
+                    Box::new(Arc::clone(&fallback)) as Box<dyn Provider>,
+                ),
+            ],
+            vec![(
+                "fast".to_string(),
+                Route {
+                    provider_name: "primary".into(),
+                    model: "llama-3-70b".into(),
+                },
+            )],
+            fb_map,
+        );
+
+        let result = router
+            .chat_with_system(None, "hello", "hint:fast", 0.5)
+            .await
+            .unwrap();
+        assert_eq!(result, "fallback-ok");
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(fallback.call_count(), 1);
+        assert_eq!(fallback.last_model(), "fallback-model");
+    }
+
+    #[tokio::test]
+    async fn fallback_retry_all_fail_returns_last_error() {
+        let primary = Arc::new(FailingMockProvider::new("primary-down"));
+        let fallback = Arc::new(FailingMockProvider::new("fallback-also-down"));
+
+        let mut fb_map = HashMap::new();
+        fb_map.insert(
+            "fast".to_string(),
+            vec![crate::config::schema::FallbackModelConfig {
+                provider: "fb".to_string(),
+                model: "fallback-model".to_string(),
+                context_window: None,
+            }],
+        );
+
+        let router = make_router_with_fallbacks(
+            vec![
+                (
+                    "primary".into(),
+                    Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "fb".into(),
+                    Box::new(Arc::clone(&fallback)) as Box<dyn Provider>,
+                ),
+            ],
+            vec![(
+                "fast".to_string(),
+                Route {
+                    provider_name: "primary".into(),
+                    model: "llama-3-70b".into(),
+                },
+            )],
+            fb_map,
+        );
+
+        let err = router
+            .chat_with_system(None, "hello", "hint:fast", 0.5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("fallback-also-down"));
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(fallback.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_retry_no_fallbacks_behaves_same_as_before() {
+        let primary = Arc::new(MockProvider::new("primary-ok"));
+
+        let router = make_router_with_fallbacks(
+            vec![(
+                "primary".into(),
+                Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+            )],
+            vec![(
+                "fast".to_string(),
+                Route {
+                    provider_name: "primary".into(),
+                    model: "llama-3-70b".into(),
+                },
+            )],
+            HashMap::new(), // no fallbacks
+        );
+
+        let result = router
+            .chat_with_system(None, "hello", "hint:fast", 0.5)
+            .await
+            .unwrap();
+        assert_eq!(result, "primary-ok");
+        assert_eq!(primary.call_count(), 1);
     }
 }
