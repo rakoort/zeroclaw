@@ -527,13 +527,27 @@ impl Agent {
 
         let effective_model = self.classify_model(user_message);
 
-        // -- Planner activation gate --
-        // If a "planner" route exists and the agentic score is high enough,
-        // try the two-phase planner/executor flow before the normal tool loop.
+        // -- Planner activation gate (three-zone) --
+        // Zone 1: agentic_score < skip_threshold        → skip planner entirely
+        // Zone 2: skip_threshold <= score < activate     → ambiguous, let planner decide
+        // Zone 3: score >= activate_threshold            → always plan
         let has_planner_route = self.available_hints.contains(&"planner".to_string());
         if has_planner_route
-            && self.last_agentic_score >= self.classification_config.planning.activate_threshold
+            && self.last_agentic_score >= self.classification_config.planning.skip_threshold
         {
+            if self.last_agentic_score
+                >= self.classification_config.planning.activate_threshold
+            {
+                tracing::info!(
+                    agentic_score = self.last_agentic_score,
+                    "Planner activated (agentic_score >= activate_threshold)"
+                );
+            } else {
+                tracing::info!(
+                    agentic_score = self.last_agentic_score,
+                    "Planner activated in ambiguous zone (skip_threshold <= agentic_score < activate_threshold)"
+                );
+            }
             let planner_model = self
                 .route_model_by_hint
                 .get("planner")
@@ -1259,26 +1273,19 @@ mod planner_activation_tests {
         }
     }
 
-    #[tokio::test]
-    async fn turn_activates_planner_when_agentic_score_meets_threshold() {
+    /// Helper: build an agent with the given planning thresholds and provider responses.
+    fn build_planner_test_agent(
+        skip_threshold: f64,
+        activate_threshold: f64,
+        responses: Vec<crate::providers::ChatResponse>,
+        seen_models: Arc<Mutex<Vec<String>>>,
+    ) -> Agent {
         use crate::config::schema::{ClassificationMode, ClassificationTiers, PlanningConfig};
         use crate::config::QueryClassificationConfig;
 
-        let seen_models = Arc::new(Mutex::new(Vec::new()));
         let provider = Box::new(PlannerTestProvider {
-            responses: Mutex::new(vec![
-                crate::providers::ChatResponse {
-                    text: Some(
-                        r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up data"}]}"#.into(),
-                    ),
-                    tool_calls: vec![], usage: None, reasoning_content: None,
-                },
-                crate::providers::ChatResponse {
-                    text: Some("Planner-executed result.".into()),
-                    tool_calls: vec![], usage: None, reasoning_content: None,
-                },
-            ]),
-            seen_models: seen_models.clone(),
+            responses: Mutex::new(responses),
+            seen_models,
         });
 
         let memory_cfg = crate::config::MemoryConfig {
@@ -1304,8 +1311,8 @@ mod planner_activation_tests {
             rules: vec![],
             tiers,
             planning: PlanningConfig {
-                skip_threshold: 0.0,
-                activate_threshold: 0.3,
+                skip_threshold,
+                activate_threshold,
             },
             ..Default::default()
         };
@@ -1325,7 +1332,7 @@ mod planner_activation_tests {
             "planner".into(),
         ];
 
-        let mut agent = Agent::builder()
+        Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(PlannerMockTool)])
             .memory(mem)
@@ -1336,15 +1343,102 @@ mod planner_activation_tests {
             .available_hints(available)
             .route_model_by_hint(route_map)
             .build()
-            .expect("agent build should succeed");
+            .expect("agent build should succeed")
+    }
+
+    /// Planner response pair: plan JSON + executor result.
+    fn planner_responses() -> Vec<crate::providers::ChatResponse> {
+        vec![
+            crate::providers::ChatResponse {
+                text: Some(
+                    r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up data"}]}"#.into(),
+                ),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            },
+            crate::providers::ChatResponse {
+                text: Some("Planner-executed result.".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            },
+        ]
+    }
+
+    /// Score below skip_threshold: planner is NOT activated, normal flow is used.
+    /// "hi" has 0 agentic keywords → agentic_score = 0.0, which is < skip_threshold 0.3.
+    #[tokio::test]
+    async fn turn_skips_planner_below_skip_threshold() {
+        let seen_models = Arc::new(Mutex::new(Vec::new()));
+        // Normal flow needs one response with no tool_calls.
+        let responses = vec![crate::providers::ChatResponse {
+            text: Some("Normal flow result.".into()),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        }];
+        let mut agent = build_planner_test_agent(0.3, 0.5, responses, seen_models.clone());
+
+        let result = agent.turn("hi").await.unwrap();
+        assert_eq!(
+            result, "Normal flow result.",
+            "Below skip_threshold, planner should be skipped and normal flow used"
+        );
+
+        // Verify no planner model was invoked — only the normal-flow model.
+        let models = seen_models.lock();
+        assert!(
+            !models.iter().any(|m| m == "model-planner"),
+            "Planner model should not have been called, but saw: {models:?}"
+        );
+    }
+
+    /// Score in ambiguous zone (skip_threshold <= score < activate_threshold):
+    /// planner IS activated but may return passthrough.
+    /// "please fix the issue" has 1 agentic keyword ("fix") → agentic_score = 0.2.
+    /// With skip_threshold=0.1, activate_threshold=0.5: 0.1 <= 0.2 < 0.5 → ambiguous zone.
+    #[tokio::test]
+    async fn turn_activates_planner_in_ambiguous_zone() {
+        let seen_models = Arc::new(Mutex::new(Vec::new()));
+        let mut agent =
+            build_planner_test_agent(0.1, 0.5, planner_responses(), seen_models.clone());
+
+        let result = agent.turn("please fix the issue").await.unwrap();
+        assert_eq!(
+            result, "Planner-executed result.",
+            "In ambiguous zone, planner should be activated"
+        );
+
+        // Verify the planner model was invoked.
+        let models = seen_models.lock();
+        assert!(
+            models.iter().any(|m| m == "model-planner"),
+            "Planner model should have been called in ambiguous zone, but saw: {models:?}"
+        );
+    }
+
+    /// Score at/above activate_threshold: planner IS always activated.
+    /// Highly agentic message → agentic_score = 1.0 >= activate_threshold 0.5.
+    #[tokio::test]
+    async fn turn_activates_planner_above_activate_threshold() {
+        let seen_models = Arc::new(Mutex::new(Vec::new()));
+        let mut agent =
+            build_planner_test_agent(0.3, 0.5, planner_responses(), seen_models.clone());
 
         let agentic_msg =
             "edit the config file, deploy to staging, then verify the endpoint works and report";
         let result = agent.turn(agentic_msg).await.unwrap();
-
         assert_eq!(
             result, "Planner-executed result.",
-            "Agent should return the planner-executed output, not the raw plan JSON"
+            "Above activate_threshold, planner should be activated"
+        );
+
+        // Verify the planner model was invoked.
+        let models = seen_models.lock();
+        assert!(
+            models.iter().any(|m| m == "model-planner"),
+            "Planner model should have been called above activate_threshold, but saw: {models:?}"
         );
     }
 }
