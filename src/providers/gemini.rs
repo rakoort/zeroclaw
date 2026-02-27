@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use directories::UserDirs;
 use reqwest::Client;
+use ring::signature::RsaKeyPair;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +38,21 @@ struct OAuthTokenState {
     expiry_millis: Option<i64>,
 }
 
+/// Parsed GCP service account credentials for Vertex AI.
+struct VertexServiceAccountCreds {
+    client_email: String,
+    key_pair: Arc<RsaKeyPair>,
+    project_id: String,
+    region: String,
+}
+
+/// Cached Vertex AI access token with expiry tracking.
+struct VertexTokenState {
+    access_token: String,
+    /// Expiry as unix millis.
+    expiry_millis: i64,
+}
+
 /// Resolved credential — the variant determines both the HTTP auth method
 /// and the diagnostic label returned by `auth_source()`.
 enum GeminiAuth {
@@ -52,6 +68,12 @@ enum GeminiAuth {
     /// OAuth token managed by AuthService (auth-profiles.json).
     /// Token refresh is handled by AuthService, not here.
     ManagedOAuth,
+    /// Vertex AI via GCP service account JWT grant.
+    /// Bearer token acquired via self-signed JWT exchange.
+    VertexServiceAccount {
+        creds: Arc<VertexServiceAccountCreds>,
+        token_state: Arc<tokio::sync::Mutex<Option<VertexTokenState>>>,
+    },
 }
 
 impl GeminiAuth {
@@ -74,7 +96,9 @@ impl GeminiAuth {
             GeminiAuth::ExplicitKey(s)
             | GeminiAuth::EnvGeminiKey(s)
             | GeminiAuth::EnvGoogleKey(s) => s,
-            GeminiAuth::OAuthToken(_) | GeminiAuth::ManagedOAuth => "",
+            GeminiAuth::OAuthToken(_)
+            | GeminiAuth::ManagedOAuth
+            | GeminiAuth::VertexServiceAccount { .. } => "",
         }
     }
 }
@@ -671,6 +695,7 @@ impl GeminiProvider {
             Some(GeminiAuth::EnvGoogleKey(_)) => "GOOGLE_API_KEY env var",
             Some(GeminiAuth::OAuthToken(_)) => "Gemini CLI OAuth",
             Some(GeminiAuth::ManagedOAuth) => "auth-profiles",
+            Some(GeminiAuth::VertexServiceAccount { .. }) => "Vertex AI service account",
             None => "none",
         }
     }
@@ -1332,6 +1357,27 @@ mod tests {
     use super::*;
     use reqwest::{header::AUTHORIZATION, StatusCode};
 
+    /// Helper to create a test Vertex auth variant with a test RSA key.
+    fn test_vertex_auth() -> GeminiAuth {
+        let pem_bytes = include_bytes!("../../tests/fixtures/test_rsa_private_key.pem");
+        let parsed = pem::parse(pem_bytes).expect("test PEM parse");
+        let key_pair = match parsed.tag() {
+            "PRIVATE KEY" => RsaKeyPair::from_pkcs8(parsed.contents()),
+            "RSA PRIVATE KEY" => RsaKeyPair::from_der(parsed.contents()),
+            other => panic!("unexpected PEM tag: {other}"),
+        }
+        .expect("test RSA key parse");
+        GeminiAuth::VertexServiceAccount {
+            creds: Arc::new(VertexServiceAccountCreds {
+                client_email: "test@test-project.iam.gserviceaccount.com".into(),
+                key_pair: Arc::new(key_pair),
+                project_id: "test-project".into(),
+                region: "europe-west1".into(),
+            }),
+            token_state: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
     /// Helper to create a test OAuth auth variant.
     fn test_oauth_auth(token: &str) -> GeminiAuth {
         GeminiAuth::OAuthToken(Arc::new(tokio::sync::Mutex::new(OAuthTokenState {
@@ -1490,6 +1536,24 @@ mod tests {
     fn auth_source_oauth() {
         let provider = test_provider(Some(test_oauth_auth("ya29.mock")));
         assert_eq!(provider.auth_source(), "Gemini CLI OAuth");
+    }
+
+    #[test]
+    fn auth_source_vertex() {
+        let provider = test_provider(Some(test_vertex_auth()));
+        assert_eq!(provider.auth_source(), "Vertex AI service account");
+    }
+
+    #[test]
+    fn vertex_auth_is_not_api_key() {
+        let auth = test_vertex_auth();
+        assert!(!auth.is_api_key());
+    }
+
+    #[test]
+    fn vertex_auth_is_not_oauth() {
+        let auth = test_vertex_auth();
+        assert!(!auth.is_oauth());
     }
 
     #[test]
