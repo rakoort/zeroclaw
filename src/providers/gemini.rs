@@ -1840,6 +1840,17 @@ mod tests {
     }
 
     #[test]
+    fn explicit_key_takes_priority_over_vertex_env() {
+        // Even if GOOGLE_APPLICATION_CREDENTIALS is set,
+        // an explicit key should win
+        let provider = GeminiProvider::new(Some("explicit-key"));
+        assert!(matches!(
+            provider.auth,
+            Some(GeminiAuth::ExplicitKey(ref key)) if key == "explicit-key"
+        ));
+    }
+
+    #[test]
     fn model_name_formatting() {
         assert_eq!(
             GeminiProvider::format_model_name("gemini-2.0-flash"),
@@ -2547,6 +2558,23 @@ mod tests {
             url,
             "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/google/models/gemini-3-flash-preview:generateContent"
         );
+    }
+
+    // RED: characterization test — documents existing models/ prefix-stripping contract.
+    #[test]
+    fn vertex_url_strips_models_prefix() {
+        let auth = test_vertex_auth();
+        let url = GeminiProvider::build_generate_content_url("models/gemini-3-flash-preview", &auth);
+        assert!(url.contains("/models/gemini-3-flash-preview:"));
+        assert!(!url.contains("/models/models/"));
+    }
+
+    // RED: characterization test — documents that Vertex URLs never include ?key= parameter.
+    #[test]
+    fn vertex_url_does_not_include_api_key() {
+        let auth = test_vertex_auth();
+        let url = GeminiProvider::build_generate_content_url("gemini-3-flash-preview", &auth);
+        assert!(!url.contains("?key="));
     }
 
     // RED: build_generate_content_request has no VertexServiceAccount match arm;
