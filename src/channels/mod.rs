@@ -36,6 +36,8 @@ pub mod slack;
 pub mod telegram;
 pub mod traits;
 pub mod transcription;
+pub(crate) mod types;
+pub(crate) use types::*;
 pub mod wati;
 pub mod whatsapp;
 #[cfg(feature = "whatsapp-web")]
@@ -79,70 +81,14 @@ use crate::security::SecurityPolicy;
 use crate::tools::{self, Tool};
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-
-/// Per-sender conversation history for channel messages.
-type ConversationHistoryMap = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
-/// Maximum history messages to keep per sender.
-const MAX_CHANNEL_HISTORY: usize = 50;
-/// Minimum user-message length (in chars) for auto-save to memory.
-/// Messages shorter than this (e.g. "ok", "thanks") are not stored,
-/// reducing noise in memory recall.
-const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
-
-/// Maximum characters per injected workspace file (matches `OpenClaw` default).
-const BOOTSTRAP_MAX_CHARS: usize = 20_000;
-
-const DEFAULT_CHANNEL_INITIAL_BACKOFF_SECS: u64 = 2;
-const DEFAULT_CHANNEL_MAX_BACKOFF_SECS: u64 = 60;
-const MIN_CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 30;
-/// Default timeout for processing a single channel message (LLM + tools).
-/// Used as fallback when not configured in channels_config.message_timeout_secs.
-const CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 300;
-/// Cap timeout scaling so large max_tool_iterations values do not create unbounded waits.
-const CHANNEL_MESSAGE_TIMEOUT_SCALE_CAP: u64 = 4;
-const CHANNEL_PARALLELISM_PER_CHANNEL: usize = 4;
-const CHANNEL_MIN_IN_FLIGHT_MESSAGES: usize = 8;
-const CHANNEL_MAX_IN_FLIGHT_MESSAGES: usize = 64;
-const CHANNEL_TYPING_REFRESH_INTERVAL_SECS: u64 = 4;
-const CHANNEL_HEALTH_HEARTBEAT_SECS: u64 = 30;
-const MODEL_CACHE_FILE: &str = "models_cache.json";
-const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
-const MEMORY_CONTEXT_MAX_ENTRIES: usize = 4;
-const MEMORY_CONTEXT_ENTRY_MAX_CHARS: usize = 800;
-const MEMORY_CONTEXT_MAX_CHARS: usize = 4_000;
-const CHANNEL_HISTORY_COMPACT_KEEP_MESSAGES: usize = 12;
-const CHANNEL_HISTORY_COMPACT_CONTENT_CHARS: usize = 600;
-/// Guardrail for hook-modified outbound channel content.
-const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
-
-const TRIAGE_PROMPT: &str = r#"You are monitoring a Slack thread you previously participated in.
-A new message arrived. Decide whether you should respond.
-
-Respond YES if:
-- You are directly addressed by name or role
-- Someone asks a question you can answer
-- The conversation needs your input to move forward
-- You're being asked to take an action
-
-Respond NO if:
-- People are talking to each other
-- The message is an acknowledgment (ok, thanks, got it)
-- Your input would not add value
-- The conversation is proceeding fine without you
-
-Respond with exactly YES or NO."#;
-
-type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
-type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
 fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
     configured.max(MIN_CHANNEL_MESSAGE_TIMEOUT_SECS)
@@ -157,125 +103,9 @@ fn channel_message_timeout_budget_secs(
     message_timeout_secs.saturating_mul(scale)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChannelRouteSelection {
-    provider: String,
-    model: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ChannelRuntimeCommand {
-    ShowProviders,
-    SetProvider(String),
-    ShowModel,
-    SetModel(String),
-    NewSession,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ModelCacheState {
-    entries: Vec<ModelCacheEntry>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ModelCacheEntry {
-    provider: String,
-    models: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct ChannelRuntimeDefaults {
-    default_provider: String,
-    model: String,
-    temperature: f64,
-    api_key: Option<String>,
-    api_url: Option<String>,
-    reliability: crate::config::ReliabilityConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ConfigFileStamp {
-    modified: SystemTime,
-    len: u64,
-}
-
-#[derive(Debug, Clone)]
-struct RuntimeConfigState {
-    defaults: ChannelRuntimeDefaults,
-    last_applied_stamp: Option<ConfigFileStamp>,
-}
-
 fn runtime_config_store() -> &'static Mutex<HashMap<PathBuf, RuntimeConfigState>> {
     static STORE: OnceLock<Mutex<HashMap<PathBuf, RuntimeConfigState>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-const SYSTEMD_STATUS_ARGS: [&str; 3] = ["--user", "is-active", "zeroclaw.service"];
-const SYSTEMD_RESTART_ARGS: [&str; 3] = ["--user", "restart", "zeroclaw.service"];
-const OPENRC_STATUS_ARGS: [&str; 2] = ["zeroclaw", "status"];
-const OPENRC_RESTART_ARGS: [&str; 2] = ["zeroclaw", "restart"];
-
-#[derive(Clone)]
-struct ChannelRuntimeContext {
-    channels_by_name: Arc<HashMap<String, Arc<dyn Channel>>>,
-    provider: Arc<dyn Provider>,
-    default_provider: Arc<String>,
-    memory: Arc<dyn Memory>,
-    tools_registry: Arc<Vec<Box<dyn Tool>>>,
-    observer: Arc<dyn Observer>,
-    system_prompt: Arc<String>,
-    model: Arc<String>,
-    temperature: f64,
-    auto_save_memory: bool,
-    max_tool_iterations: usize,
-    min_relevance_score: f64,
-    conversation_histories: ConversationHistoryMap,
-    provider_cache: ProviderCacheMap,
-    route_overrides: RouteSelectionMap,
-    api_key: Option<String>,
-    api_url: Option<String>,
-    reliability: Arc<crate::config::ReliabilityConfig>,
-    provider_runtime_options: providers::ProviderRuntimeOptions,
-    workspace_dir: Arc<PathBuf>,
-    message_timeout_secs: u64,
-    interrupt_on_new_message: bool,
-    multimodal: crate::config::MultimodalConfig,
-    hooks: Option<Arc<crate::hooks::HookRunner>>,
-    non_cli_excluded_tools: Arc<Vec<String>>,
-    triage_model: Option<String>,
-}
-
-#[derive(Clone)]
-struct InFlightSenderTaskState {
-    task_id: u64,
-    cancellation: CancellationToken,
-    completion: Arc<InFlightTaskCompletion>,
-}
-
-struct InFlightTaskCompletion {
-    done: AtomicBool,
-    notify: tokio::sync::Notify,
-}
-
-impl InFlightTaskCompletion {
-    fn new() -> Self {
-        Self {
-            done: AtomicBool::new(false),
-            notify: tokio::sync::Notify::new(),
-        }
-    }
-
-    fn mark_done(&self) {
-        self.done.store(true, Ordering::Release);
-        self.notify.notify_waiters();
-    }
-
-    async fn wait(&self) {
-        if self.done.load(Ordering::Acquire) {
-            return;
-        }
-        self.notify.notified().await;
-    }
 }
 
 fn conversation_memory_key(msg: &traits::ChannelMessage) -> String {
@@ -2762,13 +2592,6 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelHealthState {
-    Healthy,
-    Unhealthy,
-    Timeout,
-}
-
 fn classify_health_result(
     result: &std::result::Result<bool, tokio::time::error::Elapsed>,
 ) -> ChannelHealthState {
@@ -2777,11 +2600,6 @@ fn classify_health_result(
         Ok(false) => ChannelHealthState::Unhealthy,
         Err(_) => ChannelHealthState::Timeout,
     }
-}
-
-struct ConfiguredChannel {
-    display_name: &'static str,
-    channel: Arc<dyn Channel>,
 }
 
 #[allow(unused_variables)]
