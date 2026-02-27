@@ -1066,6 +1066,15 @@ impl GeminiProvider {
                     .json(&internal_request)
                     .bearer_auth(token)
             }
+            GeminiAuth::VertexServiceAccount { .. } => {
+                // Vertex AI uses the same flat request body as API key auth,
+                // but authenticates via Bearer token instead of ?key= query param.
+                let token = oauth_token.unwrap_or_default();
+                self.http_client()
+                    .post(url)
+                    .json(request)
+                    .bearer_auth(token)
+            }
             _ => req,
         }
     }
@@ -2390,6 +2399,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // GREEN: Vertex URL uses regional aiplatform endpoint with project/location.
     #[test]
     fn vertex_url_uses_regional_endpoint() {
         let auth = test_vertex_auth();
@@ -2398,5 +2408,59 @@ mod tests {
             url,
             "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/google/models/gemini-3-flash-preview:generateContent"
         );
+    }
+
+    // RED: build_generate_content_request has no VertexServiceAccount match arm;
+    // the default arm sends a flat body WITHOUT Bearer auth.
+    // Vertex needs Bearer auth with a flat body (not the cloudcode-pa envelope).
+    #[test]
+    fn vertex_request_uses_bearer_auth_and_flat_body() {
+        let auth = test_vertex_auth();
+        let provider = test_provider(Some(test_vertex_auth()));
+        let url = GeminiProvider::build_generate_content_url("gemini-3-flash-preview", &auth);
+        let body = GenerateContentRequest {
+            contents: vec![Content {
+                role: Some("user".into()),
+                parts: vec![Part {
+                    text: "hello".into(),
+                }],
+            }],
+            system_instruction: None,
+            generation_config: GenerationConfig {
+                temperature: 0.7,
+                max_output_tokens: 8192,
+            },
+        };
+
+        let request = provider
+            .build_generate_content_request(
+                &auth,
+                &url,
+                &body,
+                "gemini-3-flash-preview",
+                true,
+                None,
+                Some("ya29.vertex-token"),
+            )
+            .build()
+            .unwrap();
+
+        // Should have Bearer auth
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok()),
+            Some("Bearer ya29.vertex-token")
+        );
+
+        // Should use flat body (not cloudcode-pa envelope)
+        let payload = request.body().and_then(|b| b.as_bytes()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        assert!(json.get("contents").is_some());
+        assert!(json.get("generationConfig").is_some());
+        // Should NOT have cloudcode-pa envelope fields
+        assert!(json.get("model").is_none());
+        assert!(json.get("request").is_none());
     }
 }
