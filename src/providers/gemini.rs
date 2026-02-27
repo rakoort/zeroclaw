@@ -936,12 +936,20 @@ impl GeminiProvider {
             }
             GeminiAuth::VertexServiceAccount { ref creds, .. } => {
                 let model_id = model.strip_prefix("models/").unwrap_or(model);
-                format!(
-                    "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent",
-                    region = creds.region,
-                    project = creds.project_id,
-                    model = model_id,
-                )
+                if creds.region == "global" {
+                    format!(
+                        "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/publishers/google/models/{model}:generateContent",
+                        project = creds.project_id,
+                        model = model_id,
+                    )
+                } else {
+                    format!(
+                        "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent",
+                        region = creds.region,
+                        project = creds.project_id,
+                        model = model_id,
+                    )
+                }
             }
             _ => {
                 let model_name = Self::format_model_name(model);
@@ -2574,6 +2582,32 @@ mod tests {
         let auth = test_vertex_auth();
         let url = GeminiProvider::build_generate_content_url("gemini-3-flash-preview", &auth);
         assert!(!url.contains("?key="));
+    }
+
+    #[test]
+    fn vertex_url_uses_global_endpoint() {
+        let pem_bytes = include_bytes!("../../tests/fixtures/test_rsa_private_key.pem");
+        let parsed = pem::parse(pem_bytes).expect("test PEM parse");
+        let key_pair = match parsed.tag() {
+            "PRIVATE KEY" => RsaKeyPair::from_pkcs8(parsed.contents()),
+            "RSA PRIVATE KEY" => RsaKeyPair::from_der(parsed.contents()),
+            other => panic!("unexpected PEM tag: {other}"),
+        }
+        .expect("test RSA key parse");
+        let auth = GeminiAuth::VertexServiceAccount {
+            creds: Arc::new(VertexServiceAccountCreds {
+                client_email: "test@test-project.iam.gserviceaccount.com".into(),
+                key_pair: Arc::new(key_pair),
+                project_id: "test-project".into(),
+                region: "global".into(),
+            }),
+            token_state: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+        let url = GeminiProvider::build_generate_content_url("gemini-3-flash-preview", &auth);
+        assert_eq!(
+            url,
+            "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/publishers/google/models/gemini-3-flash-preview:generateContent"
+        );
     }
 
     // RED: build_generate_content_request has no VertexServiceAccount match arm;
