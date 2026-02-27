@@ -51,6 +51,7 @@ pub mod schedule;
 pub mod schema;
 pub mod screenshot;
 pub mod shell;
+pub mod slack;
 pub mod traits;
 pub mod web_fetch;
 pub mod web_search_tool;
@@ -91,6 +92,8 @@ pub use schedule::ScheduleTool;
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
+#[allow(unused_imports)]
+pub use slack::SlackToolConfig;
 pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
