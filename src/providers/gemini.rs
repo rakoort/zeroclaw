@@ -125,6 +125,27 @@ struct GenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig")]
     generation_config: GenerationConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
+    #[serde(rename = "toolConfig", skip_serializing_if = "Option::is_none")]
+    tool_config: Option<GeminiToolConfig>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GeminiToolDeclaration {
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GeminiToolConfig {
+    #[serde(rename = "functionCallingConfig")]
+    function_calling_config: FunctionCallingConfigMode,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct FunctionCallingConfigMode {
+    mode: String,
 }
 
 /// Request envelope for the internal cloudcode-pa API.
@@ -161,6 +182,10 @@ struct InternalGenerateContentRequest {
     system_instruction: Option<Content>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
+    #[serde(rename = "toolConfig", skip_serializing_if = "Option::is_none")]
+    tool_config: Option<GeminiToolConfig>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -172,7 +197,24 @@ struct Content {
 
 #[derive(Debug, Serialize, Clone)]
 struct Part {
-    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(rename = "functionCall", skip_serializing_if = "Option::is_none")]
+    function_call: Option<FunctionCallPart>,
+    #[serde(rename = "functionResponse", skip_serializing_if = "Option::is_none")]
+    function_response: Option<FunctionResponsePart>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct FunctionCallPart {
+    name: String,
+    args: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct FunctionResponsePart {
+    name: String,
+    response: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -225,6 +267,14 @@ struct ResponsePart {
     /// Thinking models (e.g. gemini-3-pro-preview) mark reasoning parts with `thought: true`.
     #[serde(default)]
     thought: bool,
+    #[serde(default, rename = "functionCall")]
+    function_call: Option<FunctionCallResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FunctionCallResponse {
+    name: String,
+    args: serde_json::Value,
 }
 
 impl CandidateContent {
@@ -1067,6 +1117,8 @@ impl GeminiProvider {
                         } else {
                             None
                         },
+                        tools: request.tools.clone(),
+                        tool_config: request.tool_config.clone(),
                     },
                 };
                 self.http_client()
@@ -1295,6 +1347,8 @@ impl GeminiProvider {
                 temperature,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let url = Self::build_generate_content_url(model, auth);
@@ -1461,14 +1515,18 @@ impl Provider for GeminiProvider {
         let system_instruction = system_prompt.map(|sys| Content {
             role: None,
             parts: vec![Part {
-                text: sys.to_string(),
+                text: Some(sys.to_string()),
+                function_call: None,
+                function_response: None,
             }],
         });
 
         let contents = vec![Content {
             role: Some("user".to_string()),
             parts: vec![Part {
-                text: message.to_string(),
+                text: Some(message.to_string()),
+                function_call: None,
+                function_response: None,
             }],
         }];
 
@@ -1497,7 +1555,9 @@ impl Provider for GeminiProvider {
                     contents.push(Content {
                         role: Some("user".to_string()),
                         parts: vec![Part {
-                            text: msg.content.clone(),
+                            text: Some(msg.content.clone()),
+                            function_call: None,
+                            function_response: None,
                         }],
                     });
                 }
@@ -1506,7 +1566,9 @@ impl Provider for GeminiProvider {
                     contents.push(Content {
                         role: Some("model".to_string()),
                         parts: vec![Part {
-                            text: msg.content.clone(),
+                            text: Some(msg.content.clone()),
+                            function_call: None,
+                            function_response: None,
                         }],
                     });
                 }
@@ -1520,7 +1582,9 @@ impl Provider for GeminiProvider {
             Some(Content {
                 role: None,
                 parts: vec![Part {
-                    text: system_parts.join("\n\n"),
+                    text: Some(system_parts.join("\n\n")),
+                    function_call: None,
+                    function_response: None,
                 }],
             })
         };
@@ -1547,13 +1611,17 @@ impl Provider for GeminiProvider {
                 "user" => contents.push(Content {
                     role: Some("user".to_string()),
                     parts: vec![Part {
-                        text: msg.content.clone(),
+                        text: Some(msg.content.clone()),
+                        function_call: None,
+                        function_response: None,
                     }],
                 }),
                 "assistant" => contents.push(Content {
                     role: Some("model".to_string()),
                     parts: vec![Part {
-                        text: msg.content.clone(),
+                        text: Some(msg.content.clone()),
+                        function_call: None,
+                        function_response: None,
                     }],
                 }),
                 _ => {}
@@ -1566,7 +1634,9 @@ impl Provider for GeminiProvider {
             Some(Content {
                 role: None,
                 parts: vec![Part {
-                    text: system_parts.join("\n\n"),
+                    text: Some(system_parts.join("\n\n")),
+                    function_call: None,
+                    function_response: None,
                 }],
             })
         };
@@ -1910,7 +1980,9 @@ mod tests {
             contents: vec![Content {
                 role: Some("user".into()),
                 parts: vec![Part {
-                    text: "hello".into(),
+                    text: Some("hello".into()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }],
             system_instruction: None,
@@ -1918,6 +1990,8 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let request = provider
@@ -1951,7 +2025,9 @@ mod tests {
             contents: vec![Content {
                 role: Some("user".into()),
                 parts: vec![Part {
-                    text: "hello".into(),
+                    text: Some("hello".into()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }],
             system_instruction: None,
@@ -1959,6 +2035,8 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let request = provider
@@ -1995,7 +2073,9 @@ mod tests {
             contents: vec![Content {
                 role: Some("user".into()),
                 parts: vec![Part {
-                    text: "hello".into(),
+                    text: Some("hello".into()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }],
             system_instruction: None,
@@ -2003,6 +2083,8 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let request = provider
@@ -2027,19 +2109,25 @@ mod tests {
             contents: vec![Content {
                 role: Some("user".to_string()),
                 parts: vec![Part {
-                    text: "Hello".to_string(),
+                    text: Some("Hello".to_string()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }],
             system_instruction: Some(Content {
                 role: None,
                 parts: vec![Part {
-                    text: "You are helpful".to_string(),
+                    text: Some("You are helpful".to_string()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }),
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -2061,7 +2149,9 @@ mod tests {
                 contents: vec![Content {
                     role: Some("user".to_string()),
                     parts: vec![Part {
-                        text: "Hello".to_string(),
+                        text: Some("Hello".to_string()),
+                        function_call: None,
+                        function_response: None,
                     }],
                 }],
                 system_instruction: None,
@@ -2069,6 +2159,8 @@ mod tests {
                     temperature: 0.7,
                     max_output_tokens: 8192,
                 }),
+                tools: None,
+                tool_config: None,
             },
         };
 
@@ -2093,11 +2185,15 @@ mod tests {
                 contents: vec![Content {
                     role: Some("user".to_string()),
                     parts: vec![Part {
-                        text: "Hello".to_string(),
+                        text: Some("Hello".to_string()),
+                        function_call: None,
+                        function_response: None,
                     }],
                 }],
                 system_instruction: None,
                 generation_config: None,
+                tools: None,
+                tool_config: None,
             },
         };
 
@@ -2116,11 +2212,15 @@ mod tests {
                 contents: vec![Content {
                     role: Some("user".to_string()),
                     parts: vec![Part {
-                        text: "Hello".to_string(),
+                        text: Some("Hello".to_string()),
+                        function_call: None,
+                        function_response: None,
                     }],
                 }],
                 system_instruction: None,
                 generation_config: None,
+                tools: None,
+                tool_config: None,
             },
         };
 
@@ -2622,7 +2722,9 @@ mod tests {
             contents: vec![Content {
                 role: Some("user".into()),
                 parts: vec![Part {
-                    text: "hello".into(),
+                    text: Some("hello".into()),
+                    function_call: None,
+                    function_response: None,
                 }],
             }],
             system_instruction: None,
@@ -2630,6 +2732,8 @@ mod tests {
                 temperature: 0.7,
                 max_output_tokens: 8192,
             },
+            tools: None,
+            tool_config: None,
         };
 
         let request = provider
@@ -2709,5 +2813,63 @@ mod tests {
 
         // Signature part should be non-empty
         assert!(!parts[2].is_empty());
+    }
+
+    // ── Part struct function-calling serialization tests ──────────────────
+
+    #[test]
+    fn part_text_only_serializes_without_function_fields() {
+        let part = Part {
+            text: Some("hello".into()),
+            function_call: None,
+            function_response: None,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json, serde_json::json!({"text": "hello"}));
+        assert!(json.get("functionCall").is_none());
+        assert!(json.get("functionResponse").is_none());
+    }
+
+    #[test]
+    fn part_function_call_serializes_correctly() {
+        let part = Part {
+            text: None,
+            function_call: Some(FunctionCallPart {
+                name: "get_status".into(),
+                args: serde_json::json!({"channel": "general"}),
+            }),
+            function_response: None,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json["functionCall"]["name"], "get_status");
+        assert_eq!(json["functionCall"]["args"]["channel"], "general");
+        assert!(json.get("text").is_none());
+    }
+
+    #[test]
+    fn part_function_response_serializes_correctly() {
+        let part = Part {
+            text: None,
+            function_call: None,
+            function_response: Some(FunctionResponsePart {
+                name: "get_status".into(),
+                response: serde_json::json!({"ok": true}),
+            }),
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json["functionResponse"]["name"], "get_status");
+        assert_eq!(json["functionResponse"]["response"]["ok"], true);
+    }
+
+    #[test]
+    fn response_part_deserializes_function_call() {
+        let json = serde_json::json!({
+            "functionCall": {"name": "get_status", "args": {"channel": "general"}}
+        });
+        let part: ResponsePart = serde_json::from_value(json).unwrap();
+        assert!(part.text.is_none());
+        let fc = part.function_call.unwrap();
+        assert_eq!(fc.name, "get_status");
+        assert_eq!(fc.args["channel"], "general");
     }
 }
