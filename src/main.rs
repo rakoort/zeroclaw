@@ -55,6 +55,7 @@ mod channels;
 mod rag {
     pub use zeroclaw::rag::*;
 }
+mod common;
 mod config;
 mod cost;
 mod cron;
