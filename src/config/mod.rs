@@ -2,6 +2,7 @@ pub mod channel;
 pub mod memory;
 pub mod provider;
 pub mod schema;
+pub mod security;
 pub mod traits;
 
 #[allow(unused_imports)]
