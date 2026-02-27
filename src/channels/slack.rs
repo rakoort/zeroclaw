@@ -1,3 +1,4 @@
+use super::common::split_message;
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -509,38 +510,6 @@ impl SlackChannel {
 
 const SLACK_MESSAGE_CHUNK_LIMIT: usize = 4000;
 
-/// Split a message into chunks at paragraph boundaries.
-///
-/// Tries to split at `\n\n`, falls back to `\n`, then hard-splits at the limit.
-fn chunk_message(text: &str, limit: usize) -> Vec<&str> {
-    if text.len() <= limit {
-        return vec![text];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while remaining.len() > limit {
-        let search_range = &remaining[..limit];
-
-        let split_at = search_range
-            .rfind("\n\n")
-            .or_else(|| search_range.rfind('\n'))
-            .unwrap_or(limit);
-
-        let split_at = if split_at == 0 { limit } else { split_at };
-
-        chunks.push(remaining[..split_at].trim_end());
-        remaining = remaining[split_at..].trim_start();
-    }
-
-    if !remaining.is_empty() {
-        chunks.push(remaining);
-    }
-
-    chunks
-}
-
 #[async_trait]
 impl Channel for SlackChannel {
     fn name(&self) -> &str {
@@ -548,7 +517,7 @@ impl Channel for SlackChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let chunks = chunk_message(&message.content, SLACK_MESSAGE_CHUNK_LIMIT);
+        let chunks = split_message(&message.content, SLACK_MESSAGE_CHUNK_LIMIT);
 
         for chunk in &chunks {
             let mut body = serde_json::json!({
@@ -1427,67 +1396,6 @@ mod tests {
             "ok": true
         });
         assert!(!is_slack_ratelimited(&body));
-    }
-
-    // -- Message chunking tests -----------------------------------------------
-
-    #[test]
-    fn chunk_message_under_limit() {
-        let text = "Short message.";
-        let chunks = chunk_message(text, 4000);
-        assert_eq!(chunks, vec!["Short message."]);
-    }
-
-    #[test]
-    fn chunk_message_splits_at_paragraph() {
-        let text = format!("{}\n\n{}", "a".repeat(3000), "b".repeat(2000));
-        let chunks = chunk_message(&text, 4000);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0], "a".repeat(3000));
-        assert_eq!(chunks[1], "b".repeat(2000));
-    }
-
-    #[test]
-    fn chunk_message_falls_back_to_newline() {
-        let text = format!("{}\n{}", "a".repeat(3000), "b".repeat(2000));
-        let chunks = chunk_message(&text, 4000);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0], "a".repeat(3000));
-        assert_eq!(chunks[1], "b".repeat(2000));
-    }
-
-    #[test]
-    fn chunk_message_hard_splits_no_newlines() {
-        let text = "a".repeat(5000);
-        let chunks = chunk_message(&text, 4000);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 4000);
-        assert_eq!(chunks[1].len(), 1000);
-    }
-
-    #[test]
-    fn chunk_message_empty_string() {
-        let chunks = chunk_message("", 4000);
-        assert_eq!(chunks, vec![""]);
-    }
-
-    #[test]
-    fn chunk_message_exact_limit() {
-        let text = "a".repeat(4000);
-        let chunks = chunk_message(&text, 4000);
-        assert_eq!(chunks.len(), 1);
-    }
-
-    #[test]
-    fn chunk_message_multiple_splits() {
-        let text = format!(
-            "{}\n\n{}\n\n{}",
-            "a".repeat(3500),
-            "b".repeat(3500),
-            "c".repeat(3500)
-        );
-        let chunks = chunk_message(&text, 4000);
-        assert_eq!(chunks.len(), 3);
     }
 
     // -- Socket Mode envelope parsing -----------------------------------------

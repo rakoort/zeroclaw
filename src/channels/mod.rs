@@ -16,6 +16,7 @@
 
 pub mod clawdtalk;
 pub mod cli;
+pub mod common;
 pub mod dingtalk;
 pub mod discord;
 pub mod email_channel;
