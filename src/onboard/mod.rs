@@ -1,3 +1,4 @@
+pub(crate) mod channel_setup;
 pub(crate) mod provider_setup;
 pub mod wizard;
 
