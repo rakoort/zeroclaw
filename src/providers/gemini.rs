@@ -934,6 +934,15 @@ impl GeminiProvider {
                 // The model is passed in the request body, not the URL path.
                 format!("{CLOUDCODE_PA_ENDPOINT}:generateContent")
             }
+            GeminiAuth::VertexServiceAccount { ref creds, .. } => {
+                let model_id = model.strip_prefix("models/").unwrap_or(model);
+                format!(
+                    "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent",
+                    region = creds.region,
+                    project = creds.project_id,
+                    model = model_id,
+                )
+            }
             _ => {
                 let model_name = Self::format_model_name(model);
                 let base_url = format!("{PUBLIC_API_ENDPOINT}/{model_name}:generateContent");
@@ -2379,5 +2388,15 @@ mod tests {
         let result =
             GeminiProvider::parse_vertex_service_account_json(&sa_json.to_string(), "us-central1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn vertex_url_uses_regional_endpoint() {
+        let auth = test_vertex_auth();
+        let url = GeminiProvider::build_generate_content_url("gemini-3-flash-preview", &auth);
+        assert_eq!(
+            url,
+            "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/google/models/gemini-3-flash-preview:generateContent"
+        );
     }
 }
