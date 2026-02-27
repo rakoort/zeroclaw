@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod schema;
 pub mod traits;
 
