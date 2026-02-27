@@ -1,3 +1,5 @@
+pub mod daemon;
+
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
 use std::fs;

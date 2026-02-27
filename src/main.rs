@@ -59,7 +59,6 @@ mod common;
 mod config;
 mod cost;
 mod cron;
-mod daemon;
 mod doctor;
 mod gateway;
 mod hardware;
@@ -806,7 +805,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting ZeroClaw Daemon on {host}:{port}");
             }
-            daemon::run(config, host, port).await
+            service::daemon::run(config, host, port).await
         }
 
         Commands::Status => {

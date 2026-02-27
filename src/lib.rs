@@ -46,7 +46,7 @@ pub(crate) mod common;
 pub mod config;
 pub(crate) mod cost;
 pub(crate) mod cron;
-pub(crate) mod daemon;
+// daemon module relocated to service::daemon
 pub(crate) mod doctor;
 pub mod gateway;
 pub(crate) mod hardware;

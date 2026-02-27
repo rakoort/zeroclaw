@@ -770,7 +770,7 @@ fn workspace_probe_path(workspace_dir: &Path) -> std::path::PathBuf {
 
 fn check_daemon_state(config: &Config, items: &mut Vec<DiagItem>) {
     let cat = "daemon";
-    let state_file = crate::daemon::state_file_path(config);
+    let state_file = crate::service::daemon::state_file_path(config);
 
     if !state_file.exists() {
         items.push(DiagItem::error(
