@@ -12,7 +12,7 @@ use dialoguer::{Confirm, Input, Select};
 use serde_json::Value;
 use std::time::Duration;
 
-use super::wizard::print_bullet;
+use super::ui::print_bullet;
 
 // ── Step 3: Channels ────────────────────────────────────────────
 

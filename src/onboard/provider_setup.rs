@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs;
 
-use super::wizard::print_bullet;
+use super::ui::print_bullet;
 
 // ── Constants ────────────────────────────────────────────────────
 

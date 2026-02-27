@@ -1,5 +1,6 @@
 pub(crate) mod channel_setup;
 pub(crate) mod provider_setup;
+pub(crate) mod ui;
 pub mod wizard;
 
 // Re-exported for CLI and external use
