@@ -42,7 +42,7 @@ pub mod agent;
 pub(crate) mod approval;
 pub(crate) mod auth;
 pub mod channels;
-pub mod common;
+pub(crate) mod common;
 pub mod config;
 pub(crate) mod cost;
 pub(crate) mod cron;
