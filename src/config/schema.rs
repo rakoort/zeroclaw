@@ -182,8 +182,8 @@ pub struct Config {
 pub use crate::config::provider::*;
 
 // Integration config types relocated to config::integrations
-pub use crate::config::integrations::*;
 pub(crate) use crate::config::integrations::parse_skills_prompt_injection_mode;
+pub use crate::config::integrations::*;
 
 // Channel config types relocated to config::channel
 pub use crate::config::channel::*;
@@ -256,8 +256,8 @@ pub use crate::common::http::{
 pub use crate::config::memory::*;
 
 // Security config types relocated to config::security
-pub use crate::config::security::*;
 use crate::config::security::is_valid_env_var_name;
+pub use crate::config::security::*;
 
 // ── Config impl ──────────────────────────────────────────────────
 
