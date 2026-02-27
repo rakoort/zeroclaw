@@ -6,7 +6,10 @@
 
 use crate::auth::AuthService;
 use crate::providers::gemini_sanitize::sanitize_transcript_for_gemini;
-use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
+use crate::providers::traits::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
+    ToolsPayload,
+};
 use async_trait::async_trait;
 use base64::Engine;
 use directories::UserDirs;
@@ -310,6 +313,46 @@ impl CandidateContent {
             Some(answer_parts.join(""))
         }
     }
+
+    fn extract_response(self) -> (Option<String>, Vec<ToolCall>) {
+        let mut answer_parts: Vec<String> = Vec::new();
+        let mut first_thinking: Option<String> = None;
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        for part in self.parts {
+            if let Some(fc) = part.function_call {
+                tool_calls.push(ToolCall {
+                    id: format!("gemini_call_{}", tool_calls.len()),
+                    name: fc.name,
+                    arguments: fc.args.to_string(),
+                });
+            }
+            if let Some(text) = part.text {
+                if text.is_empty() {
+                    continue;
+                }
+                if !part.thought {
+                    answer_parts.push(text);
+                } else if first_thinking.is_none() {
+                    first_thinking = Some(text);
+                }
+            }
+        }
+
+        let text = if answer_parts.is_empty() {
+            first_thinking
+        } else {
+            Some(answer_parts.join(""))
+        };
+
+        (text, tool_calls)
+    }
+}
+
+struct GeminiResponse {
+    text: Option<String>,
+    tool_calls: Vec<ToolCall>,
+    usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1289,7 +1332,9 @@ impl GeminiProvider {
         system_instruction: Option<Content>,
         model: &str,
         temperature: f64,
-    ) -> anyhow::Result<(String, Option<TokenUsage>)> {
+        tools: Option<Vec<GeminiToolDeclaration>>,
+        tool_config: Option<GeminiToolConfig>,
+    ) -> anyhow::Result<GeminiResponse> {
         let auth = self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Gemini API key not found. Options:\n\
@@ -1347,8 +1392,8 @@ impl GeminiProvider {
                 temperature,
                 max_output_tokens: 8192,
             },
-            tools: None,
-            tool_config: None,
+            tools,
+            tool_config,
         };
 
         let url = Self::build_generate_content_url(model, auth);
@@ -1492,31 +1537,40 @@ impl GeminiProvider {
             output_tokens: u.candidates_token_count,
         });
 
-        let text = result
+        let content = result
             .candidates
             .and_then(|c| c.into_iter().next())
-            .and_then(|c| c.content)
-            .and_then(|c| c.effective_text())
-            .ok_or_else(|| anyhow::anyhow!("No response from Gemini"))?;
+            .and_then(|c| c.content);
 
-        Ok((text, usage))
+        let (text, tool_calls) = match content {
+            Some(c) => c.extract_response(),
+            None => (None, Vec::new()),
+        };
+
+        // When no tool calls and no text, report as error (mirrors old behavior)
+        if text.is_none() && tool_calls.is_empty() {
+            anyhow::bail!("No response from Gemini");
+        }
+
+        Ok(GeminiResponse {
+            text,
+            tool_calls,
+            usage,
+        })
     }
 }
 
 #[async_trait]
 impl Provider for GeminiProvider {
-    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
-        crate::providers::traits::ProviderCapabilities {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
         }
     }
 
-    fn convert_tools(
-        &self,
-        tools: &[crate::tools::ToolSpec],
-    ) -> crate::providers::traits::ToolsPayload {
-        crate::providers::traits::ToolsPayload::Gemini {
+    fn convert_tools(&self, tools: &[crate::tools::ToolSpec]) -> ToolsPayload {
+        ToolsPayload::Gemini {
             function_declarations: tools
                 .iter()
                 .map(|t| {
@@ -1555,10 +1609,10 @@ impl Provider for GeminiProvider {
             }],
         }];
 
-        let (text, _usage) = self
-            .send_generate_content(contents, system_instruction, model, temperature)
+        let resp = self
+            .send_generate_content(contents, system_instruction, model, temperature, None, None)
             .await?;
-        Ok(text)
+        Ok(resp.text.unwrap_or_default())
     }
 
     async fn chat_with_history(
@@ -1614,15 +1668,15 @@ impl Provider for GeminiProvider {
             })
         };
 
-        let (text, _usage) = self
-            .send_generate_content(contents, system_instruction, model, temperature)
+        let resp = self
+            .send_generate_content(contents, system_instruction, model, temperature, None, None)
             .await?;
-        Ok(text)
+        Ok(resp.text.unwrap_or_default())
     }
 
     async fn chat(
         &self,
-        request: crate::providers::traits::ChatRequest<'_>,
+        request: ChatRequest<'_>,
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
@@ -1666,14 +1720,152 @@ impl Provider for GeminiProvider {
             })
         };
 
-        let (text, usage) = self
-            .send_generate_content(contents, system_instruction, model, temperature)
+        let resp = self
+            .send_generate_content(contents, system_instruction, model, temperature, None, None)
             .await?;
 
         Ok(ChatResponse {
-            text: Some(text),
-            tool_calls: Vec::new(),
-            usage,
+            text: resp.text,
+            tool_calls: resp.tool_calls,
+            usage: resp.usage,
+            reasoning_content: None,
+        })
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        let messages = sanitize_transcript_for_gemini(messages);
+        let mut system_parts: Vec<&str> = Vec::new();
+        let mut contents: Vec<Content> = Vec::new();
+
+        for msg in &messages {
+            match msg.role.as_str() {
+                "system" => system_parts.push(&msg.content),
+                "user" => contents.push(Content {
+                    role: Some("user".into()),
+                    parts: vec![Part {
+                        text: Some(msg.content.clone()),
+                        function_call: None,
+                        function_response: None,
+                    }],
+                }),
+                "assistant" => {
+                    // Check if this is a tool-call message (JSON with tool_calls field)
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        if let Some(tool_calls) =
+                            parsed.get("tool_calls").and_then(|tc| tc.as_array())
+                        {
+                            let parts: Vec<Part> = tool_calls
+                                .iter()
+                                .filter_map(|tc| {
+                                    Some(Part {
+                                        text: None,
+                                        function_call: Some(FunctionCallPart {
+                                            name: tc.get("name")?.as_str()?.to_string(),
+                                            args: serde_json::from_str(
+                                                tc.get("arguments")?.as_str()?,
+                                            )
+                                            .ok()?,
+                                        }),
+                                        function_response: None,
+                                    })
+                                })
+                                .collect();
+                            if !parts.is_empty() {
+                                contents.push(Content {
+                                    role: Some("model".into()),
+                                    parts,
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                    contents.push(Content {
+                        role: Some("model".into()),
+                        parts: vec![Part {
+                            text: Some(msg.content.clone()),
+                            function_call: None,
+                            function_response: None,
+                        }],
+                    });
+                }
+                "tool" => {
+                    // Parse tool result and convert to functionResponse
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        let tool_call_id = parsed
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let content_str =
+                            parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        contents.push(Content {
+                            role: Some("user".into()),
+                            parts: vec![Part {
+                                text: None,
+                                function_call: None,
+                                function_response: Some(FunctionResponsePart {
+                                    name: tool_call_id.to_string(),
+                                    response: serde_json::json!({"result": content_str}),
+                                }),
+                            }],
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let system_instruction = if system_parts.is_empty() {
+            None
+        } else {
+            Some(Content {
+                role: None,
+                parts: vec![Part {
+                    text: Some(system_parts.join("\n\n")),
+                    function_call: None,
+                    function_response: None,
+                }],
+            })
+        };
+
+        let gemini_tools = if tools.is_empty() {
+            None
+        } else {
+            Some(vec![GeminiToolDeclaration {
+                function_declarations: tools.to_vec(),
+            }])
+        };
+
+        let tool_config = if gemini_tools.is_some() {
+            Some(GeminiToolConfig {
+                function_calling_config: FunctionCallingConfigMode {
+                    mode: "AUTO".into(),
+                },
+            })
+        } else {
+            None
+        };
+
+        let resp = self
+            .send_generate_content(
+                contents,
+                system_instruction,
+                model,
+                temperature,
+                gemini_tools,
+                tool_config,
+            )
+            .await?;
+
+        Ok(ChatResponse {
+            text: resp.text,
+            tool_calls: resp.tool_calls,
+            usage: resp.usage,
             reasoning_content: None,
         })
     }
@@ -2908,7 +3100,6 @@ mod tests {
 
     #[test]
     fn gemini_provider_convert_tools_returns_gemini_payload() {
-        use crate::providers::traits::ToolsPayload;
         use crate::tools::ToolSpec;
         let provider = GeminiProvider::new(Some("test-key"));
         let tools = vec![ToolSpec {
@@ -2932,5 +3123,47 @@ mod tests {
     fn gemini_supports_native_tools() {
         let provider = GeminiProvider::new(Some("test-key"));
         assert!(provider.supports_native_tools());
+    }
+
+    #[test]
+    fn candidate_content_extracts_function_calls() {
+        let content = CandidateContent {
+            parts: vec![ResponsePart {
+                text: None,
+                thought: false,
+                function_call: Some(FunctionCallResponse {
+                    name: "get_status".into(),
+                    args: serde_json::json!({"channel": "general", "verbose": true}),
+                }),
+            }],
+        };
+        let (text, calls) = content.extract_response();
+        assert!(text.is_none());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_status");
+    }
+
+    #[test]
+    fn candidate_content_extracts_mixed_text_and_calls() {
+        let content = CandidateContent {
+            parts: vec![
+                ResponsePart {
+                    text: Some("Processing request.".into()),
+                    thought: false,
+                    function_call: None,
+                },
+                ResponsePart {
+                    text: None,
+                    thought: false,
+                    function_call: Some(FunctionCallResponse {
+                        name: "get_status".into(),
+                        args: serde_json::json!({"channel": "general"}),
+                    }),
+                },
+            ],
+        };
+        let (text, calls) = content.extract_response();
+        assert_eq!(text.as_deref(), Some("Processing request."));
+        assert_eq!(calls.len(), 1);
     }
 }
