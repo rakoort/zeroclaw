@@ -1505,6 +1505,31 @@ impl GeminiProvider {
 
 #[async_trait]
 impl Provider for GeminiProvider {
+    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
+        crate::providers::traits::ProviderCapabilities {
+            native_tool_calling: true,
+            vision: true,
+        }
+    }
+
+    fn convert_tools(
+        &self,
+        tools: &[crate::tools::ToolSpec],
+    ) -> crate::providers::traits::ToolsPayload {
+        crate::providers::traits::ToolsPayload::Gemini {
+            function_declarations: tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    })
+                })
+                .collect(),
+        }
+    }
+
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -2871,5 +2896,41 @@ mod tests {
         let fc = part.function_call.unwrap();
         assert_eq!(fc.name, "get_status");
         assert_eq!(fc.args["channel"], "general");
+    }
+
+    #[test]
+    fn gemini_provider_capabilities_include_native_tools() {
+        let provider = GeminiProvider::new(Some("test-key"));
+        let caps = provider.capabilities();
+        assert!(caps.native_tool_calling);
+        assert!(caps.vision);
+    }
+
+    #[test]
+    fn gemini_provider_convert_tools_returns_gemini_payload() {
+        use crate::providers::traits::ToolsPayload;
+        use crate::tools::ToolSpec;
+        let provider = GeminiProvider::new(Some("test-key"));
+        let tools = vec![ToolSpec {
+            name: "get_status".into(),
+            description: "Get channel status".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"channel": {"type": "string"}}}),
+        }];
+        let payload = provider.convert_tools(&tools);
+        match payload {
+            ToolsPayload::Gemini {
+                function_declarations,
+            } => {
+                assert_eq!(function_declarations.len(), 1);
+                assert_eq!(function_declarations[0]["name"], "get_status");
+            }
+            _ => panic!("Expected Gemini payload"),
+        }
+    }
+
+    #[test]
+    fn gemini_supports_native_tools() {
+        let provider = GeminiProvider::new(Some("test-key"));
+        assert!(provider.supports_native_tools());
     }
 }
