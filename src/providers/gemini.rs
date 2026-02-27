@@ -1236,10 +1236,11 @@ impl GeminiProvider {
             anyhow::anyhow!(
                 "Gemini API key not found. Options:\n\
                  1. Set GEMINI_API_KEY env var\n\
-                 2. Run `gemini` CLI to authenticate (tokens will be reused)\n\
-                 3. Run `zeroclaw auth login --provider gemini`\n\
-                 4. Get an API key from https://aistudio.google.com/app/apikey\n\
-                 5. Run `zeroclaw onboard` to configure"
+                 2. Set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON file (Vertex AI)\n\
+                 3. Run `gemini` CLI to authenticate (tokens will be reused)\n\
+                 4. Run `zeroclaw auth login --provider gemini`\n\
+                 5. Get an API key from https://aistudio.google.com/app/apikey\n\
+                 6. Run `zeroclaw onboard` to configure"
             )
         })?;
 
@@ -1270,6 +1271,13 @@ impl GeminiProvider {
                     })?;
                 let proj = self.resolve_oauth_project(&token).await?;
                 (Some(token), Some(proj))
+            }
+            GeminiAuth::VertexServiceAccount {
+                ref creds,
+                ref token_state,
+            } => {
+                let token = Self::get_valid_vertex_token(creds, token_state).await?;
+                (Some(token), None)
             }
             _ => (None, None),
         };
@@ -1596,6 +1604,13 @@ impl Provider for GeminiProvider {
                 GeminiAuth::OAuthToken(_) => {
                     // CLI OAuth — cloudcode-pa does not expose a lightweight model-list probe.
                     // Token will be validated on first real request.
+                }
+                GeminiAuth::VertexServiceAccount { ref creds, .. } => {
+                    tracing::info!(
+                        project_id = %creds.project_id,
+                        region = %creds.region,
+                        "Gemini provider: Vertex AI service account ready"
+                    );
                 }
                 _ => {
                     // API key path — verify with public API models endpoint.
