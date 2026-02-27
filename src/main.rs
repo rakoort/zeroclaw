@@ -62,7 +62,9 @@ mod cron;
 mod doctor;
 mod gateway;
 mod hardware;
-mod health;
+mod health {
+    pub use zeroclaw::observability::health::*;
+}
 mod heartbeat;
 mod hooks;
 mod identity;

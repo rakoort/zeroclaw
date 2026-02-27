@@ -50,7 +50,8 @@ pub(crate) mod cron;
 pub(crate) mod doctor;
 pub mod gateway;
 pub(crate) mod hardware;
-pub(crate) mod health;
+// health module relocated to observability::health
+pub(crate) use observability::health;
 pub(crate) mod heartbeat;
 pub mod hooks;
 pub(crate) mod identity;

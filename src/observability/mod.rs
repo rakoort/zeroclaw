@@ -1,3 +1,4 @@
+pub mod health;
 pub mod log;
 pub mod multi;
 pub mod noop;
