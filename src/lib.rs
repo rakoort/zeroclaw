@@ -52,7 +52,7 @@ pub mod gateway;
 pub(crate) mod hardware;
 // health module relocated to observability::health
 pub(crate) use observability::health;
-pub(crate) mod heartbeat;
+// heartbeat module relocated to service::heartbeat
 pub mod hooks;
 pub(crate) mod identity;
 pub(crate) mod integrations;

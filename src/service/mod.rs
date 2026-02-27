@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod heartbeat;
 
 use crate::config::Config;
 use anyhow::{bail, Context, Result};

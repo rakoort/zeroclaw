@@ -19,8 +19,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     if config.heartbeat.enabled {
         let _ =
-            crate::heartbeat::engine::HeartbeatEngine::ensure_heartbeat_file(&config.workspace_dir)
-                .await;
+            super::heartbeat::HeartbeatEngine::ensure_heartbeat_file(&config.workspace_dir).await;
     }
 
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
@@ -176,7 +175,7 @@ where
 async fn run_heartbeat_worker(config: Config) -> Result<()> {
     let observer: std::sync::Arc<dyn crate::observability::Observer> =
         std::sync::Arc::from(crate::observability::create_observer(&config.observability));
-    let engine = crate::heartbeat::engine::HeartbeatEngine::new(
+    let engine = super::heartbeat::HeartbeatEngine::new(
         config.heartbeat.clone(),
         config.workspace_dir.clone(),
         observer,
