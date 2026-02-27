@@ -10,6 +10,22 @@ pub fn map_api_error(provider: &str, status: u16, body: &str) -> anyhow::Error {
     anyhow::anyhow!("{provider} API error ({status}): {sanitized}")
 }
 
+/// Trait for estimating token counts. Each provider can supply an
+/// accurate implementation; the default uses a rough chars/4 heuristic.
+pub trait TokenEstimator: Send + Sync {
+    fn estimate(&self, text: &str) -> usize;
+}
+
+/// Rough heuristic: ~4 characters per token. Suitable as a fallback
+/// when no provider-specific estimator is available.
+pub struct DefaultTokenEstimator;
+
+impl TokenEstimator for DefaultTokenEstimator {
+    fn estimate(&self, text: &str) -> usize {
+        text.len().div_ceil(4)
+    }
+}
+
 /// Standard request headers for JSON provider APIs.
 pub fn standard_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -34,8 +50,23 @@ mod tests {
     }
 
     #[test]
-    fn standard_headers_include_content_type() {
+    fn standard_headers_include_required_headers() {
         let headers = standard_headers();
         assert_eq!(headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(headers.get("accept").unwrap(), "application/json");
+        assert_eq!(headers.get("user-agent").unwrap(), "zeroclaw/1.0");
+    }
+
+    #[test]
+    fn default_estimator_approximates_chars_div_4() {
+        let estimator = DefaultTokenEstimator;
+        // 11 bytes / 4 = 2.75, rounded up = 3
+        assert_eq!(estimator.estimate("hello world"), 3);
+    }
+
+    #[test]
+    fn default_estimator_empty_string() {
+        let estimator = DefaultTokenEstimator;
+        assert_eq!(estimator.estimate(""), 0);
     }
 }
