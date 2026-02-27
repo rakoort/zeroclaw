@@ -1,4 +1,5 @@
 pub mod channel;
+pub mod memory;
 pub mod provider;
 pub mod schema;
 pub mod traits;
