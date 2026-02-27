@@ -23,26 +23,26 @@ fn is_slack_ratelimited(body: &serde_json::Value) -> bool {
         && body.get("error").and_then(|e| e.as_str()) == Some("ratelimited")
 }
 
-/// Execute a Slack API POST request with rate-limit retry.
+/// Execute a Slack API request with rate-limit retry.
 ///
 /// Retries up to `SLACK_RETRY_MAX` times on HTTP 429 or JSON `"error": "ratelimited"`.
 /// Reads `Retry-After` header to determine wait duration; falls back to 5s.
 /// Adds random jitter (0-500ms) to each retry delay.
-async fn slack_api_post(
-    client: &reqwest::Client,
+///
+/// The `make_request` closure should perform the actual HTTP call and is
+/// invoked on each attempt.
+async fn slack_api_request_with_retry<F, Fut>(
+    make_request: F,
     url: &str,
-    token: &str,
-    body: &serde_json::Value,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<serde_json::Value>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<reqwest::Response>>,
+{
     for attempt in 0..=SLACK_RETRY_MAX {
-        let resp = client
-            .post(url)
-            .bearer_auth(token)
-            .json(body)
-            .send()
-            .await?;
-
+        let resp = make_request().await?;
         let status = resp.status();
+
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             if attempt == SLACK_RETRY_MAX {
                 anyhow::bail!("Slack rate limit exceeded after {SLACK_RETRY_MAX} retries: {url}");
@@ -92,70 +92,46 @@ async fn slack_api_post(
     unreachable!()
 }
 
+/// Execute a Slack API POST request with rate-limit retry.
+async fn slack_api_post(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    slack_api_request_with_retry(
+        || async {
+            Ok(client
+                .post(url)
+                .bearer_auth(token)
+                .json(body)
+                .send()
+                .await?)
+        },
+        url,
+    )
+    .await
+}
+
 /// Execute a Slack API GET request with rate-limit retry.
-/// Same retry semantics as `slack_api_post`.
 async fn slack_api_get(
     client: &reqwest::Client,
     url: &str,
     token: &str,
     query: &[(&str, String)],
 ) -> anyhow::Result<serde_json::Value> {
-    for attempt in 0..=SLACK_RETRY_MAX {
-        let resp = client
-            .get(url)
-            .bearer_auth(token)
-            .query(query)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            if attempt == SLACK_RETRY_MAX {
-                anyhow::bail!("Slack rate limit exceeded after {SLACK_RETRY_MAX} retries: {url}");
-            }
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok());
-            let wait_secs = parse_retry_after_secs(retry_after).unwrap_or(SLACK_RETRY_DEFAULT_SECS);
-            let jitter = rand::random::<u64>() % SLACK_RETRY_JITTER_MS;
-            tracing::warn!(
-                "Slack rate limited on {url} (attempt {}/{SLACK_RETRY_MAX}). Retry-After: {wait_secs}s",
-                attempt + 1,
-            );
-            tokio::time::sleep(Duration::from_millis(wait_secs * 1000 + jitter)).await;
-            continue;
-        }
-
-        let resp_text = resp
-            .text()
-            .await
-            .unwrap_or_else(|e| format!(r#"{{"ok":false,"error":"read_failed: {e}"}}"#));
-        let parsed: serde_json::Value = serde_json::from_str(&resp_text).unwrap_or_default();
-
-        if is_slack_ratelimited(&parsed) {
-            if attempt == SLACK_RETRY_MAX {
-                anyhow::bail!("Slack rate limit exceeded after {SLACK_RETRY_MAX} retries: {url}");
-            }
-            let jitter = rand::random::<u64>() % SLACK_RETRY_JITTER_MS;
-            tracing::warn!(
-                "Slack JSON ratelimited on {url} (attempt {}/{SLACK_RETRY_MAX}). Waiting {SLACK_RETRY_DEFAULT_SECS}s",
-                attempt + 1,
-            );
-            tokio::time::sleep(Duration::from_millis(
-                SLACK_RETRY_DEFAULT_SECS * 1000 + jitter,
-            ))
-            .await;
-            continue;
-        }
-
-        if !status.is_success() {
-            anyhow::bail!("Slack API error ({status}): {resp_text}");
-        }
-
-        return Ok(parsed);
-    }
-    unreachable!()
+    slack_api_request_with_retry(
+        || async {
+            Ok(client
+                .get(url)
+                .bearer_auth(token)
+                .query(query)
+                .send()
+                .await?)
+        },
+        url,
+    )
+    .await
 }
 
 /// Format a single thread reply with role label and envelope.

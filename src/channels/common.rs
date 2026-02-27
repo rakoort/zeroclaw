@@ -1,5 +1,7 @@
 //! Shared utilities for channel implementations.
 
+use std::time::Duration;
+
 /// Split a message at natural boundaries (double newlines, then single
 /// newlines, then spaces, then hard cut) to fit within `max_len` bytes.
 pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
@@ -55,9 +57,39 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
     chunks
 }
 
+/// Retry an async operation with exponential backoff.
+///
+/// Calls `operation` up to `max_retries + 1` times total. On failure, waits
+/// `base_delay * 2^attempt` before the next attempt.
+pub async fn send_with_retry<F, Fut>(
+    max_retries: u32,
+    base_delay: Duration,
+    operation: F,
+) -> anyhow::Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut last_err = None;
+    for attempt in 0..=max_retries {
+        match operation().await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < max_retries {
+                    let delay = base_delay * 2u32.saturating_pow(attempt);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn short_message_returns_single_chunk() {
@@ -161,5 +193,39 @@ mod tests {
     fn all_whitespace_returns_empty() {
         let result = split_message("   \n\n  \n  ", 100);
         assert!(result.is_empty() || result.iter().all(|c| !c.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_on_first_try() {
+        let result = send_with_retry(3, Duration::from_millis(1), || async { Ok(()) }).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_retries_on_failure() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let c = counter.clone();
+        let result = send_with_retry(3, Duration::from_millis(1), move || {
+            let c = c.clone();
+            async move {
+                let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 2 {
+                    anyhow::bail!("transient error");
+                }
+                Ok(())
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_gives_up_after_max() {
+        let result = send_with_retry(2, Duration::from_millis(1), || async {
+            anyhow::bail!("permanent error")
+        })
+        .await;
+        assert!(result.is_err());
     }
 }
