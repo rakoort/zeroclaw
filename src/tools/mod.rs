@@ -40,6 +40,7 @@ pub mod hardware_memory_map;
 pub mod hardware_memory_read;
 pub mod http_request;
 pub mod image_info;
+pub mod linear;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;
@@ -80,6 +81,8 @@ pub use hardware_memory_map::HardwareMemoryMapTool;
 pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
+#[allow(unused_imports)]
+pub use linear::LinearToolConfig;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
@@ -315,6 +318,85 @@ pub fn all_tools_with_runtime(
                 security.clone(),
             )));
         }
+    }
+
+    // Slack CLI tools (conditional on config)
+    if let Some(ref slack_script) = root_config.tools.slack_script {
+        let cfg = Arc::new(slack::SlackToolConfig::new(slack_script, workspace_dir));
+        tool_arcs.push(Arc::new(slack::dm::SlackDmTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::send::SlackSendTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::send_thread::SlackSendThreadTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::send_file::SlackSendFileTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::history::SlackHistoryTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::dm_history::SlackDmHistoryTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::threads::SlackThreadsTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::presence::SlackPresenceTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(slack::react::SlackReactTool {
+            config: Arc::clone(&cfg),
+        }));
+    }
+
+    // Linear CLI tools (conditional on config)
+    if let Some(ref linear_script) = root_config.tools.linear_script {
+        let cfg = Arc::new(linear::LinearToolConfig::new(linear_script, workspace_dir));
+        tool_arcs.push(Arc::new(linear::issues::LinearIssuesTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::create_issue::LinearCreateIssueTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::update_issue::LinearUpdateIssueTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::archive_issue::LinearArchiveIssueTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::add_comment::LinearAddCommentTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::teams::LinearTeamsTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::users::LinearUsersTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::projects::LinearProjectsTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::cycles::LinearCyclesTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::labels::LinearLabelsTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::states::LinearStatesTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::create_label::LinearCreateLabelTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::create_project::LinearCreateProjectTool {
+            config: Arc::clone(&cfg),
+        }));
+        tool_arcs.push(Arc::new(linear::create_cycle::LinearCreateCycleTool {
+            config: Arc::clone(&cfg),
+        }));
     }
 
     // Add delegation tool when agents are configured
@@ -600,6 +682,160 @@ mod tests {
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"delegate"));
+    }
+
+    #[test]
+    fn all_tools_includes_slack_when_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let mut cfg = test_config(&tmp);
+        cfg.tools.slack_script = Some("test.ts".into());
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"slack_dm"),
+            "expected slack_dm in tools list"
+        );
+        assert!(
+            names.contains(&"slack_history"),
+            "expected slack_history in tools list"
+        );
+    }
+
+    #[test]
+    fn all_tools_excludes_slack_when_not_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let cfg = test_config(&tmp);
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            !names.contains(&"slack_dm"),
+            "slack_dm should not be present without config"
+        );
+    }
+
+    #[test]
+    fn all_tools_includes_linear_when_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let mut cfg = test_config(&tmp);
+        cfg.tools.linear_script = Some("test.ts".into());
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"linear_issues"),
+            "expected linear_issues in tools list"
+        );
+        assert!(
+            names.contains(&"linear_create_issue"),
+            "expected linear_create_issue in tools list"
+        );
+    }
+
+    #[test]
+    fn all_tools_excludes_linear_when_not_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let cfg = test_config(&tmp);
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            !names.contains(&"linear_issues"),
+            "linear_issues should not be present without config"
+        );
     }
 
     #[test]
