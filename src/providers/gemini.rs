@@ -465,7 +465,8 @@ impl GeminiProvider {
     /// 1. Explicit API key passed in
     /// 2. `GEMINI_API_KEY` environment variable
     /// 3. `GOOGLE_API_KEY` environment variable
-    /// 4. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
+    /// 4. Vertex AI service account (`VERTEX_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`)
+    /// 5. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
     pub fn new(api_key: Option<&str>) -> Self {
         let oauth_cred_paths = Self::discover_oauth_cred_paths();
         let resolved_auth = api_key
@@ -473,6 +474,7 @@ impl GeminiProvider {
             .map(GeminiAuth::ExplicitKey)
             .or_else(|| Self::load_non_empty_env("GEMINI_API_KEY").map(GeminiAuth::EnvGeminiKey))
             .or_else(|| Self::load_non_empty_env("GOOGLE_API_KEY").map(GeminiAuth::EnvGoogleKey))
+            .or_else(Self::try_load_vertex_service_account)
             .or_else(|| {
                 Self::try_load_gemini_cli_token(oauth_cred_paths.first())
                     .map(|state| GeminiAuth::OAuthToken(Arc::new(tokio::sync::Mutex::new(state))))
@@ -494,8 +496,9 @@ impl GeminiProvider {
     /// 1. Explicit API key passed in
     /// 2. `GEMINI_API_KEY` environment variable
     /// 3. `GOOGLE_API_KEY` environment variable
-    /// 4. Managed OAuth from auth-profiles.json (if auth_service provided)
-    /// 5. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
+    /// 4. Vertex AI service account (`VERTEX_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`)
+    /// 5. Managed OAuth from auth-profiles.json (if auth_service provided)
+    /// 6. Gemini CLI OAuth tokens (`~/.gemini/oauth_creds.json`)
     pub fn new_with_auth(
         api_key: Option<&str>,
         auth_service: AuthService,
@@ -503,14 +506,15 @@ impl GeminiProvider {
     ) -> Self {
         let oauth_cred_paths = Self::discover_oauth_cred_paths();
 
-        // First check API keys
+        // First check API keys, then Vertex service account
         let resolved_auth = api_key
             .and_then(Self::normalize_non_empty)
             .map(GeminiAuth::ExplicitKey)
             .or_else(|| Self::load_non_empty_env("GEMINI_API_KEY").map(GeminiAuth::EnvGeminiKey))
-            .or_else(|| Self::load_non_empty_env("GOOGLE_API_KEY").map(GeminiAuth::EnvGoogleKey));
+            .or_else(|| Self::load_non_empty_env("GOOGLE_API_KEY").map(GeminiAuth::EnvGoogleKey))
+            .or_else(Self::try_load_vertex_service_account);
 
-        // If no API key, we'll use managed OAuth (checked at runtime)
+        // If no API key or Vertex SA, try managed OAuth (checked at runtime)
         // or fall back to CLI OAuth
         let (auth, use_managed) = if resolved_auth.is_some() {
             (resolved_auth, false)
@@ -694,6 +698,8 @@ impl GeminiProvider {
     pub fn has_any_auth() -> bool {
         Self::load_non_empty_env("GEMINI_API_KEY").is_some()
             || Self::load_non_empty_env("GOOGLE_API_KEY").is_some()
+            || Self::load_non_empty_env("VERTEX_SERVICE_ACCOUNT_JSON").is_some()
+            || Self::load_non_empty_env("GOOGLE_APPLICATION_CREDENTIALS").is_some()
             || Self::has_cli_credentials()
     }
 
