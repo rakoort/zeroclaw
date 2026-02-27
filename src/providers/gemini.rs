@@ -46,6 +46,17 @@ struct VertexServiceAccountCreds {
     region: String,
 }
 
+impl std::fmt::Debug for VertexServiceAccountCreds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VertexServiceAccountCreds")
+            .field("client_email", &self.client_email)
+            .field("project_id", &self.project_id)
+            .field("region", &self.region)
+            .field("key_pair", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Cached Vertex AI access token with expiry tracking.
 struct VertexTokenState {
     access_token: String,
@@ -684,6 +695,115 @@ impl GeminiProvider {
         Self::load_non_empty_env("GEMINI_API_KEY").is_some()
             || Self::load_non_empty_env("GOOGLE_API_KEY").is_some()
             || Self::has_cli_credentials()
+    }
+
+    /// Parse a service account JSON string into Vertex credentials.
+    fn parse_vertex_service_account_json(
+        json_str: &str,
+        region: &str,
+    ) -> anyhow::Result<VertexServiceAccountCreds> {
+        #[derive(Deserialize)]
+        struct ServiceAccountJson {
+            r#type: Option<String>,
+            project_id: Option<String>,
+            private_key: Option<String>,
+            client_email: Option<String>,
+        }
+
+        let sa: ServiceAccountJson = serde_json::from_str(json_str)
+            .map_err(|e| anyhow::anyhow!("invalid service account JSON: {e}"))?;
+
+        let sa_type = sa.r#type.unwrap_or_default();
+        if sa_type != "service_account" {
+            anyhow::bail!(
+                "expected type \"service_account\" in credentials JSON, got \"{sa_type}\""
+            );
+        }
+
+        let client_email = sa
+            .client_email
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing client_email in service account JSON"))?;
+        let project_id = sa
+            .project_id
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing project_id in service account JSON"))?;
+        let private_key_pem = sa
+            .private_key
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing private_key in service account JSON"))?;
+
+        let parsed_pem = pem::parse(&private_key_pem)
+            .map_err(|e| anyhow::anyhow!("failed to decode PEM private key: {e}"))?;
+
+        let key_pair = match parsed_pem.tag() {
+            "PRIVATE KEY" => RsaKeyPair::from_pkcs8(parsed_pem.contents()),
+            "RSA PRIVATE KEY" => RsaKeyPair::from_der(parsed_pem.contents()),
+            other => anyhow::bail!(
+                "unsupported PEM tag \"{other}\", expected PRIVATE KEY or RSA PRIVATE KEY"
+            ),
+        }
+        .map_err(|e| anyhow::anyhow!("failed to parse RSA private key: {e}"))?;
+
+        Ok(VertexServiceAccountCreds {
+            client_email,
+            key_pair: Arc::new(key_pair),
+            project_id,
+            region: region.to_string(),
+        })
+    }
+
+    /// Try to load Vertex AI service account credentials from environment.
+    ///
+    /// Checks (in order):
+    /// 1. `VERTEX_SERVICE_ACCOUNT_JSON` — base64-encoded JSON (for containers)
+    /// 2. `GOOGLE_APPLICATION_CREDENTIALS` — file path to JSON
+    fn try_load_vertex_service_account() -> Option<GeminiAuth> {
+        let region = std::env::var("VERTEX_REGION")
+            .ok()
+            .and_then(|v| Self::normalize_non_empty(&v))
+            .unwrap_or_else(|| "europe-west1".to_string());
+
+        let json_str = Self::load_non_empty_env("VERTEX_SERVICE_ACCOUNT_JSON")
+            .and_then(|b64| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+            })
+            .or_else(|| {
+                let path = Self::load_non_empty_env("GOOGLE_APPLICATION_CREDENTIALS")?;
+                std::fs::read_to_string(&path)
+                    .map_err(|e| {
+                        tracing::debug!("GOOGLE_APPLICATION_CREDENTIALS read failed: {e}");
+                        e
+                    })
+                    .ok()
+            })?;
+
+        // Only proceed if it's actually a service_account type
+        let check: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+        if check.get("type").and_then(|v| v.as_str()) != Some("service_account") {
+            return None;
+        }
+
+        match Self::parse_vertex_service_account_json(&json_str, &region) {
+            Ok(creds) => {
+                tracing::info!(
+                    project_id = %creds.project_id,
+                    region = %creds.region,
+                    "Gemini provider using Vertex AI service account"
+                );
+                Some(GeminiAuth::VertexServiceAccount {
+                    creds: Arc::new(creds),
+                    token_state: Arc::new(tokio::sync::Mutex::new(None)),
+                })
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load Vertex AI service account: {e}");
+                None
+            }
+        }
     }
 
     /// Get authentication source description for diagnostics.
@@ -2205,5 +2325,53 @@ mod tests {
         let result = provider.warmup().await;
         // Should succeed without making HTTP requests
         assert!(result.is_ok());
+    }
+
+    // ── Vertex AI service account credential loading tests ────────────────
+
+    #[test]
+    fn vertex_sa_json_parsing_valid() {
+        let pem_str = include_str!("../../tests/fixtures/test_rsa_private_key.pem");
+        let sa_json = serde_json::json!({
+            "type": "service_account",
+            "project_id": "my-project",
+            "private_key": pem_str,
+            "client_email": "test@my-project.iam.gserviceaccount.com"
+        });
+        let result =
+            GeminiProvider::parse_vertex_service_account_json(&sa_json.to_string(), "europe-west1");
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert_eq!(
+            creds.client_email,
+            "test@my-project.iam.gserviceaccount.com"
+        );
+        assert_eq!(creds.project_id, "my-project");
+        assert_eq!(creds.region, "europe-west1");
+    }
+
+    #[test]
+    fn vertex_sa_json_rejects_non_service_account() {
+        let sa_json = serde_json::json!({
+            "type": "authorized_user",
+            "project_id": "my-project",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+            "client_email": "test@my-project.iam.gserviceaccount.com"
+        });
+        let result =
+            GeminiProvider::parse_vertex_service_account_json(&sa_json.to_string(), "us-central1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("service_account"));
+    }
+
+    #[test]
+    fn vertex_sa_json_rejects_missing_fields() {
+        let sa_json = serde_json::json!({
+            "type": "service_account",
+            "project_id": "my-project"
+        });
+        let result =
+            GeminiProvider::parse_vertex_service_account_json(&sa_json.to_string(), "us-central1");
+        assert!(result.is_err());
     }
 }
