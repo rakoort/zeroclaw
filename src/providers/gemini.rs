@@ -1,8 +1,8 @@
 //! Google Gemini provider with support for:
 //! - Direct API key (`GEMINI_API_KEY` env var or config)
+//! - Vertex AI service account (`GOOGLE_APPLICATION_CREDENTIALS` or `VERTEX_SERVICE_ACCOUNT_JSON`)
 //! - Gemini CLI OAuth tokens (reuse existing ~/.gemini/ authentication)
 //! - ZeroClaw auth-profiles OAuth tokens
-//! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
 use crate::providers::gemini_sanitize::sanitize_transcript_for_gemini;
@@ -1196,9 +1196,7 @@ impl GeminiProvider {
             let access_token = parsed
                 .access_token
                 .filter(|t| !t.trim().is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Vertex AI token response missing access_token")
-                })?;
+                .ok_or_else(|| anyhow::anyhow!("Vertex AI token response missing access_token"))?;
 
             let expiry_millis = parsed.expires_in.and_then(|secs| {
                 let now = std::time::SystemTime::now()
@@ -2564,7 +2562,8 @@ mod tests {
     #[test]
     fn vertex_url_strips_models_prefix() {
         let auth = test_vertex_auth();
-        let url = GeminiProvider::build_generate_content_url("models/gemini-3-flash-preview", &auth);
+        let url =
+            GeminiProvider::build_generate_content_url("models/gemini-3-flash-preview", &auth);
         assert!(url.contains("/models/gemini-3-flash-preview:"));
         assert!(!url.contains("/models/models/"));
     }
