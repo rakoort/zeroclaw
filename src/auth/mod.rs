@@ -40,7 +40,7 @@ impl AuthService {
     pub fn new(state_dir: &Path, encrypt_secrets: bool) -> Self {
         Self {
             store: AuthProfilesStore::new(state_dir, encrypt_secrets),
-            client: reqwest::Client::new(),
+            client: crate::config::build_runtime_proxy_client("provider.compatible"),
         }
     }
 

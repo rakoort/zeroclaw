@@ -250,23 +250,21 @@ mod tests {
     use super::*;
 
     fn make_channel() -> WatiChannel {
-        WatiChannel {
-            api_token: "test-token".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: None,
-            allowed_numbers: vec!["+1234567890".into()],
-            client: reqwest::Client::new(),
-        }
+        WatiChannel::new(
+            "test-token".into(),
+            "https://live-mt-server.wati.io".into(),
+            None,
+            vec!["+1234567890".into()],
+        )
     }
 
     fn make_wildcard_channel() -> WatiChannel {
-        WatiChannel {
-            api_token: "test-token".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: None,
-            allowed_numbers: vec!["*".into()],
-            client: reqwest::Client::new(),
-        }
+        WatiChannel::new(
+            "test-token".into(),
+            "https://live-mt-server.wati.io".into(),
+            None,
+            vec!["*".into()],
+        )
     }
 
     #[test]
@@ -291,25 +289,23 @@ mod tests {
 
     #[test]
     fn wati_number_allowed_empty() {
-        let ch = WatiChannel {
-            api_token: "tok".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: None,
-            allowed_numbers: vec![],
-            client: reqwest::Client::new(),
-        };
+        let ch = WatiChannel::new(
+            "tok".into(),
+            "https://live-mt-server.wati.io".into(),
+            None,
+            vec![],
+        );
         assert!(!ch.is_number_allowed("+1234567890"));
     }
 
     #[test]
     fn wati_build_target_with_tenant() {
-        let ch = WatiChannel {
-            api_token: "tok".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: Some("tenant1".into()),
-            allowed_numbers: vec![],
-            client: reqwest::Client::new(),
-        };
+        let ch = WatiChannel::new(
+            "tok".into(),
+            "https://live-mt-server.wati.io".into(),
+            Some("tenant1".into()),
+            vec![],
+        );
         assert_eq!(ch.build_target("+1234567890"), "tenant1:1234567890");
     }
 
@@ -321,13 +317,12 @@ mod tests {
 
     #[test]
     fn wati_build_target_already_prefixed() {
-        let ch = WatiChannel {
-            api_token: "tok".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: Some("tenant1".into()),
-            allowed_numbers: vec![],
-            client: reqwest::Client::new(),
-        };
+        let ch = WatiChannel::new(
+            "tok".into(),
+            "https://live-mt-server.wati.io".into(),
+            Some("tenant1".into()),
+            vec![],
+        );
         // If the phone already has the tenant prefix, don't double it
         assert_eq!(ch.build_target("tenant1:1234567890"), "tenant1:1234567890");
     }
@@ -435,13 +430,12 @@ mod tests {
 
     #[test]
     fn wati_parse_normalizes_phone() {
-        let ch = WatiChannel {
-            api_token: "tok".into(),
-            api_url: "https://live-mt-server.wati.io".into(),
-            tenant_id: None,
-            allowed_numbers: vec!["+1234567890".into()],
-            client: reqwest::Client::new(),
-        };
+        let ch = WatiChannel::new(
+            "tok".into(),
+            "https://live-mt-server.wati.io".into(),
+            None,
+            vec!["+1234567890".into()],
+        );
 
         // Phone without + prefix
         let payload = serde_json::json!({

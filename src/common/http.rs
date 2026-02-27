@@ -20,10 +20,12 @@ const SUPPORTED_PROXY_SERVICE_KEYS: &[&str] = &[
     "provider.ollama",
     "provider.openai",
     "provider.openrouter",
+    "channel.clawdtalk",
     "channel.dingtalk",
     "channel.discord",
     "channel.feishu",
     "channel.lark",
+    "channel.linq",
     "channel.matrix",
     "channel.mattermost",
     "channel.nextcloud_talk",
@@ -631,6 +633,19 @@ mod tests {
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("proxy.scope='services'"));
+    }
+
+    #[test]
+    fn supported_keys_include_linq_and_clawdtalk() {
+        let keys = ProxyConfig::supported_service_keys();
+        assert!(
+            keys.contains(&"channel.linq"),
+            "channel.linq must be in SUPPORTED_PROXY_SERVICE_KEYS"
+        );
+        assert!(
+            keys.contains(&"channel.clawdtalk"),
+            "channel.clawdtalk must be in SUPPORTED_PROXY_SERVICE_KEYS"
+        );
     }
 
     #[test]

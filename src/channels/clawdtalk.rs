@@ -62,10 +62,11 @@ impl ClawdTalkChannel {
             connection_id: config.connection_id,
             from_number: config.from_number,
             allowed_destinations: config.allowed_destinations,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            client: crate::config::build_runtime_proxy_client_with_timeouts(
+                "channel.clawdtalk",
+                30,
+                10,
+            ),
             webhook_secret: config.webhook_secret,
         }
     }

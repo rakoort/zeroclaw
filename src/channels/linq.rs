@@ -23,7 +23,7 @@ impl LinqChannel {
             api_token,
             from_phone,
             allowed_senders,
-            client: reqwest::Client::new(),
+            client: crate::config::build_runtime_proxy_client("channel.linq"),
         }
     }
 
