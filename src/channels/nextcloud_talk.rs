@@ -1,7 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use uuid::Uuid;
 
 /// Nextcloud Talk channel in webhook mode.
@@ -256,24 +254,8 @@ pub fn verify_nextcloud_talk_signature(
         return false;
     }
 
-    let signature_hex = signature
-        .trim()
-        .strip_prefix("sha256=")
-        .unwrap_or(signature)
-        .trim();
-
-    let Ok(provided) = hex::decode(signature_hex) else {
-        tracing::warn!("Nextcloud Talk: invalid signature format");
-        return false;
-    };
-
     let payload = format!("{random}{body}");
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
-        return false;
-    };
-    mac.update(payload.as_bytes());
-
-    mac.verify_slice(&provided).is_ok()
+    crate::channels::common::verify_hmac_sha256(secret.as_bytes(), payload.as_bytes(), signature)
 }
 
 #[cfg(test)]
@@ -451,6 +433,8 @@ mod tests {
         let random = "random-seed";
         let body = r#"{"type":"message"}"#;
 
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
         let payload = format!("{random}{body}");
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(payload.as_bytes());
@@ -477,6 +461,8 @@ mod tests {
         let random = "random-seed";
         let body = r#"{"type":"message"}"#;
 
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
         let payload = format!("{random}{body}");
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(payload.as_bytes());

@@ -57,6 +57,28 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
     chunks
 }
 
+/// Verify an HMAC-SHA256 signature, handling optional `sha256=` prefix.
+/// Uses constant-time comparison to prevent timing attacks.
+pub fn verify_hmac_sha256(secret: &[u8], payload: &[u8], signature: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
+        return false;
+    };
+    mac.update(payload);
+
+    let sig_hex = signature
+        .trim()
+        .strip_prefix("sha256=")
+        .unwrap_or(signature.trim());
+    let Ok(provided) = hex::decode(sig_hex) else {
+        return false;
+    };
+
+    mac.verify_slice(&provided).is_ok()
+}
+
 /// Retry an async operation with exponential backoff.
 ///
 /// Calls `operation` up to `max_retries + 1` times total. On failure, waits
@@ -227,5 +249,34 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_hmac_sha256_valid_signature() {
+        let secret = b"test-secret";
+        let payload = b"test-payload";
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(payload);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        assert!(verify_hmac_sha256(secret, payload, &sig));
+    }
+
+    #[test]
+    fn verify_hmac_sha256_strips_sha256_prefix() {
+        let secret = b"test-secret";
+        let payload = b"test-payload";
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(payload);
+        let sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        assert!(verify_hmac_sha256(secret, payload, &sig));
+    }
+
+    #[test]
+    fn verify_hmac_sha256_rejects_wrong_signature() {
+        assert!(!verify_hmac_sha256(b"secret", b"payload", "deadbeef"));
     }
 }
