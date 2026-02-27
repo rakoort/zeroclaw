@@ -1098,6 +1098,130 @@ impl GeminiProvider {
             || status.is_server_error()
             || error_text.contains("RESOURCE_EXHAUSTED")
     }
+
+    /// Build a self-signed JWT for Vertex AI service account token exchange.
+    fn build_vertex_jwt(creds: &VertexServiceAccountCreds) -> anyhow::Result<String> {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| anyhow::anyhow!("system clock error: {e}"))?
+            .as_secs() as i64;
+
+        let header = serde_json::json!({"alg": "RS256", "typ": "JWT"});
+        let claims = serde_json::json!({
+            "iss": creds.client_email,
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "aud": GOOGLE_TOKEN_ENDPOINT,
+            "iat": now_secs,
+            "exp": now_secs + 3600,
+        });
+
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header_b64 = b64.encode(serde_json::to_vec(&header)?);
+        let claims_b64 = b64.encode(serde_json::to_vec(&claims)?);
+        let signing_input = format!("{header_b64}.{claims_b64}");
+
+        let rng = ring::rand::SystemRandom::new();
+        let mut signature = vec![0u8; creds.key_pair.public().modulus_len()];
+        creds
+            .key_pair
+            .sign(
+                &ring::signature::RSA_PKCS1_SHA256,
+                &rng,
+                signing_input.as_bytes(),
+                &mut signature,
+            )
+            .map_err(|_| anyhow::anyhow!("RSA signing failed"))?;
+
+        let signature_b64 = b64.encode(&signature);
+        Ok(format!("{signing_input}.{signature_b64}"))
+    }
+
+    /// Get a valid Vertex AI access token, acquiring or refreshing via JWT grant as needed.
+    async fn get_valid_vertex_token(
+        creds: &VertexServiceAccountCreds,
+        token_state: &Arc<tokio::sync::Mutex<Option<VertexTokenState>>>,
+    ) -> anyhow::Result<String> {
+        let mut guard = token_state.lock().await;
+
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
+            .unwrap_or(i64::MAX);
+
+        // Reuse cached token if still valid (with 60s buffer)
+        if let Some(ref state) = *guard {
+            if state.expiry_millis > now_millis.saturating_add(60_000) {
+                return Ok(state.access_token.clone());
+            }
+        }
+
+        // Build and sign JWT
+        let jwt = Self::build_vertex_jwt(creds)?;
+
+        // Exchange JWT for access token (blocking HTTP in spawn_blocking)
+        let token_result = tokio::task::spawn_blocking(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::blocking::Client::new());
+
+            let response = client
+                .post(GOOGLE_TOKEN_ENDPOINT)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", &jwt),
+                ])
+                .send()
+                .map_err(|e| anyhow::anyhow!("Vertex AI token request failed: {e}"))?;
+
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+
+            if !status.is_success() {
+                anyhow::bail!("Vertex AI token exchange failed (HTTP {status}): {body}");
+            }
+
+            #[derive(serde::Deserialize)]
+            struct TokenResponse {
+                access_token: Option<String>,
+                expires_in: Option<i64>,
+            }
+
+            let parsed: TokenResponse = serde_json::from_str(&body)
+                .map_err(|_| anyhow::anyhow!("Vertex AI token response is not valid JSON"))?;
+
+            let access_token = parsed
+                .access_token
+                .filter(|t| !t.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Vertex AI token response missing access_token")
+                })?;
+
+            let expiry_millis = parsed.expires_in.and_then(|secs| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|d| i64::try_from(d.as_millis()).ok())?;
+                now.checked_add(secs.checked_mul(1000)?)
+            });
+
+            Ok((access_token, expiry_millis))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Vertex AI token task panicked: {e}"))??;
+
+        let (access_token, expiry_millis) = token_result;
+
+        *guard = Some(VertexTokenState {
+            access_token: access_token.clone(),
+            expiry_millis: expiry_millis.unwrap_or(now_millis + 3_600_000),
+        });
+
+        Ok(access_token)
+    }
 }
 
 impl GeminiProvider {
@@ -2462,5 +2586,52 @@ mod tests {
         // Should NOT have cloudcode-pa envelope fields
         assert!(json.get("model").is_none());
         assert!(json.get("request").is_none());
+    }
+
+    // ── JWT-based Vertex AI token acquisition tests ───────────────────────
+
+    #[test]
+    fn vertex_jwt_has_correct_structure() {
+        let auth = test_vertex_auth();
+        let creds = match &auth {
+            GeminiAuth::VertexServiceAccount { creds, .. } => creds.clone(),
+            _ => panic!("expected VertexServiceAccount"),
+        };
+
+        let jwt = GeminiProvider::build_vertex_jwt(&creds).expect("JWT build");
+
+        // JWT has 3 dot-separated parts
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT should have header.payload.signature");
+
+        // Decode and verify header
+        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[0])
+            .unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["alg"], "RS256");
+        assert_eq!(header["typ"], "JWT");
+
+        // Decode and verify claims
+        let claims_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims_bytes).unwrap();
+        assert_eq!(claims["iss"], "test@test-project.iam.gserviceaccount.com");
+        assert_eq!(claims["aud"], "https://oauth2.googleapis.com/token");
+        assert_eq!(
+            claims["scope"],
+            "https://www.googleapis.com/auth/cloud-platform"
+        );
+        assert!(claims["iat"].is_number());
+        assert!(claims["exp"].is_number());
+
+        // exp should be iat + 3600
+        let iat = claims["iat"].as_i64().unwrap();
+        let exp = claims["exp"].as_i64().unwrap();
+        assert_eq!(exp - iat, 3600);
+
+        // Signature part should be non-empty
+        assert!(!parts[2].is_empty());
     }
 }
