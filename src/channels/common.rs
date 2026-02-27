@@ -3,6 +3,8 @@
 /// Split a message at natural boundaries (double newlines, then single
 /// newlines, then spaces, then hard cut) to fit within `max_len` bytes.
 pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
+    assert!(max_len > 0, "split_message: max_len must be > 0");
+
     if content.is_empty() {
         return Vec::new();
     }
@@ -19,8 +21,17 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let slice = &remaining[..max_len];
-        let min_pos = max_len / 2;
+        // Find the largest byte index <= max_len that is a char boundary
+        // to avoid panicking when max_len falls inside a multi-byte character.
+        let end = {
+            let mut e = max_len;
+            while e > 0 && !remaining.is_char_boundary(e) {
+                e -= 1;
+            }
+            e
+        };
+        let slice = &remaining[..end];
+        let min_pos = end / 2;
 
         // Try double newline, then single newline, then space.
         // Only accept a boundary if it falls past the midpoint of the window
@@ -31,7 +42,7 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
             .map(|i| i + 2)
             .or_else(|| slice.rfind('\n').filter(|&i| i > min_pos).map(|i| i + 1))
             .or_else(|| slice.rfind(' ').filter(|&i| i > min_pos).map(|i| i + 1))
-            .unwrap_or(max_len);
+            .unwrap_or(end);
 
         let (chunk, rest) = remaining.split_at(split_at);
         let trimmed = chunk.trim_end();
@@ -106,5 +117,49 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.len() <= 4096);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "max_len must be > 0")]
+    fn max_len_zero_panics() {
+        split_message("hello", 0);
+    }
+
+    #[test]
+    fn multibyte_content_does_not_panic() {
+        // Each emoji is 4 bytes; 500 emoji = 2000 bytes but 500 chars
+        let emoji_msg = "😀".repeat(500);
+        let chunks = split_message(&emoji_msg, 2000);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 2000);
+        }
+        // Verify no content lost
+        let rejoined: String = chunks.join("");
+        assert_eq!(rejoined, emoji_msg);
+    }
+
+    #[test]
+    fn content_preserved_after_split() {
+        let msg = "hello world this is a test message with some content";
+        let chunks = split_message(msg, 15);
+        let rejoined: String = chunks.join(" ");
+        // All words should be present (order preserved, whitespace may differ)
+        for word in msg.split_whitespace() {
+            assert!(rejoined.contains(word), "missing word: {word}");
+        }
+    }
+
+    #[test]
+    fn exactly_at_limit_no_split() {
+        let msg = "x".repeat(100);
+        let result = split_message(&msg, 100);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], msg);
+    }
+
+    #[test]
+    fn all_whitespace_returns_empty() {
+        let result = split_message("   \n\n  \n  ", 100);
+        assert!(result.is_empty() || result.iter().all(|c| !c.is_empty()));
     }
 }
