@@ -121,6 +121,33 @@ impl Observer for LogObserver {
                     "fallback.triggered"
                 );
             }
+            ObserverEvent::IntegrationApiCall {
+                integration,
+                method,
+                success,
+                duration_ms,
+                error,
+                retries,
+            } => {
+                if *success {
+                    info!(
+                        integration = %integration,
+                        method = %method,
+                        duration_ms = duration_ms,
+                        retries = retries,
+                        "integration.api_call"
+                    );
+                } else {
+                    warn!(
+                        integration = %integration,
+                        method = %method,
+                        duration_ms = duration_ms,
+                        retries = retries,
+                        error = error.as_deref().unwrap_or("unknown"),
+                        "integration.api_call.error"
+                    );
+                }
+            }
         }
     }
 

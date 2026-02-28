@@ -227,7 +227,8 @@ impl Observer for PrometheusObserver {
             | ObserverEvent::ClassificationResult { .. }
             | ObserverEvent::PlannerRequest { .. }
             | ObserverEvent::PlannerResponse { .. }
-            | ObserverEvent::FallbackTriggered { .. } => {}
+            | ObserverEvent::FallbackTriggered { .. }
+            | ObserverEvent::IntegrationApiCall { .. } => {}
             ObserverEvent::ToolCall {
                 tool,
                 duration,

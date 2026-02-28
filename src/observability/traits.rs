@@ -83,6 +83,15 @@ pub enum ObserverEvent {
         fallback_model: String,
         error: String,
     },
+    /// An integration made an API call to an external service.
+    IntegrationApiCall {
+        integration: String,
+        method: String,
+        success: bool,
+        duration_ms: u64,
+        error: Option<String>,
+        retries: u32,
+    },
 }
 
 /// Numeric metrics emitted by the agent runtime.
@@ -257,5 +266,19 @@ mod tests {
         };
         let cloned = event.clone();
         assert!(matches!(cloned, ObserverEvent::FallbackTriggered { .. }));
+    }
+
+    #[test]
+    fn integration_api_call_event_is_cloneable() {
+        let event = ObserverEvent::IntegrationApiCall {
+            integration: "slack".into(),
+            method: "chat.postMessage".into(),
+            success: true,
+            duration_ms: 150,
+            error: None,
+            retries: 0,
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::IntegrationApiCall { .. }));
     }
 }
