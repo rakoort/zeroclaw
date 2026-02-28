@@ -149,6 +149,10 @@ pub struct Config {
     #[serde(default)]
     pub tools: ToolsConfig,
 
+    /// Service integrations (Slack, Linear, etc.) (`[integrations]`).
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
+
     /// Proxy configuration for outbound HTTP/HTTPS/SOCKS5 traffic (`[proxy]`).
     #[serde(default)]
     pub proxy: ProxyConfig,
@@ -305,6 +309,7 @@ impl Default for Config {
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
             tools: ToolsConfig::default(),
+            integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             identity: IdentityConfig::default(),
             cost: CostConfig::default(),
@@ -1847,6 +1852,7 @@ default_temperature = 0.7
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
             tools: ToolsConfig::default(),
+            integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             agent: AgentConfig::default(),
             identity: IdentityConfig::default(),
@@ -2030,6 +2036,7 @@ tool_dispatcher = "xml"
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
             tools: ToolsConfig::default(),
+            integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             agent: AgentConfig::default(),
             identity: IdentityConfig::default(),

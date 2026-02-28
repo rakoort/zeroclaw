@@ -907,3 +907,80 @@ pub struct ToolsConfig {
     /// Path to Linear CLI script relative to workspace (e.g. "skills/linear/scripts/linear-cli.ts").
     pub linear_script: Option<String>,
 }
+
+// ── Integrations ────────────────────────────────────────────────
+
+/// Top-level integrations configuration (`[integrations]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct IntegrationsConfig {
+    pub slack: Option<SlackIntegrationConfig>,
+    pub linear: Option<LinearIntegrationConfig>,
+}
+
+/// Slack integration configuration (`[integrations.slack]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SlackIntegrationConfig {
+    pub bot_token: String,
+    pub app_token: String,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default = "default_mention_only_integration")]
+    pub mention_only: bool,
+    pub mention_regex: Option<String>,
+    pub triage_model: Option<String>,
+}
+
+fn default_mention_only_integration() -> bool {
+    true
+}
+
+/// Linear integration configuration (`[integrations.linear]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LinearIntegrationConfig {
+    pub api_key: String,
+}
+
+#[cfg(test)]
+mod integration_config_tests {
+    use super::*;
+
+    #[test]
+    fn slack_integration_config_deserializes() {
+        let toml_str = r#"
+bot_token = "xoxb-test"
+app_token = "xapp-test"
+channel_id = "C123"
+allowed_users = ["U111"]
+mention_only = true
+"#;
+        let config: SlackIntegrationConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.bot_token, "xoxb-test");
+        assert_eq!(config.channel_id.as_deref(), Some("C123"));
+        assert!(config.mention_only);
+    }
+
+    #[test]
+    fn linear_integration_config_deserializes() {
+        let toml_str = r#"
+api_key = "lin_api_test"
+"#;
+        let config: LinearIntegrationConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.api_key, "lin_api_test");
+    }
+
+    #[test]
+    fn integrations_config_defaults_to_empty() {
+        let config = IntegrationsConfig::default();
+        assert!(config.slack.is_none());
+        assert!(config.linear.is_none());
+    }
+
+    #[test]
+    fn config_has_integrations_field_defaulting_empty() {
+        let config = crate::config::Config::default();
+        assert!(config.integrations.slack.is_none());
+        assert!(config.integrations.linear.is_none());
+    }
+}
