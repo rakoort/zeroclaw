@@ -1,4 +1,4 @@
-use super::{IntegrationCategory, IntegrationEntry, IntegrationStatus};
+use super::catalog::{IntegrationCategory, IntegrationEntry, IntegrationStatus};
 use crate::providers::{
     is_glm_alias, is_minimax_alias, is_moonshot_alias, is_qianfan_alias, is_qwen_alias,
     is_zai_alias,
@@ -11,7 +11,7 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
         // ── Chat Providers ──────────────────────────────────────
         IntegrationEntry {
             name: "Telegram",
-            description: "Bot API — long-polling",
+            description: "Bot API \u{2014} long-polling",
             category: IntegrationCategory::Chat,
             status_fn: |c| {
                 if c.channels_config.telegram.is_some() {

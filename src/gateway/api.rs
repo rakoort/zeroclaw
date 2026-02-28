@@ -307,7 +307,7 @@ pub async fn handle_api_integrations(
     }
 
     let config = state.config.lock().clone();
-    let entries = crate::integrations::registry::all_integrations();
+    let entries = crate::integrations::catalog_registry::all_integrations();
 
     let integrations: Vec<serde_json::Value> = entries
         .iter()
