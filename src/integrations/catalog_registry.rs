@@ -38,7 +38,7 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
             description: "Workspace apps via Web API",
             category: IntegrationCategory::Chat,
             status_fn: |c| {
-                if c.channels_config.slack.is_some() {
+                if c.channels_config.slack.is_some() || c.integrations.slack.is_some() {
                     IntegrationStatus::Active
                 } else {
                     IntegrationStatus::Available
@@ -549,7 +549,13 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
             name: "Linear",
             description: "Issue tracking",
             category: IntegrationCategory::Productivity,
-            status_fn: |_| IntegrationStatus::ComingSoon,
+            status_fn: |c| {
+                if c.integrations.linear.is_some() {
+                    IntegrationStatus::Active
+                } else {
+                    IntegrationStatus::Available
+                }
+            },
         },
         // ── Music & Audio ───────────────────────────────────────
         IntegrationEntry {
@@ -738,7 +744,7 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
 mod tests {
     use super::*;
     use crate::config::schema::{IMessageConfig, MatrixConfig, StreamMode, TelegramConfig};
-    use crate::config::Config;
+    use crate::config::{Config, LinearIntegrationConfig, SlackIntegrationConfig};
 
     #[test]
     fn registry_has_entries() {
@@ -999,6 +1005,51 @@ mod tests {
         assert!(matches!(
             (qianfan.status_fn)(&config),
             IntegrationStatus::Active
+        ));
+    }
+
+    #[test]
+    fn slack_active_when_integration_configured() {
+        let mut config = Config::default();
+        config.integrations.slack = Some(SlackIntegrationConfig {
+            bot_token: "xoxb-test".into(),
+            app_token: "xapp-test".into(),
+            channel_id: None,
+            allowed_users: vec![],
+            mention_only: true,
+            mention_regex: None,
+            triage_model: None,
+        });
+        let entries = all_integrations();
+        let slack = entries.iter().find(|e| e.name == "Slack").unwrap();
+        assert!(matches!(
+            (slack.status_fn)(&config),
+            IntegrationStatus::Active
+        ));
+    }
+
+    #[test]
+    fn linear_active_when_integration_configured() {
+        let mut config = Config::default();
+        config.integrations.linear = Some(LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        let entries = all_integrations();
+        let linear = entries.iter().find(|e| e.name == "Linear").unwrap();
+        assert!(matches!(
+            (linear.status_fn)(&config),
+            IntegrationStatus::Active
+        ));
+    }
+
+    #[test]
+    fn linear_available_when_not_configured() {
+        let config = Config::default();
+        let entries = all_integrations();
+        let linear = entries.iter().find(|e| e.name == "Linear").unwrap();
+        assert!(matches!(
+            (linear.status_fn)(&config),
+            IntegrationStatus::Available
         ));
     }
 }
