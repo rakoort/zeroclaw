@@ -1,5 +1,6 @@
 pub mod catalog;
 pub(crate) mod catalog_registry;
+pub mod linear;
 pub mod slack;
 
 // Re-export catalog types for callers (gateway API, main.rs CLI).
