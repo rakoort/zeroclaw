@@ -394,11 +394,11 @@ impl AnthropicProvider {
                     let arguments = block
                         .input
                         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-                    tool_calls.push(ProviderToolCall {
-                        id: block.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    tool_calls.push(ProviderToolCall::new(
+                        block.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                         name,
-                        arguments: arguments.to_string(),
-                    });
+                        arguments.to_string(),
+                    ));
                 }
                 _ => {}
             }

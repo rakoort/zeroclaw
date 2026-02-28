@@ -317,11 +317,7 @@ async fn e2e_simple_text_response() {
 #[tokio::test]
 async fn e2e_single_tool_call_cycle() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "hello from tool"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "hello from tool"}"#)]),
         text_response("Tool executed successfully"),
     ]));
 
@@ -339,16 +335,8 @@ async fn e2e_multi_step_tool_chain() {
     let (counting_tool, count) = CountingTool::new();
 
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "counter".into(),
-            arguments: "{}".into(),
-        }]),
-        tool_response(vec![ToolCall {
-            id: "tc2".into(),
-            name: "counter".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "counter", "{}")]),
+        tool_response(vec![ToolCall::new("tc2", "counter", "{}")]),
         text_response("Done after 2 tool calls"),
     ]));
 
@@ -414,11 +402,7 @@ async fn e2e_multi_turn_conversation() {
 #[tokio::test]
 async fn e2e_unknown_tool_recovery() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "nonexistent_tool".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "nonexistent_tool", "{}")]),
         text_response("Recovered from unknown tool"),
     ]));
 
@@ -437,16 +421,8 @@ async fn e2e_parallel_tool_dispatch() {
 
     let provider = Box::new(MockProvider::new(vec![
         tool_response(vec![
-            ToolCall {
-                id: "tc1".into(),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "tc2".into(),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall::new("tc1", "counter", "{}"),
+            ToolCall::new("tc2", "counter", "{}"),
         ]),
         text_response("Both tools ran"),
     ]));

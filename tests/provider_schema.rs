@@ -72,11 +72,7 @@ fn chat_message_json_roundtrip() {
 
 #[test]
 fn tool_call_has_required_fields() {
-    let tc = ToolCall {
-        id: "call_abc123".into(),
-        name: "web_search".into(),
-        arguments: r#"{"query": "rust programming"}"#.into(),
-    };
+    let tc = ToolCall::new("call_abc123", "web_search", r#"{"query": "rust programming"}"#);
 
     let json = serde_json::to_value(&tc).unwrap();
     assert!(json.get("id").is_some(), "ToolCall must have 'id' field");
@@ -92,11 +88,7 @@ fn tool_call_has_required_fields() {
 
 #[test]
 fn tool_call_id_preserved_in_serialization() {
-    let tc = ToolCall {
-        id: "call_deepseek_42".into(),
-        name: "shell".into(),
-        arguments: r#"{"command": "ls"}"#.into(),
-    };
+    let tc = ToolCall::new("call_deepseek_42", "shell", r#"{"command": "ls"}"#);
 
     let json_str = serde_json::to_string(&tc).unwrap();
     let parsed: ToolCall = serde_json::from_str(&json_str).unwrap();
@@ -110,11 +102,7 @@ fn tool_call_id_preserved_in_serialization() {
 
 #[test]
 fn tool_call_arguments_contain_valid_json() {
-    let tc = ToolCall {
-        id: "call_1".into(),
-        name: "file_write".into(),
-        arguments: r#"{"path": "/tmp/test.txt", "content": "hello"}"#.into(),
-    };
+    let tc = ToolCall::new("call_1", "file_write", r#"{"path": "/tmp/test.txt", "content": "hello"}"#);
 
     // Arguments should parse as valid JSON
     let args: serde_json::Value =
@@ -165,11 +153,7 @@ fn chat_response_text_only() {
 fn chat_response_with_tool_calls() {
     let resp = ChatResponse {
         text: Some(String::new()),
-        tool_calls: vec![ToolCall {
-            id: "tc_1".into(),
-            name: "echo".into(),
-            arguments: "{}".into(),
-        }],
+        tool_calls: vec![ToolCall::new("tc_1", "echo", "{}")],
         usage: None,
         reasoning_content: None,
     };
@@ -196,16 +180,8 @@ fn chat_response_multiple_tool_calls() {
     let resp = ChatResponse {
         text: None,
         tool_calls: vec![
-            ToolCall {
-                id: "tc_1".into(),
-                name: "shell".into(),
-                arguments: r#"{"command": "ls"}"#.into(),
-            },
-            ToolCall {
-                id: "tc_2".into(),
-                name: "file_read".into(),
-                arguments: r#"{"path": "test.txt"}"#.into(),
-            },
+            ToolCall::new("tc_1", "shell", r#"{"command": "ls"}"#),
+            ToolCall::new("tc_2", "file_read", r#"{"path": "test.txt"}"#),
         ],
         usage: None,
         reasoning_content: None,

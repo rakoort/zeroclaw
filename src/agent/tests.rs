@@ -384,11 +384,7 @@ async fn turn_returns_text_when_no_tools_called() {
 #[tokio::test]
 async fn turn_executes_single_tool_then_returns() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "hello from tool"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "hello from tool"}"#)]),
         text_response("I ran the tool"),
     ]));
 
@@ -414,21 +410,9 @@ async fn turn_handles_multi_step_tool_chain() {
     let (counting_tool, count) = CountingTool::new();
 
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "counter".into(),
-            arguments: "{}".into(),
-        }]),
-        tool_response(vec![ToolCall {
-            id: "tc2".into(),
-            name: "counter".into(),
-            arguments: "{}".into(),
-        }]),
-        tool_response(vec![ToolCall {
-            id: "tc3".into(),
-            name: "counter".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "counter", "{}")]),
+        tool_response(vec![ToolCall::new("tc2", "counter", "{}")]),
+        tool_response(vec![ToolCall::new("tc3", "counter", "{}")]),
         text_response("Done after 3 calls"),
     ]));
 
@@ -456,11 +440,7 @@ async fn turn_bails_out_at_max_iterations() {
     let max_iters = 3;
     let mut responses = Vec::new();
     for i in 0..max_iters + 5 {
-        responses.push(tool_response(vec![ToolCall {
-            id: format!("tc{i}"),
-            name: "echo".into(),
-            arguments: r#"{"message": "loop"}"#.into(),
-        }]));
+        responses.push(tool_response(vec![ToolCall::new(format!("tc{i}"), "echo", r#"{"message": "loop"}"#)]));
     }
 
     let provider = Box::new(ScriptedProvider::new(responses));
@@ -488,11 +468,7 @@ async fn turn_bails_out_at_max_iterations() {
 #[tokio::test]
 async fn turn_handles_unknown_tool_gracefully() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "nonexistent_tool".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "nonexistent_tool", "{}")]),
         text_response("I couldn't find that tool"),
     ]));
 
@@ -528,11 +504,7 @@ async fn turn_handles_unknown_tool_gracefully() {
 #[tokio::test]
 async fn turn_recovers_from_tool_failure() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "fail".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "fail", "{}")]),
         text_response("Tool failed but I recovered"),
     ]));
 
@@ -552,11 +524,7 @@ async fn turn_recovers_from_tool_failure() {
 #[tokio::test]
 async fn turn_recovers_from_tool_error() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "panicker".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "panicker", "{}")]),
         text_response("I recovered from the error"),
     ]));
 
@@ -777,11 +745,7 @@ async fn turn_preserves_text_alongside_tool_calls() {
     let provider = Box::new(ScriptedProvider::new(vec![
         ChatResponse {
             text: Some("Let me check...".into()),
-            tool_calls: vec![ToolCall {
-                id: "tc1".into(),
-                name: "echo".into(),
-                arguments: r#"{"message": "hi"}"#.into(),
-            }],
+            tool_calls: vec![ToolCall::new("tc1", "echo", r#"{"message": "hi"}"#)],
             usage: None,
             reasoning_content: None,
         },
@@ -818,21 +782,9 @@ async fn turn_handles_multiple_tools_in_one_response() {
 
     let provider = Box::new(ScriptedProvider::new(vec![
         tool_response(vec![
-            ToolCall {
-                id: "tc1".into(),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "tc2".into(),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "tc3".into(),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall::new("tc1", "counter", "{}"),
+            ToolCall::new("tc2", "counter", "{}"),
+            ToolCall::new("tc3", "counter", "{}"),
         ]),
         text_response("All 3 done"),
     ]));
@@ -910,11 +862,7 @@ async fn system_prompt_not_duplicated_on_second_turn() {
 #[tokio::test]
 async fn history_contains_all_expected_entries_after_tool_loop() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "tool-out"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "tool-out"}"#)]),
         text_response("final answer"),
     ]));
 
@@ -1015,11 +963,7 @@ async fn native_dispatcher_handles_stringified_arguments() {
     let dispatcher = NativeToolDispatcher;
     let response = ChatResponse {
         text: Some(String::new()),
-        tool_calls: vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "hello"}"#.into(),
-        }],
+        tool_calls: vec![ToolCall::new("tc1", "echo", r#"{"message": "hello"}"#)],
         usage: None,
         reasoning_content: None,
     };
@@ -1103,11 +1047,7 @@ fn conversation_message_serialization_roundtrip() {
         ConversationMessage::Chat(ChatMessage::user("hello")),
         ConversationMessage::AssistantToolCalls {
             text: Some("checking".into()),
-            tool_calls: vec![ToolCall {
-                id: "tc1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![ToolCall::new("tc1", "shell", "{}")],
             reasoning_content: None,
         },
         ConversationMessage::ToolResults(vec![ToolResultMessage {
@@ -1228,11 +1168,7 @@ fn xml_dispatcher_converts_history_to_provider_messages() {
         ConversationMessage::Chat(ChatMessage::user("hi")),
         ConversationMessage::AssistantToolCalls {
             text: Some("checking".into()),
-            tool_calls: vec![ToolCall {
-                id: "tc1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![ToolCall::new("tc1", "shell", "{}")],
             reasoning_content: None,
         },
         ConversationMessage::ToolResults(vec![ToolResultMessage {

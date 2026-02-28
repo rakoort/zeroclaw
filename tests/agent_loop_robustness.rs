@@ -230,11 +230,7 @@ async fn agent_recovers_from_text_with_xml_residue() {
 #[tokio::test]
 async fn agent_handles_tool_call_with_empty_arguments() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", "{}")]),
         text_response("Tool with empty args executed"),
     ]));
 
@@ -247,11 +243,7 @@ async fn agent_handles_tool_call_with_empty_arguments() {
 #[tokio::test]
 async fn agent_handles_nonexistent_tool_gracefully() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "absolutely_nonexistent_tool".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "absolutely_nonexistent_tool", "{}")]),
         text_response("Recovered from unknown tool"),
     ]));
 
@@ -271,11 +263,7 @@ async fn agent_handles_nonexistent_tool_gracefully() {
 #[tokio::test]
 async fn agent_handles_failing_tool() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "failing_tool".into(),
-            arguments: "{}".into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "failing_tool", "{}")]),
         text_response("Tool failed but I recovered"),
     ]));
 
@@ -292,16 +280,8 @@ async fn agent_handles_failing_tool() {
 async fn agent_handles_mixed_tool_success_and_failure() {
     let provider = Box::new(MockProvider::new(vec![
         tool_response(vec![
-            ToolCall {
-                id: "tc1".into(),
-                name: "echo".into(),
-                arguments: r#"{"message": "success"}"#.into(),
-            },
-            ToolCall {
-                id: "tc2".into(),
-                name: "failing_tool".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall::new("tc1", "echo", r#"{"message": "success"}"#),
+            ToolCall::new("tc2", "failing_tool", "{}"),
         ]),
         text_response("Mixed results processed"),
     ]));
@@ -324,11 +304,7 @@ async fn agent_respects_max_tool_iterations() {
     // Create 20 tool call responses - more than the default limit of 10
     let mut responses: Vec<ChatResponse> = (0..20)
         .map(|i| {
-            tool_response(vec![ToolCall {
-                id: format!("tc_{i}"),
-                name: "counter".into(),
-                arguments: "{}".into(),
-            }])
+            tool_response(vec![ToolCall::new(format!("tc_{i}"), "counter", "{}")])
         })
         .collect();
     // Add a final text response that would be used if limit is reached
@@ -399,11 +375,7 @@ async fn agent_handles_whitespace_only_response() {
 #[tokio::test]
 async fn agent_handles_unicode_tool_arguments() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "こんにちは世界 🌍"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "こんにちは世界 🌍"}"#)]),
         text_response("Unicode tool executed"),
     ]));
 
@@ -416,11 +388,7 @@ async fn agent_handles_unicode_tool_arguments() {
 #[tokio::test]
 async fn agent_handles_nested_json_tool_arguments() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "{\"nested\": true, \"deep\": {\"level\": 3}}"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "{\"nested\": true, \"deep\": {\"level\": 3}}"}"#)]),
         text_response("Nested JSON tool executed"),
     ]));
 
@@ -433,11 +401,7 @@ async fn agent_handles_nested_json_tool_arguments() {
 #[tokio::test]
 async fn agent_handles_sequential_tool_then_text() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            arguments: r#"{"message": "step 1"}"#.into(),
-        }]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "step 1"}"#)]),
         text_response("Final answer after tool"),
     ]));
 

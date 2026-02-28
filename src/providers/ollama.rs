@@ -632,15 +632,15 @@ impl Provider for OllamaProvider {
                 .iter()
                 .map(|tc| {
                     let (name, args) = self.extract_tool_name_and_args(tc);
-                    ToolCall {
-                        id: tc
+                    ToolCall::new(
+                        tc
                             .id
                             .clone()
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                         name,
-                        arguments: serde_json::to_string(&args)
+                        serde_json::to_string(&args)
                             .unwrap_or_else(|_| "{}".to_string()),
-                    }
+                    )
                 })
                 .collect();
             let text = Self::normalize_response_text(response.message.content);

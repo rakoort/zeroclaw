@@ -892,11 +892,7 @@ mod tests {
             responses: Mutex::new(vec![
                 crate::providers::ChatResponse {
                     text: Some(String::new()),
-                    tool_calls: vec![crate::providers::ToolCall {
-                        id: "tc1".into(),
-                        name: "echo".into(),
-                        arguments: "{}".into(),
-                    }],
+                    tool_calls: vec![crate::providers::ToolCall::new("tc1", "echo", "{}")],
                     usage: None,
                     reasoning_content: None,
                 },

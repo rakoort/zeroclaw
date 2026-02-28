@@ -606,11 +606,7 @@ mod tests {
             } else {
                 Ok(ChatResponse {
                     text: None,
-                    tool_calls: vec![ToolCall {
-                        id: "call_1".to_string(),
-                        name: "echo_tool".to_string(),
-                        arguments: "{\"value\":\"ping\"}".to_string(),
-                    }],
+                    tool_calls: vec![ToolCall::new("call_1", "echo_tool", "{\"value\":\"ping\"}")],
                     usage: None,
                     reasoning_content: None,
                 })
@@ -640,11 +636,7 @@ mod tests {
         ) -> anyhow::Result<ChatResponse> {
             Ok(ChatResponse {
                 text: None,
-                tool_calls: vec![ToolCall {
-                    id: "loop".to_string(),
-                    name: "echo_tool".to_string(),
-                    arguments: "{\"value\":\"x\"}".to_string(),
-                }],
+                tool_calls: vec![ToolCall::new("loop", "echo_tool", "{\"value\":\"x\"}")],
                 usage: None,
                 reasoning_content: None,
             })

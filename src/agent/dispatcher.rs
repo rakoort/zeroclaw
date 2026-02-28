@@ -263,11 +263,7 @@ mod tests {
     fn native_dispatcher_roundtrip() {
         let response = ChatResponse {
             text: Some("ok".into()),
-            tool_calls: vec![crate::providers::ToolCall {
-                id: "tc1".into(),
-                name: "file_read".into(),
-                arguments: "{\"path\":\"a.txt\"}".into(),
-            }],
+            tool_calls: vec![crate::providers::ToolCall::new("tc1", "file_read", "{\"path\":\"a.txt\"}")],
             usage: None,
             reasoning_content: None,
         };
@@ -336,11 +332,7 @@ mod tests {
         let dispatcher = NativeToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
-                id: "tc_1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![crate::providers::ToolCall::new("tc_1", "shell", "{}")],
             reasoning_content: Some("thinking step".into()),
         }];
 
@@ -359,11 +351,7 @@ mod tests {
         let dispatcher = NativeToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
-                id: "tc_1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![crate::providers::ToolCall::new("tc_1", "shell", "{}")],
             reasoning_content: None,
         }];
 
@@ -379,11 +367,7 @@ mod tests {
         let dispatcher = XmlToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
-                id: "tc_1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![crate::providers::ToolCall::new("tc_1", "shell", "{}")],
             reasoning_content: Some("should be ignored".into()),
         }];
 

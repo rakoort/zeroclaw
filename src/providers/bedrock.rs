@@ -846,11 +846,11 @@ impl BedrockProvider {
                         }
                         ResponseContentBlock::ToolUse(wrapper) => {
                             if !wrapper.tool_use.name.is_empty() {
-                                tool_calls.push(ProviderToolCall {
-                                    id: wrapper.tool_use.tool_use_id,
-                                    name: wrapper.tool_use.name,
-                                    arguments: wrapper.tool_use.input.to_string(),
-                                });
+                                tool_calls.push(ProviderToolCall::new(
+                                    wrapper.tool_use.tool_use_id,
+                                    wrapper.tool_use.name,
+                                    wrapper.tool_use.input.to_string(),
+                                ));
                             }
                         }
                         ResponseContentBlock::Other(_) => {}

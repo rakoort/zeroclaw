@@ -1053,11 +1053,11 @@ impl OpenAiCompatibleProvider {
                         );
                         "{}".to_string()
                     };
-                Some(ProviderToolCall {
-                    id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                Some(ProviderToolCall::new(
+                    tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     name,
-                    arguments: normalized_arguments,
-                })
+                    normalized_arguments,
+                ))
             })
             .collect::<Vec<_>>();
 
@@ -1436,11 +1436,11 @@ impl Provider for OpenAiCompatibleProvider {
                 let function = tc.function?;
                 let name = function.name?;
                 let arguments = function.arguments.unwrap_or_else(|| "{}".to_string());
-                Some(ProviderToolCall {
-                    id: uuid::Uuid::new_v4().to_string(),
+                Some(ProviderToolCall::new(
+                    uuid::Uuid::new_v4().to_string(),
                     name,
                     arguments,
-                })
+                ))
             })
             .collect::<Vec<_>>();
 

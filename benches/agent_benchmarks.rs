@@ -50,11 +50,7 @@ impl BenchProvider {
             responses: Mutex::new(vec![
                 ChatResponse {
                     text: Some(String::new()),
-                    tool_calls: vec![ToolCall {
-                        id: "tc1".into(),
-                        name: "noop".into(),
-                        arguments: "{}".into(),
-                    }],
+                    tool_calls: vec![ToolCall::new("tc1", "noop", "{}")],
                     usage: None,
                     reasoning_content: None,
                 },
@@ -200,16 +196,8 @@ fn bench_native_parsing(c: &mut Criterion) {
     let response = ChatResponse {
         text: Some("I'll help you.".into()),
         tool_calls: vec![
-            ToolCall {
-                id: "tc1".into(),
-                name: "search".into(),
-                arguments: r#"{"query": "zeroclaw"}"#.into(),
-            },
-            ToolCall {
-                id: "tc2".into(),
-                name: "read_file".into(),
-                arguments: r#"{"path": "src/main.rs"}"#.into(),
-            },
+            ToolCall::new("tc1", "search", r#"{"query": "zeroclaw"}"#),
+            ToolCall::new("tc2", "read_file", r#"{"path": "src/main.rs"}"#),
         ],
         usage: None,
         reasoning_content: None,

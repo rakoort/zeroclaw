@@ -797,11 +797,7 @@ mod tests {
             // Turn 1 response: provider asks to read the PDF
             ChatResponse {
                 text: Some(String::new()),
-                tool_calls: vec![ToolCall {
-                    id: "tc1".into(),
-                    name: "file_read".into(),
-                    arguments: r#"{"path": "report.pdf"}"#.into(),
-                }],
+                tool_calls: vec![ToolCall::new("tc1", "file_read", r#"{"path": "report.pdf"}"#)],
                 usage: None,
                 reasoning_content: None,
             },
@@ -890,11 +886,7 @@ mod tests {
         let (provider, recorded) = RecordingProvider::new(vec![
             ChatResponse {
                 text: Some(String::new()),
-                tool_calls: vec![ToolCall {
-                    id: "tc1".into(),
-                    name: "file_read".into(),
-                    arguments: r#"{"path": "data.bin"}"#.into(),
-                }],
+                tool_calls: vec![ToolCall::new("tc1", "file_read", r#"{"path": "data.bin"}"#)],
                 usage: None,
                 reasoning_content: None,
             },
