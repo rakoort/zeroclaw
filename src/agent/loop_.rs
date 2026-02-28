@@ -1749,11 +1749,18 @@ fn build_native_assistant_history(
     let calls_json: Vec<serde_json::Value> = tool_calls
         .iter()
         .map(|tc| {
-            serde_json::json!({
+            let mut call = serde_json::json!({
                 "id": tc.id,
                 "name": tc.name,
                 "arguments": tc.arguments,
-            })
+            });
+            // Preserve thought_signature for Gemini thinking models
+            if let Some(ref sig) = tc.thought_signature {
+                call.as_object_mut()
+                    .unwrap()
+                    .insert("thought_signature".to_string(), serde_json::json!(sig));
+            }
+            call
         })
         .collect();
 
@@ -5539,11 +5546,7 @@ Let me check the result."#;
 
     #[test]
     fn build_native_assistant_history_includes_reasoning_content() {
-        let calls = vec![ToolCall {
-            id: "call_1".into(),
-            name: "shell".into(),
-            arguments: "{}".into(),
-        }];
+        let calls = vec![ToolCall::new("call_1", "shell", "{}")];
         let result = build_native_assistant_history("answer", &calls, Some("thinking step"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
@@ -5553,11 +5556,7 @@ Let me check the result."#;
 
     #[test]
     fn build_native_assistant_history_omits_reasoning_content_when_none() {
-        let calls = vec![ToolCall {
-            id: "call_1".into(),
-            name: "shell".into(),
-            arguments: "{}".into(),
-        }];
+        let calls = vec![ToolCall::new("call_1", "shell", "{}")];
         let result = build_native_assistant_history("answer", &calls, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
@@ -5595,6 +5594,74 @@ Let me check the result."#;
         let parsed: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
         assert!(parsed.get("reasoning_content").is_none());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // thought_signature pass-through tests for history builders
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn build_native_assistant_history_preserves_thought_signature() {
+        let calls = vec![ToolCall {
+            id: "gemini_call_0".into(),
+            name: "get_weather".into(),
+            arguments: r#"{"city":"London"}"#.into(),
+            thought_signature: Some("opaque_sig_abc123".into()),
+        }];
+        let result = build_native_assistant_history("I'll check the weather.", &calls, None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        let tc = &parsed["tool_calls"][0];
+        assert_eq!(tc["name"].as_str(), Some("get_weather"));
+        assert_eq!(
+            tc["thought_signature"].as_str(),
+            Some("opaque_sig_abc123"),
+            "thought_signature must be preserved in serialized JSON"
+        );
+    }
+
+    #[test]
+    fn build_native_assistant_history_omits_thought_signature_when_none() {
+        let calls = vec![ToolCall::new("call_1", "shell", "{}")];
+        let result = build_native_assistant_history("answer", &calls, None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        let tc = &parsed["tool_calls"][0];
+        assert!(
+            tc.get("thought_signature").is_none(),
+            "thought_signature must be absent when None"
+        );
+    }
+
+    #[test]
+    fn build_native_assistant_history_multiple_calls_mixed_signatures() {
+        let calls = vec![
+            ToolCall {
+                id: "call_0".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"test"}"#.into(),
+                thought_signature: Some("sig_A".into()),
+            },
+            ToolCall {
+                id: "call_1".into(),
+                name: "calculate".into(),
+                arguments: r#"{"expr":"1+1"}"#.into(),
+                thought_signature: None,
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "lookup".into(),
+                arguments: r#"{"key":"val"}"#.into(),
+                thought_signature: Some("sig_C".into()),
+            },
+        ];
+        let result = build_native_assistant_history("", &calls, None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let tcs = parsed["tool_calls"].as_array().unwrap();
+
+        assert_eq!(tcs[0]["thought_signature"].as_str(), Some("sig_A"));
+        assert!(tcs[1].get("thought_signature").is_none());
+        assert_eq!(tcs[2]["thought_signature"].as_str(), Some("sig_C"));
     }
 
     #[tokio::test]
