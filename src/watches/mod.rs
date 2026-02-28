@@ -222,6 +222,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use tracing::{debug, info};
+
 use crate::channels::traits::ChannelMessage;
 
 /// Wraps [`WatchStore`] with async timer management. When a watch is registered
@@ -254,6 +256,13 @@ impl WatchManager {
             store.register(&watch)?
         };
 
+        info!(
+            watch_id = %id,
+            event_type = %watch.event_type,
+            channel = %watch.channel_name,
+            "watch registered"
+        );
+
         let token = CancellationToken::new();
 
         // Spawn reminder timer
@@ -270,6 +279,7 @@ impl WatchManager {
                 tokio::select! {
                     () = child_token.cancelled() => {}
                     () = tokio::time::sleep(Duration::from_secs(reminder_mins.cast_unsigned() * 60)) => {
+                        debug!(watch_id = %watch_id, "watch reminder fired");
                         let content = format!("[WATCH REMINDER] {reminder_msg}");
                         let msg = ChannelMessage {
                             id: format!("watch-reminder-{watch_id}"),
@@ -302,6 +312,7 @@ impl WatchManager {
                 tokio::select! {
                     () = child_token.cancelled() => {}
                     () = tokio::time::sleep(Duration::from_secs(expire_mins.cast_unsigned() * 60)) => {
+                        info!(watch_id = %watch_id, "watch expired");
                         {
                             let store = store.lock().await;
                             let _ = store.mark_expired(&watch_id);
@@ -346,6 +357,13 @@ impl WatchManager {
             store.check_message(sender_id, channel_id, thread_ts, channel_name)?
         };
 
+        info!(
+            watch_id = %watch.id,
+            sender = %sender_id,
+            channel = %channel_name,
+            "watch matched"
+        );
+
         // Mark as matched and cancel timers
         {
             let store = self.store.lock().await;
@@ -363,6 +381,7 @@ impl WatchManager {
             store.cancel(id)?;
         }
         self.cancel_timer(id).await;
+        info!(watch_id = %id, "watch cancelled");
         Ok(())
     }
 
@@ -410,6 +429,7 @@ impl WatchManager {
                         tokio::select! {
                             () = child_token.cancelled() => {}
                             () = tokio::time::sleep(duration) => {
+                                debug!(watch_id = %watch_id, "watch reminder fired");
                                 let content = format!("[WATCH REMINDER] {reminder_msg}");
                                 let msg = ChannelMessage {
                                     id: format!("watch-reminder-{watch_id}"),
@@ -443,6 +463,7 @@ impl WatchManager {
                         tokio::select! {
                             () = child_token.cancelled() => {}
                             () = tokio::time::sleep(duration) => {
+                                info!(watch_id = %watch_id, "watch expired");
                                 {
                                     let store = store.lock().await;
                                     let _ = store.mark_expired(&watch_id);
@@ -470,6 +491,7 @@ impl WatchManager {
                 }
             }
 
+            debug!(watch_id = %watch.id, "watch timer respawned on init");
             self.timers.lock().await.insert(watch.id.clone(), token);
         }
 
