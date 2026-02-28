@@ -304,6 +304,8 @@ pub struct SlackChannel {
     mention_only: bool,
     mention_regex: Option<regex::Regex>,
     participated_threads: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Base URL for Slack API calls (override for testing).
+    api_base: String,
 }
 
 impl SlackChannel {
@@ -322,7 +324,14 @@ impl SlackChannel {
             mention_only: true,
             mention_regex: None,
             participated_threads: std::sync::Mutex::new(std::collections::HashSet::new()),
+            api_base: "https://slack.com/api".into(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(mut self, base: &str) -> Self {
+        self.api_base = base.into();
+        self
     }
 
     pub fn with_mention_config(
@@ -392,6 +401,24 @@ impl SlackChannel {
             }
         }
         set.insert(thread_ts.to_string());
+    }
+
+    /// Record participation for a message the bot just posted.
+    ///
+    /// For top-level messages (`outbound_thread_ts` is `None`), record the
+    /// response `ts` so threads started by the bot's own messages are tracked.
+    /// For threaded replies, skip — the caller already records `thread_ts`.
+    pub fn record_self_post_participation(
+        &self,
+        response: &serde_json::Value,
+        outbound_thread_ts: Option<&str>,
+    ) {
+        if outbound_thread_ts.is_some() {
+            return;
+        }
+        if let Some(ts) = response.get("ts").and_then(|t| t.as_str()) {
+            self.record_participation(ts);
+        }
     }
 
     /// Check if the bot has participated in a thread.
@@ -494,6 +521,7 @@ impl Channel for SlackChannel {
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let chunks = split_message(&message.content, SLACK_MESSAGE_CHUNK_LIMIT);
+        let mut first_result: Option<serde_json::Value> = None;
 
         for chunk in &chunks {
             let mut body = serde_json::json!({
@@ -504,9 +532,10 @@ impl Channel for SlackChannel {
                 body["thread_ts"] = serde_json::json!(ts);
             }
 
+            let post_url = format!("{}/chat.postMessage", self.api_base);
             let result = slack_api_post(
                 &self.client,
-                "https://slack.com/api/chat.postMessage",
+                &post_url,
                 &self.bot_token,
                 &body,
             )
@@ -519,11 +548,21 @@ impl Channel for SlackChannel {
                     .unwrap_or("unknown");
                 anyhow::bail!("Slack chat.postMessage failed: {err}");
             }
+
+            if first_result.is_none() {
+                first_result = Some(result);
+            }
         }
 
         // Record thread participation
         if let Some(ref ts) = message.thread_ts {
             self.record_participation(ts);
+        }
+
+        // Track threads started by our own top-level messages so replies
+        // to them are recognized as participated threads.
+        if let Some(ref result) = first_result {
+            self.record_self_post_participation(result, message.thread_ts.as_deref());
         }
 
         // Remove ack reaction after reply
@@ -533,9 +572,10 @@ impl Channel for SlackChannel {
                 "name": "eyes",
                 "timestamp": ack_ts
             });
+            let remove_url = format!("{}/reactions.remove", self.api_base);
             if let Err(e) = slack_api_post(
                 &self.client,
-                "https://slack.com/api/reactions.remove",
+                &remove_url,
                 &self.bot_token,
                 &remove_body,
             )
@@ -702,8 +742,9 @@ impl Channel for SlackChannel {
                 // Resolve thread
                 let thread_ts = SlackChannel::inbound_thread_ts(&event, ts);
 
-                // Mention gating
-                let (final_text, triage_required) = if self.mention_only {
+                // Mention gating — bypass for DMs (channel IDs starting with 'D')
+                let is_dm = event_channel.starts_with('D');
+                let (final_text, triage_required) = if self.mention_only && !is_dm {
                     match self.resolve_mention_gate(raw_text, &bot_user_id, thread_ts.as_deref()) {
                         MentionGateResult::ExplicitMention(cleaned) => (cleaned, false),
                         MentionGateResult::ParticipatedThread(text) => (text, true),
@@ -1448,6 +1489,95 @@ mod tests {
         });
         let result = parse_socket_event(&envelope);
         assert!(result.is_none(), "should skip disconnect envelopes");
+    }
+
+    // -- Top-level message self-participation ---------------------------------
+
+    #[tokio::test]
+    async fn send_toplevel_message_records_self_participation() {
+        use super::super::traits::Channel;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/chat.postMessage"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "ok": true, "ts": "1772224188.479959" }),
+            ))
+            .mount(&server)
+            .await;
+
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        )
+        .with_api_base(&server.uri());
+
+        let msg = SendMessage {
+            recipient: "C12345".into(),
+            content: "hello".into(),
+            subject: None,
+            thread_ts: None,
+            ack_reaction_ts: None,
+        };
+        channel.send(&msg).await.unwrap();
+
+        assert!(
+            channel.has_participated("1772224188.479959"),
+            "send() should track threads started by the bot's own top-level messages"
+        );
+    }
+
+    #[test]
+    fn send_records_own_toplevel_message_as_participated() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        let response = serde_json::json!({
+            "ok": true,
+            "ts": "1772224188.479959"
+        });
+        channel.record_self_post_participation(&response, None);
+        assert!(
+            channel.has_participated("1772224188.479959"),
+            "bot should track threads started by its own top-level messages"
+        );
+    }
+
+    #[test]
+    fn send_does_not_double_record_threaded_reply() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        let response = serde_json::json!({
+            "ok": true,
+            "ts": "1772224200.000100"
+        });
+        channel.record_self_post_participation(&response, Some("1772224188.479959"));
+        assert!(
+            !channel.has_participated("1772224200.000100"),
+            "should not record response ts when replying in an existing thread"
+        );
+    }
+
+    #[test]
+    fn send_handles_missing_ts_in_response_gracefully() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        let response = serde_json::json!({ "ok": true });
+        channel.record_self_post_participation(&response, None);
+        assert!(channel.participated_threads().is_empty());
     }
 
     // -- Envelope deduplication -----------------------------------------------
