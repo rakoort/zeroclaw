@@ -603,13 +603,18 @@ fn split_message(content: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let slice = &remaining[..max_len];
+        // Clamp to a valid UTF-8 char boundary so slicing never panics.
+        let mut safe_max = max_len;
+        while safe_max > 0 && !remaining.is_char_boundary(safe_max) {
+            safe_max -= 1;
+        }
+        let slice = &remaining[..safe_max];
         // Try to split at paragraph, then newline, then space.
         let split_at = slice
             .rfind("\n\n")
             .or_else(|| slice.rfind('\n'))
             .or_else(|| slice.rfind(' '))
-            .unwrap_or(max_len);
+            .unwrap_or(safe_max);
 
         let (chunk, rest) = remaining.split_at(split_at);
         let chunk = chunk.trim_end();
@@ -667,6 +672,30 @@ mod tests {
             mention_regex: None,
             triage_model: None,
         }
+    }
+
+    #[test]
+    fn split_message_multibyte_does_not_panic() {
+        // Emoji is 4 bytes; place the split boundary mid-character.
+        let emoji_msg = "a".repeat(3998) + "\u{1F600}\u{1F600}"; // 3998 + 4 + 4 = 4006 bytes
+        let chunks = super::split_message(&emoji_msg, super::SLACK_MESSAGE_CHUNK_LIMIT);
+        let reassembled: String = chunks.join("");
+        // All original content must survive (whitespace-trimmed at boundaries is ok).
+        assert_eq!(reassembled.chars().count(), emoji_msg.chars().count());
+    }
+
+    #[test]
+    fn split_message_short_returns_single_chunk() {
+        let chunks = super::split_message("hello world", 4000);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "hello world");
+    }
+
+    #[test]
+    fn split_message_splits_at_paragraph() {
+        let msg = "a".repeat(2000) + "\n\n" + &"b".repeat(2000);
+        let chunks = super::split_message(&msg, 4000);
+        assert!(chunks.len() >= 2);
     }
 
     #[test]

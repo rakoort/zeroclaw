@@ -786,6 +786,13 @@ fn mask_sensitive_fields(config: &crate::config::Config) -> crate::config::Confi
     if let Some(email) = masked.channels_config.email.as_mut() {
         mask_required_secret(&mut email.password);
     }
+    if let Some(slack_int) = masked.integrations.slack.as_mut() {
+        mask_required_secret(&mut slack_int.bot_token);
+        mask_required_secret(&mut slack_int.app_token);
+    }
+    if let Some(linear_int) = masked.integrations.linear.as_mut() {
+        mask_required_secret(&mut linear_int.api_key);
+    }
     masked
 }
 
@@ -971,6 +978,19 @@ fn restore_masked_sensitive_fields(
         current.channels_config.email.as_ref(),
     ) {
         restore_required_secret(&mut incoming_ch.password, &current_ch.password);
+    }
+    if let (Some(incoming_int), Some(current_int)) = (
+        incoming.integrations.slack.as_mut(),
+        current.integrations.slack.as_ref(),
+    ) {
+        restore_required_secret(&mut incoming_int.bot_token, &current_int.bot_token);
+        restore_required_secret(&mut incoming_int.app_token, &current_int.app_token);
+    }
+    if let (Some(incoming_int), Some(current_int)) = (
+        incoming.integrations.linear.as_mut(),
+        current.integrations.linear.as_ref(),
+    ) {
+        restore_required_secret(&mut incoming_int.api_key, &current_int.api_key);
     }
 }
 
@@ -1404,5 +1424,52 @@ mod tests {
             .embedding_routes
             .iter()
             .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
+    }
+
+    #[test]
+    fn mask_and_restore_integration_secrets() {
+        let mut cfg = crate::config::Config::default();
+        cfg.integrations.slack = Some(crate::config::SlackIntegrationConfig {
+            bot_token: "xoxb-real-token".into(),
+            app_token: "xapp-real-token".into(),
+            channel_id: None,
+            allowed_users: vec![],
+            mention_only: true,
+            mention_regex: None,
+            triage_model: None,
+        });
+        cfg.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_real_key".into(),
+        });
+
+        let masked = mask_sensitive_fields(&cfg);
+        // Secrets must be masked.
+        assert_eq!(
+            masked.integrations.slack.as_ref().map(|s| s.bot_token.as_str()),
+            Some(MASKED_SECRET)
+        );
+        assert_eq!(
+            masked.integrations.slack.as_ref().map(|s| s.app_token.as_str()),
+            Some(MASKED_SECRET)
+        );
+        assert_eq!(
+            masked.integrations.linear.as_ref().map(|l| l.api_key.as_str()),
+            Some(MASKED_SECRET)
+        );
+
+        // After hydration, real secrets must be restored.
+        let hydrated = hydrate_config_for_save(masked, &cfg);
+        assert_eq!(
+            hydrated.integrations.slack.as_ref().map(|s| s.bot_token.as_str()),
+            Some("xoxb-real-token")
+        );
+        assert_eq!(
+            hydrated.integrations.slack.as_ref().map(|s| s.app_token.as_str()),
+            Some("xapp-real-token")
+        );
+        assert_eq!(
+            hydrated.integrations.linear.as_ref().map(|l| l.api_key.as_str()),
+            Some("lin_api_real_key")
+        );
     }
 }
