@@ -1,5 +1,6 @@
 pub mod catalog;
 pub(crate) mod catalog_registry;
+pub mod slack;
 
 // Re-export catalog types for callers (gateway API, main.rs CLI).
 #[allow(unused_imports)]
@@ -58,4 +59,5 @@ mod tests {
         assert!(i.health_check().await);
         assert!(i.as_channel().is_none());
     }
+
 }
