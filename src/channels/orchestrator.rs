@@ -1798,6 +1798,7 @@ pub(crate) async fn run_message_dispatch_loop(
     mut rx: tokio::sync::mpsc::Receiver<traits::ChannelMessage>,
     ctx: Arc<ChannelRuntimeContext>,
     max_in_flight_messages: usize,
+    watch_manager: Option<Arc<crate::watches::WatchManager>>,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_in_flight_messages));
     let mut workers = tokio::task::JoinSet::new();
@@ -1808,6 +1809,24 @@ pub(crate) async fn run_message_dispatch_loop(
     let task_sequence = Arc::new(AtomicU64::new(1));
 
     while let Some(msg) = rx.recv().await {
+        let mut msg = msg;
+        if let Some(ref wm) = watch_manager {
+            if let Some(watch) = wm
+                .check_message(
+                    &msg.sender,
+                    &msg.reply_target,
+                    msg.thread_ts.as_deref(),
+                    &msg.channel,
+                )
+                .await
+            {
+                msg.content = format!(
+                    "[Watch context \u{2014} id: {}]\n{}\n\n---\nIncoming message:\n{}",
+                    watch.id, watch.context, msg.content
+                );
+            }
+        }
+
         let permit = match Arc::clone(&semaphore).acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => break,
@@ -2475,6 +2494,12 @@ pub async fn start_channels(config: Config) -> Result<()> {
         "Manage scheduled tasks (create/list/get/cancel/pause/resume). Supports recurring cron and one-shot delays.",
     ));
     tool_descs.push((
+        "watch",
+        "Register an event watch to monitor for specific messages (e.g. a reply from a user). When a matching message arrives, its context is prepended automatically.",
+    ));
+    tool_descs.push(("watch_list", "List all active watches."));
+    tool_descs.push(("watch_cancel", "Cancel an active watch by ID."));
+    tool_descs.push((
         "pushover",
         "Send a Pushover notification to your device. Requires PUSHOVER_TOKEN and PUSHOVER_USER_KEY in .env file.",
     ));
@@ -2574,8 +2599,39 @@ pub async fn start_channels(config: Config) -> Result<()> {
         .channel_max_backoff_secs
         .max(DEFAULT_CHANNEL_MAX_BACKOFF_SECS);
 
-    // Single message bus — all channels send messages here
+    // Single message bus -- all channels send messages here
     let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(100);
+
+    // Create WatchManager backed by a SQLite database in the workspace memory dir.
+    // The manager needs a clone of `tx` so it can inject synthetic reminder/expiry
+    // messages into the dispatch loop.
+    let watch_manager = {
+        let watches_db = config.workspace_dir.join("memory").join("watches.db");
+        if let Some(parent) = watches_db.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let conn =
+            rusqlite::Connection::open(&watches_db).context("Failed to open watches database")?;
+        crate::watches::WatchStore::init_schema(&conn)
+            .context("Failed to initialize watches schema")?;
+        let store = Arc::new(tokio::sync::Mutex::new(crate::watches::WatchStore { conn }));
+        Arc::new(crate::watches::WatchManager::new(store, tx.clone()))
+    };
+
+    // Re-spawn timers for watches that survived the previous shutdown.
+    if let Err(e) = watch_manager.init().await {
+        tracing::warn!("Failed to re-initialize watch timers: {e}");
+    }
+
+    // Append watch tools to the registry so the LLM can create/list/cancel watches.
+    let tools_registry = {
+        let mut tools = match Arc::try_unwrap(tools_registry) {
+            Ok(v) => v,
+            Err(_) => unreachable!("tools_registry should have a single owner at this point"),
+        };
+        tools.extend(crate::tools::watch_tools(Arc::clone(&watch_manager)));
+        Arc::new(tools)
+    };
 
     // Spawn a listener for each channel
     let mut handles = Vec::new();
@@ -2650,7 +2706,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
             .and_then(|sl| sl.triage_model.clone()),
     });
 
-    run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
+    run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
 
     // Wait for all channel tasks
     for h in handles {
@@ -4334,7 +4390,7 @@ BTC is currently around $65,000 based on latest tool output."#
         drop(tx);
 
         let started = Instant::now();
-        run_message_dispatch_loop(rx, runtime_ctx, 2).await;
+        run_message_dispatch_loop(rx, runtime_ctx, 2, None).await;
         let elapsed = started.elapsed();
 
         assert!(
@@ -4424,7 +4480,7 @@ BTC is currently around $65,000 based on latest tool output."#
             .unwrap();
         });
 
-        run_message_dispatch_loop(rx, runtime_ctx, 4).await;
+        run_message_dispatch_loop(rx, runtime_ctx, 4, None).await;
         send_task.await.unwrap();
 
         let sent_messages = channel_impl.sent_messages.lock().await;
@@ -4525,7 +4581,7 @@ BTC is currently around $65,000 based on latest tool output."#
             .unwrap();
         });
 
-        run_message_dispatch_loop(rx, runtime_ctx, 4).await;
+        run_message_dispatch_loop(rx, runtime_ctx, 4, None).await;
         send_task.await.unwrap();
 
         let sent_messages = channel_impl.sent_messages.lock().await;
@@ -6084,5 +6140,348 @@ mod triage_tests {
         assert!(!parse_triage_response("   "));
         assert!(!parse_triage_response("maybe"));
         assert!(!parse_triage_response("I think so"));
+    }
+}
+
+#[cfg(test)]
+mod watch_dispatch_tests {
+    use super::run_message_dispatch_loop;
+    use crate::channels::traits;
+    use crate::channels::types::ChannelRuntimeContext;
+    use crate::channels::{Channel, SendMessage};
+    use crate::memory::Memory;
+    use crate::observability::NoopObserver;
+    use crate::providers::{self, ChatMessage, Provider};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    struct NoopMemory;
+
+    #[async_trait::async_trait]
+    impl Memory for NoopMemory {
+        fn name(&self) -> &str {
+            "noop"
+        }
+
+        async fn store(
+            &self,
+            _key: &str,
+            _content: &str,
+            _category: crate::memory::MemoryCategory,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn recall(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn get(&self, _key: &str) -> anyhow::Result<Option<crate::memory::MemoryEntry>> {
+            Ok(None)
+        }
+
+        async fn list(
+            &self,
+            _category: Option<&crate::memory::MemoryCategory>,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn count(&self) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        async fn health_check(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingChannel {
+        sent_messages: tokio::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Channel for RecordingChannel {
+        fn name(&self) -> &str {
+            "test-channel"
+        }
+
+        async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+            self.sent_messages
+                .lock()
+                .await
+                .push(format!("{}:{}", message.recipient, message.content));
+            Ok(())
+        }
+
+        async fn listen(
+            &self,
+            _tx: tokio::sync::mpsc::Sender<traits::ChannelMessage>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn start_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn stop_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct HistoryCaptureProvider {
+        calls: std::sync::Mutex<Vec<Vec<(String, String)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for HistoryCaptureProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok("fallback".to_string())
+        }
+
+        async fn chat_with_history(
+            &self,
+            messages: &[ChatMessage],
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            let snapshot = messages
+                .iter()
+                .map(|m| (m.role.clone(), m.content.clone()))
+                .collect::<Vec<_>>();
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(snapshot);
+            Ok("response-1".to_string())
+        }
+    }
+
+    fn make_runtime_ctx(
+        channel: Arc<dyn Channel>,
+        provider: Arc<dyn Provider>,
+    ) -> Arc<ChannelRuntimeContext> {
+        let mut channels_by_name = HashMap::new();
+        channels_by_name.insert(channel.name().to_string(), channel);
+
+        Arc::new(ChannelRuntimeContext {
+            channels_by_name: Arc::new(channels_by_name),
+            provider,
+            default_provider: Arc::new("test-provider".to_string()),
+            memory: Arc::new(NoopMemory),
+            tools_registry: Arc::new(vec![]),
+            observer: Arc::new(NoopObserver),
+            system_prompt: Arc::new("test-system-prompt".to_string()),
+            model: Arc::new("test-model".to_string()),
+            temperature: 0.0,
+            auto_save_memory: false,
+            max_tool_iterations: 10,
+            min_relevance_score: 0.0,
+            conversation_histories: Arc::new(Mutex::new(HashMap::new())),
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            api_key: None,
+            api_url: None,
+            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            workspace_dir: Arc::new(std::env::temp_dir()),
+            message_timeout_secs: crate::channels::CHANNEL_MESSAGE_TIMEOUT_SECS,
+            interrupt_on_new_message: false,
+            multimodal: crate::config::MultimodalConfig::default(),
+            hooks: None,
+            non_cli_excluded_tools: Arc::new(Vec::new()),
+            triage_model: None,
+        })
+    }
+
+    fn make_watch_manager() -> (
+        Arc<crate::watches::WatchManager>,
+        tokio::sync::mpsc::Receiver<traits::ChannelMessage>,
+    ) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::watches::WatchStore::init_schema(&conn).unwrap();
+        let store = Arc::new(tokio::sync::Mutex::new(crate::watches::WatchStore { conn }));
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        (Arc::new(crate::watches::WatchManager::new(store, tx)), rx)
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_prepends_watch_context_when_watch_matches() {
+        let channel_impl = Arc::new(RecordingChannel::default());
+        let channel: Arc<dyn Channel> = channel_impl.clone();
+        let provider_impl = Arc::new(HistoryCaptureProvider {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let runtime_ctx = make_runtime_ctx(channel, provider_impl.clone());
+
+        let (watch_manager, _watch_rx) = make_watch_manager();
+        watch_manager
+            .register(crate::watches::NewWatch {
+                event_type: "dm_reply".into(),
+                match_user_id: Some("alice".into()),
+                match_channel_id: None,
+                match_thread_ts: None,
+                context: "Waiting for reply about deployment".into(),
+                reminder_after_minutes: None,
+                reminder_message: None,
+                expires_minutes: None,
+                on_expire: None,
+                channel_name: "test-channel".into(),
+            })
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
+        tx.send(traits::ChannelMessage {
+            id: "msg-watch-1".to_string(),
+            sender: "alice".to_string(),
+            reply_target: "alice".to_string(),
+            content: "deployment is done".to_string(),
+            channel: "test-channel".to_string(),
+            timestamp: 1,
+            thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
+            triage_required: false,
+            ack_reaction_ts: None,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        run_message_dispatch_loop(rx, runtime_ctx, 2, Some(watch_manager.clone())).await;
+
+        {
+            let calls = provider_impl
+                .calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(calls.len(), 1, "expected exactly one provider call");
+            let first_call = &calls[0];
+            let user_msg = first_call
+                .iter()
+                .find(|(role, _)| role == "user")
+                .expect("should have a user message");
+            assert!(
+                user_msg.1.contains("[Watch context"),
+                "user message should contain watch context prefix, got: {}",
+                user_msg.1
+            );
+            assert!(
+                user_msg.1.contains("Waiting for reply about deployment"),
+                "user message should contain watch context body"
+            );
+            assert!(
+                user_msg.1.contains("deployment is done"),
+                "user message should still contain original message"
+            );
+        }
+
+        // Watch should be consumed (marked matched)
+        let active = watch_manager.active_watches().await;
+        assert!(active.is_empty(), "watch should be consumed after matching");
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_no_watch_context_when_no_watch_matches() {
+        let channel_impl = Arc::new(RecordingChannel::default());
+        let channel: Arc<dyn Channel> = channel_impl.clone();
+        let provider_impl = Arc::new(HistoryCaptureProvider {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let runtime_ctx = make_runtime_ctx(channel, provider_impl.clone());
+
+        let (watch_manager, _watch_rx) = make_watch_manager();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
+        tx.send(traits::ChannelMessage {
+            id: "msg-nowatch-1".to_string(),
+            sender: "bob".to_string(),
+            reply_target: "bob".to_string(),
+            content: "just a normal message".to_string(),
+            channel: "test-channel".to_string(),
+            timestamp: 1,
+            thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
+            triage_required: false,
+            ack_reaction_ts: None,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        run_message_dispatch_loop(rx, runtime_ctx, 2, Some(watch_manager)).await;
+
+        let calls = provider_impl
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(calls.len(), 1, "expected exactly one provider call");
+        let first_call = &calls[0];
+        let user_msg = first_call
+            .iter()
+            .find(|(role, _)| role == "user")
+            .expect("should have a user message");
+        assert!(
+            !user_msg.1.contains("[Watch context"),
+            "user message should NOT contain watch context when no watch matches"
+        );
+        assert!(
+            user_msg.1.contains("just a normal message"),
+            "user message should contain original content"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_works_without_watch_manager() {
+        let channel_impl = Arc::new(RecordingChannel::default());
+        let channel: Arc<dyn Channel> = channel_impl.clone();
+        let provider_impl = Arc::new(HistoryCaptureProvider {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let runtime_ctx = make_runtime_ctx(channel, provider_impl.clone());
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
+        tx.send(traits::ChannelMessage {
+            id: "msg-none-1".to_string(),
+            sender: "alice".to_string(),
+            reply_target: "alice".to_string(),
+            content: "hello".to_string(),
+            channel: "test-channel".to_string(),
+            timestamp: 1,
+            thread_ts: None,
+            thread_starter_body: None,
+            thread_history: None,
+            triage_required: false,
+            ack_reaction_ts: None,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        run_message_dispatch_loop(rx, runtime_ctx, 2, None).await;
+
+        let sent = channel_impl.sent_messages.lock().await;
+        assert_eq!(sent.len(), 1, "message should still be processed");
     }
 }
