@@ -168,7 +168,24 @@ impl SqliteMemory {
                 created_at   TEXT NOT NULL,
                 accessed_at  TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_cache_accessed ON embedding_cache(accessed_at);",
+            CREATE INDEX IF NOT EXISTS idx_cache_accessed ON embedding_cache(accessed_at);
+
+            -- Watches table for event-driven watch/wait workflow
+            CREATE TABLE IF NOT EXISTS watches (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                match_user_id TEXT,
+                match_channel_id TEXT,
+                match_thread_ts TEXT,
+                context TEXT NOT NULL,
+                reminder_after_minutes INTEGER,
+                reminder_message TEXT,
+                expires_minutes INTEGER,
+                on_expire TEXT,
+                channel_name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );",
         )?;
 
         // Migration: add session_id column if not present (safe to run repeatedly)

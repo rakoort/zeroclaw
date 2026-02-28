@@ -1,3 +1,5 @@
+pub mod tools;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
