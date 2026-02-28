@@ -630,7 +630,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn mock_client(server: &MockServer) -> Arc<SlackClient> {
+    fn mock_client(server: &MockServer) -> Arc<SlackClient> {
         Arc::new(SlackClient::new_with_base_url(
             "xoxb-test".into(),
             String::new(),
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn slack_send_missing_channel_id_returns_error() {
         let server = MockServer::start().await;
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackSendTool { client };
         let result = tool
             .execute(json!({"message": "hi"}))
@@ -663,7 +663,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackSendTool { client };
         let result = tool
             .execute(json!({"channel_id": "C123", "message": "hello"}))
@@ -684,7 +684,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackHistoryTool { client };
         let result = tool
             .execute(json!({"channel_id": "C123"}))
@@ -704,7 +704,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackReactTool { client };
         let result = tool
             .execute(json!({
@@ -729,7 +729,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackPresenceTool { client };
         let result = tool
             .execute(json!({"user_id": "U123"}))
@@ -742,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn slack_dm_missing_user_id_returns_error() {
         let server = MockServer::start().await;
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackDmTool { client };
         let result = tool
             .execute(json!({"message": "hello"}))
@@ -755,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn slack_send_thread_missing_thread_ts_returns_error() {
         let server = MockServer::start().await;
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = SlackSendThreadTool { client };
         let result = tool
             .execute(json!({"channel_id": "C123", "message": "reply"}))
@@ -790,7 +790,7 @@ mod tests {
         let client = Arc::new(SlackClient::new("xoxb-test".into(), "xapp-test".into()));
         let tools = all_slack_tools(client);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        names.sort();
+        names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), 9);
     }

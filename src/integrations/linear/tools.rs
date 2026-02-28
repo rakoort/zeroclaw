@@ -661,7 +661,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn mock_client(server: &MockServer) -> Arc<LinearClient> {
+    fn mock_client(server: &MockServer) -> Arc<LinearClient> {
         Arc::new(LinearClient::new_with_base_url(
             "lin_api_test".into(),
             server.uri(),
@@ -671,7 +671,7 @@ mod tests {
     #[tokio::test]
     async fn linear_create_issue_missing_team_id_returns_error() {
         let server = MockServer::start().await;
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = LinearCreateIssueTool { client };
         let result = tool
             .execute(json!({"title": "Bug"}))
@@ -692,7 +692,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = LinearCreateIssueTool { client };
         let result = tool
             .execute(json!({"team_id": "team_1", "title": "Bug fix"}))
@@ -712,7 +712,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = LinearTeamsTool { client };
         let result = tool.execute(json!({})).await.unwrap();
         assert!(result.success);
@@ -722,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn linear_archive_issue_missing_id_returns_error() {
         let server = MockServer::start().await;
-        let client = mock_client(&server).await;
+        let client = mock_client(&server);
         let tool = LinearArchiveIssueTool { client };
         let result = tool.execute(json!({})).await.unwrap();
         assert!(!result.success);
@@ -749,7 +749,7 @@ mod tests {
         let client = Arc::new(LinearClient::new("lin_api_test".into()));
         let tools = all_linear_tools(client);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        names.sort();
+        names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), 14);
     }

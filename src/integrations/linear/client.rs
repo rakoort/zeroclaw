@@ -136,6 +136,7 @@ impl LinearClient {
 }
 
 /// Compute how long to wait based on the reset timestamp (ms since epoch).
+#[allow(clippy::cast_possible_truncation)] // epoch ms fits u64 until year 584M
 fn compute_wait_from_reset(reset_ms: u64) -> Duration {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -215,6 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)]
     async fn rate_limited_retries_using_reset_header_ms() {
         let server = MockServer::start().await;
         let reset_ms = SystemTime::now()
@@ -283,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn compute_wait_from_reset_future() {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
