@@ -47,6 +47,21 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    /// Gemini thinking models: opaque signature that must be replayed in conversation history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
+}
+
+impl ToolCall {
+    /// Create a new tool call with no provider-specific metadata.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+            thought_signature: None,
+        }
+    }
 }
 
 /// Raw token counts from a single LLM API response.
@@ -542,11 +557,7 @@ mod tests {
 
         let with_tools = ChatResponse {
             text: Some("Let me check".into()),
-            tool_calls: vec![ToolCall {
-                id: "1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
+            tool_calls: vec![ToolCall::new("1", "shell", "{}")],
             usage: None,
             reasoning_content: None,
         };
@@ -578,11 +589,7 @@ mod tests {
 
     #[test]
     fn tool_call_serialization() {
-        let tc = ToolCall {
-            id: "call_123".into(),
-            name: "file_read".into(),
-            arguments: r#"{"path":"test.txt"}"#.into(),
-        };
+        let tc = ToolCall::new("call_123", "file_read", r#"{"path":"test.txt"}"#);
         let json = serde_json::to_string(&tc).unwrap();
         assert!(json.contains("call_123"));
         assert!(json.contains("file_read"));
