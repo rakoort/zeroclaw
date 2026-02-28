@@ -118,6 +118,69 @@ impl GeminiAuth {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SCHEMA SANITIZER — convert JSON Schema to Gemini-compatible format
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Recursively sanitize a JSON Schema value for the Gemini API.
+///
+/// Gemini's proto-based Schema doesn't support:
+/// - `"type": ["string", "null"]` (union types) — convert to scalar + `"nullable": true`
+fn sanitize_schema_for_gemini(value: &mut serde_json::Value) {
+    let obj = match value.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    // Fix union types: "type": ["string", "null"] → "type": "string", "nullable": true
+    if let Some(type_val) = obj.get("type").cloned() {
+        if let Some(arr) = type_val.as_array() {
+            let mut non_null: Option<String> = None;
+            let mut has_null = false;
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if s == "null" {
+                        has_null = true;
+                    } else if non_null.is_none() {
+                        non_null = Some(s.to_string());
+                    }
+                }
+            }
+            if let Some(t) = non_null {
+                obj.insert("type".to_string(), serde_json::Value::String(t));
+                if has_null {
+                    obj.insert("nullable".to_string(), serde_json::Value::Bool(true));
+                }
+            }
+        }
+    }
+
+    // Recurse into properties
+    if let Some(props) = obj.get_mut("properties") {
+        if let Some(props_obj) = props.as_object_mut() {
+            for val in props_obj.values_mut() {
+                sanitize_schema_for_gemini(val);
+            }
+        }
+    }
+
+    // Recurse into items (for array types)
+    if let Some(items) = obj.get_mut("items") {
+        sanitize_schema_for_gemini(items);
+    }
+
+    // Recurse into oneOf/anyOf entries
+    for key in &["oneOf", "anyOf"] {
+        if let Some(variants) = obj.get_mut(*key) {
+            if let Some(arr) = variants.as_array_mut() {
+                for item in arr.iter_mut() {
+                    sanitize_schema_for_gemini(item);
+                }
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // API REQUEST/RESPONSE TYPES
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -198,10 +261,16 @@ struct Content {
     parts: Vec<Part>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Default, Serialize, Clone)]
 struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// Thinking models: marks this part as internal reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought: Option<bool>,
+    /// Opaque signature for thinking context — must be replayed exactly as received.
+    #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
     #[serde(rename = "functionCall", skip_serializing_if = "Option::is_none")]
     function_call: Option<FunctionCallPart>,
     #[serde(rename = "functionResponse", skip_serializing_if = "Option::is_none")]
@@ -260,6 +329,7 @@ struct Candidate {
 
 #[derive(Debug, Deserialize)]
 struct CandidateContent {
+    #[serde(default)]
     parts: Vec<ResponsePart>,
 }
 
@@ -270,6 +340,9 @@ struct ResponsePart {
     /// Thinking models (e.g. gemini-3-pro-preview) mark reasoning parts with `thought: true`.
     #[serde(default)]
     thought: bool,
+    /// Opaque signature for thinking context — must be replayed exactly as received.
+    #[serde(default, rename = "thoughtSignature")]
+    thought_signature: Option<String>,
     #[serde(default, rename = "functionCall")]
     function_call: Option<FunctionCallResponse>,
 }
@@ -325,6 +398,7 @@ impl CandidateContent {
                     id: format!("gemini_call_{}", tool_calls.len()),
                     name: fc.name,
                     arguments: fc.args.to_string(),
+                    thought_signature: part.thought_signature.clone(),
                 });
             }
             if let Some(text) = part.text {
@@ -1523,7 +1597,18 @@ impl GeminiProvider {
             anyhow::bail!("Gemini API error ({status}): {error_text}");
         }
 
-        let result: GenerateContentResponse = response.json().await?;
+        let body_text = response.text().await?;
+        let result: GenerateContentResponse = match serde_json::from_str(&body_text) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    body = &body_text[..body_text.len().min(500)],
+                    "Gemini response deserialization failed"
+                );
+                anyhow::bail!("error decoding response body: {e}");
+            }
+        };
         if let Some(err) = &result.error {
             anyhow::bail!("Gemini API error: {}", err.message);
         }
@@ -1549,6 +1634,10 @@ impl GeminiProvider {
 
         // When no tool calls and no text, report as error (mirrors old behavior)
         if text.is_none() && tool_calls.is_empty() {
+            tracing::warn!(
+                body = &body_text[..body_text.len().min(1000)],
+                "Gemini returned no extractable text or tool calls"
+            );
             anyhow::bail!("No response from Gemini");
         }
 
@@ -1574,10 +1663,12 @@ impl Provider for GeminiProvider {
             function_declarations: tools
                 .iter()
                 .map(|t| {
+                    let mut params = t.parameters.clone();
+                    sanitize_schema_for_gemini(&mut params);
                     serde_json::json!({
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters,
+                        "parameters": params,
                     })
                 })
                 .collect(),
@@ -1595,8 +1686,7 @@ impl Provider for GeminiProvider {
             role: None,
             parts: vec![Part {
                 text: Some(sys.to_string()),
-                function_call: None,
-                function_response: None,
+                ..Default::default()
             }],
         });
 
@@ -1604,8 +1694,7 @@ impl Provider for GeminiProvider {
             role: Some("user".to_string()),
             parts: vec![Part {
                 text: Some(message.to_string()),
-                function_call: None,
-                function_response: None,
+                ..Default::default()
             }],
         }];
 
@@ -1635,8 +1724,7 @@ impl Provider for GeminiProvider {
                         role: Some("user".to_string()),
                         parts: vec![Part {
                             text: Some(msg.content.clone()),
-                            function_call: None,
-                            function_response: None,
+                            ..Default::default()
                         }],
                     });
                 }
@@ -1646,8 +1734,7 @@ impl Provider for GeminiProvider {
                         role: Some("model".to_string()),
                         parts: vec![Part {
                             text: Some(msg.content.clone()),
-                            function_call: None,
-                            function_response: None,
+                            ..Default::default()
                         }],
                     });
                 }
@@ -1662,8 +1749,7 @@ impl Provider for GeminiProvider {
                 role: None,
                 parts: vec![Part {
                     text: Some(system_parts.join("\n\n")),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             })
         };
@@ -1683,6 +1769,9 @@ impl Provider for GeminiProvider {
         let sanitized_messages = sanitize_transcript_for_gemini(request.messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
+        // Map tool_call_id → function name so tool results use the correct name
+        let mut tool_id_to_name: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for msg in &sanitized_messages {
             match msg.role.as_str() {
@@ -1691,18 +1780,108 @@ impl Provider for GeminiProvider {
                     role: Some("user".to_string()),
                     parts: vec![Part {
                         text: Some(msg.content.clone()),
-                        function_call: None,
-                        function_response: None,
+                        ..Default::default()
                     }],
                 }),
-                "assistant" => contents.push(Content {
-                    role: Some("model".to_string()),
-                    parts: vec![Part {
-                        text: Some(msg.content.clone()),
-                        function_call: None,
-                        function_response: None,
-                    }],
-                }),
+                "assistant" => {
+                    // Check if this is a tool-call message (JSON with tool_calls field)
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        if let Some(tool_calls) =
+                            parsed.get("tool_calls").and_then(|tc| tc.as_array())
+                        {
+                            let mut parts: Vec<Part> = Vec::new();
+                            // Preserve assistant text alongside tool calls
+                            if let Some(text) = parsed.get("content").and_then(|v| v.as_str()) {
+                                if !text.is_empty() {
+                                    parts.push(Part {
+                                        text: Some(text.to_string()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            for tc in tool_calls {
+                                if let (Some(name), Some(args_str)) = (
+                                    tc.get("name").and_then(|v| v.as_str()),
+                                    tc.get("arguments").and_then(|v| v.as_str()),
+                                ) {
+                                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                                        tool_id_to_name
+                                            .insert(id.to_string(), name.to_string());
+                                    }
+                                    if let Ok(args) = serde_json::from_str(args_str) {
+                                        parts.push(Part {
+                                            function_call: Some(FunctionCallPart {
+                                                name: name.to_string(),
+                                                args,
+                                            }),
+                                            // thoughtSignature goes on the part; thought is only for text parts
+                                            thought_signature: tc.get("thought_signature").and_then(|v| v.as_str()).map(String::from),
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            }
+                            if !parts.is_empty() {
+                                contents.push(Content {
+                                    role: Some("model".into()),
+                                    parts,
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                    // Fallback: plain text assistant message
+                    contents.push(Content {
+                        role: Some("model".to_string()),
+                        parts: vec![Part {
+                            text: Some(msg.content.clone()),
+                            ..Default::default()
+                        }],
+                    });
+                }
+                "tool" => {
+                    // Convert tool result to Gemini functionResponse
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        let tool_call_id = parsed
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let fn_name = tool_id_to_name
+                            .get(tool_call_id)
+                            .cloned()
+                            .unwrap_or_else(|| tool_call_id.to_string());
+                        // Try to parse content as JSON; fall back to string wrapper
+                        let response_value = match parsed.get("content") {
+                            Some(v) if v.is_object() => v.clone(),
+                            Some(v) => match v.as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
+                                Some(obj) if obj.is_object() => obj,
+                                _ => serde_json::json!({"output": v}),
+                            },
+                            None => serde_json::json!({"output": ""}),
+                        };
+                        let part = Part {
+                            function_response: Some(FunctionResponsePart {
+                                name: fn_name,
+                                response: response_value,
+                            }),
+                            ..Default::default()
+                        };
+                        // Merge consecutive tool results into one Content to maintain
+                        // strict role alternation (Gemini requires user/model/user/model).
+                        if let Some(last) = contents.last_mut() {
+                            if last.role.as_deref() == Some("user")
+                                && last.parts.iter().all(|p| p.function_response.is_some())
+                            {
+                                last.parts.push(part);
+                                continue;
+                            }
+                        }
+                        contents.push(Content {
+                            role: Some("user".into()),
+                            parts: vec![part],
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -1714,14 +1893,48 @@ impl Provider for GeminiProvider {
                 role: None,
                 parts: vec![Part {
                     text: Some(system_parts.join("\n\n")),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             })
         };
 
+        // Convert request.tools to Gemini functionDeclarations
+        let gemini_tools = request.tools.and_then(|specs| {
+            if specs.is_empty() {
+                return None;
+            }
+            let decls: Vec<serde_json::Value> = specs
+                .iter()
+                .map(|t| {
+                    let mut params = t.parameters.clone();
+                    sanitize_schema_for_gemini(&mut params);
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": params,
+                    })
+                })
+                .collect();
+            Some(vec![GeminiToolDeclaration {
+                function_declarations: decls,
+            }])
+        });
+
+        let tool_config = gemini_tools.as_ref().map(|_| GeminiToolConfig {
+            function_calling_config: FunctionCallingConfigMode {
+                mode: "AUTO".into(),
+            },
+        });
+
         let resp = self
-            .send_generate_content(contents, system_instruction, model, temperature, None, None)
+            .send_generate_content(
+                contents,
+                system_instruction,
+                model,
+                temperature,
+                gemini_tools,
+                tool_config,
+            )
             .await?;
 
         Ok(ChatResponse {
@@ -1742,6 +1955,9 @@ impl Provider for GeminiProvider {
         let messages = sanitize_transcript_for_gemini(messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
+        // Map tool_call_id → function name so tool results use the correct name
+        let mut tool_id_to_name: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for msg in &messages {
             match msg.role.as_str() {
@@ -1750,8 +1966,7 @@ impl Provider for GeminiProvider {
                     role: Some("user".into()),
                     parts: vec![Part {
                         text: Some(msg.content.clone()),
-                        function_call: None,
-                        function_response: None,
+                        ..Default::default()
                     }],
                 }),
                 "assistant" => {
@@ -1760,22 +1975,38 @@ impl Provider for GeminiProvider {
                         if let Some(tool_calls) =
                             parsed.get("tool_calls").and_then(|tc| tc.as_array())
                         {
-                            let parts: Vec<Part> = tool_calls
-                                .iter()
-                                .filter_map(|tc| {
-                                    Some(Part {
-                                        text: None,
-                                        function_call: Some(FunctionCallPart {
-                                            name: tc.get("name")?.as_str()?.to_string(),
-                                            args: serde_json::from_str(
-                                                tc.get("arguments")?.as_str()?,
-                                            )
-                                            .ok()?,
-                                        }),
-                                        function_response: None,
-                                    })
-                                })
-                                .collect();
+                            let mut parts: Vec<Part> = Vec::new();
+                            // Preserve assistant text alongside tool calls
+                            if let Some(text) = parsed.get("content").and_then(|v| v.as_str()) {
+                                if !text.is_empty() {
+                                    parts.push(Part {
+                                        text: Some(text.to_string()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            for tc in tool_calls {
+                                if let (Some(name), Some(args_str)) = (
+                                    tc.get("name").and_then(|v| v.as_str()),
+                                    tc.get("arguments").and_then(|v| v.as_str()),
+                                ) {
+                                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                                        tool_id_to_name
+                                            .insert(id.to_string(), name.to_string());
+                                    }
+                                    if let Ok(args) = serde_json::from_str(args_str) {
+                                        parts.push(Part {
+                                            function_call: Some(FunctionCallPart {
+                                                name: name.to_string(),
+                                                args,
+                                            }),
+                                            // thoughtSignature goes on the part; thought is only for text parts
+                                            thought_signature: tc.get("thought_signature").and_then(|v| v.as_str()).map(String::from),
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            }
                             if !parts.is_empty() {
                                 contents.push(Content {
                                     role: Some("model".into()),
@@ -1789,8 +2020,7 @@ impl Provider for GeminiProvider {
                         role: Some("model".into()),
                         parts: vec![Part {
                             text: Some(msg.content.clone()),
-                            function_call: None,
-                            function_response: None,
+                            ..Default::default()
                         }],
                     });
                 }
@@ -1801,18 +2031,39 @@ impl Provider for GeminiProvider {
                             .get("tool_call_id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown");
-                        let content_str =
-                            parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let fn_name = tool_id_to_name
+                            .get(tool_call_id)
+                            .cloned()
+                            .unwrap_or_else(|| tool_call_id.to_string());
+                        // Try to parse content as JSON; fall back to string wrapper
+                        let response_value = match parsed.get("content") {
+                            Some(v) if v.is_object() => v.clone(),
+                            Some(v) => match v.as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
+                                Some(obj) if obj.is_object() => obj,
+                                _ => serde_json::json!({"output": v}),
+                            },
+                            None => serde_json::json!({"output": ""}),
+                        };
+                        let part = Part {
+                            function_response: Some(FunctionResponsePart {
+                                name: fn_name,
+                                response: response_value,
+                            }),
+                            ..Default::default()
+                        };
+                        // Merge consecutive tool results into one Content to maintain
+                        // strict role alternation (Gemini requires user/model/user/model).
+                        if let Some(last) = contents.last_mut() {
+                            if last.role.as_deref() == Some("user")
+                                && last.parts.iter().all(|p| p.function_response.is_some())
+                            {
+                                last.parts.push(part);
+                                continue;
+                            }
+                        }
                         contents.push(Content {
                             role: Some("user".into()),
-                            parts: vec![Part {
-                                text: None,
-                                function_call: None,
-                                function_response: Some(FunctionResponsePart {
-                                    name: tool_call_id.to_string(),
-                                    response: serde_json::json!({"result": content_str}),
-                                }),
-                            }],
+                            parts: vec![part],
                         });
                     }
                 }
@@ -1827,8 +2078,7 @@ impl Provider for GeminiProvider {
                 role: None,
                 parts: vec![Part {
                     text: Some(system_parts.join("\n\n")),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             })
         };
@@ -2198,8 +2448,7 @@ mod tests {
                 role: Some("user".into()),
                 parts: vec![Part {
                     text: Some("hello".into()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }],
             system_instruction: None,
@@ -2243,8 +2492,7 @@ mod tests {
                 role: Some("user".into()),
                 parts: vec![Part {
                     text: Some("hello".into()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }],
             system_instruction: None,
@@ -2291,8 +2539,7 @@ mod tests {
                 role: Some("user".into()),
                 parts: vec![Part {
                     text: Some("hello".into()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }],
             system_instruction: None,
@@ -2327,16 +2574,14 @@ mod tests {
                 role: Some("user".to_string()),
                 parts: vec![Part {
                     text: Some("Hello".to_string()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }],
             system_instruction: Some(Content {
                 role: None,
                 parts: vec![Part {
                     text: Some("You are helpful".to_string()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }),
             generation_config: GenerationConfig {
@@ -2367,8 +2612,7 @@ mod tests {
                     role: Some("user".to_string()),
                     parts: vec![Part {
                         text: Some("Hello".to_string()),
-                        function_call: None,
-                        function_response: None,
+                        ..Default::default()
                     }],
                 }],
                 system_instruction: None,
@@ -2403,8 +2647,7 @@ mod tests {
                     role: Some("user".to_string()),
                     parts: vec![Part {
                         text: Some("Hello".to_string()),
-                        function_call: None,
-                        function_response: None,
+                        ..Default::default()
                     }],
                 }],
                 system_instruction: None,
@@ -2430,8 +2673,7 @@ mod tests {
                     role: Some("user".to_string()),
                     parts: vec![Part {
                         text: Some("Hello".to_string()),
-                        function_call: None,
-                        function_response: None,
+                        ..Default::default()
                     }],
                 }],
                 system_instruction: None,
@@ -2940,8 +3182,7 @@ mod tests {
                 role: Some("user".into()),
                 parts: vec![Part {
                     text: Some("hello".into()),
-                    function_call: None,
-                    function_response: None,
+                    ..Default::default()
                 }],
             }],
             system_instruction: None,
@@ -3038,8 +3279,7 @@ mod tests {
     fn part_text_only_serializes_without_function_fields() {
         let part = Part {
             text: Some("hello".into()),
-            function_call: None,
-            function_response: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&part).unwrap();
         assert_eq!(json, serde_json::json!({"text": "hello"}));
@@ -3050,12 +3290,11 @@ mod tests {
     #[test]
     fn part_function_call_serializes_correctly() {
         let part = Part {
-            text: None,
             function_call: Some(FunctionCallPart {
                 name: "get_status".into(),
                 args: serde_json::json!({"channel": "general"}),
             }),
-            function_response: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&part).unwrap();
         assert_eq!(json["functionCall"]["name"], "get_status");
@@ -3066,12 +3305,11 @@ mod tests {
     #[test]
     fn part_function_response_serializes_correctly() {
         let part = Part {
-            text: None,
-            function_call: None,
             function_response: Some(FunctionResponsePart {
                 name: "get_status".into(),
                 response: serde_json::json!({"ok": true}),
             }),
+            ..Default::default()
         };
         let json = serde_json::to_value(&part).unwrap();
         assert_eq!(json["functionResponse"]["name"], "get_status");
@@ -3131,6 +3369,7 @@ mod tests {
             parts: vec![ResponsePart {
                 text: None,
                 thought: false,
+                thought_signature: None,
                 function_call: Some(FunctionCallResponse {
                     name: "get_status".into(),
                     args: serde_json::json!({"channel": "general", "verbose": true}),
@@ -3150,11 +3389,13 @@ mod tests {
                 ResponsePart {
                     text: Some("Processing request.".into()),
                     thought: false,
+                    thought_signature: None,
                     function_call: None,
                 },
                 ResponsePart {
                     text: None,
                     thought: false,
+                    thought_signature: None,
                     function_call: Some(FunctionCallResponse {
                         name: "get_status".into(),
                         args: serde_json::json!({"channel": "general"}),
