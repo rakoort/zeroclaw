@@ -433,6 +433,22 @@ pub fn all_tools_with_runtime(
     boxed_registry_from_arcs(tool_arcs)
 }
 
+/// Create watch tools for an existing tool registry.
+///
+/// Returns watch, watch_list, and watch_cancel tools backed by the given
+/// [`WatchManager`]. Callers should append these to a tool registry that was
+/// built by [`all_tools_with_runtime`].
+pub fn watch_tools(manager: Arc<crate::watches::WatchManager>) -> Vec<Box<dyn Tool>> {
+    use crate::watches::tools::{WatchCancelTool, WatchListTool, WatchTool};
+
+    let tool_arcs: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(WatchTool::new(Arc::clone(&manager))),
+        Arc::new(WatchListTool::new(Arc::clone(&manager))),
+        Arc::new(WatchCancelTool::new(manager)),
+    ];
+    boxed_registry_from_arcs(tool_arcs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
