@@ -399,12 +399,25 @@ impl CandidateContent {
         }
     }
 
-    fn extract_response(self) -> (Option<String>, Vec<ToolCall>) {
+    fn extract_response(self) -> (Option<String>, Vec<ToolCall>, Vec<Part>) {
         let mut answer_parts: Vec<String> = Vec::new();
         let mut first_thinking: Option<String> = None;
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut all_parts: Vec<Part> = Vec::new();
 
         for part in self.parts {
+            // Convert ResponsePart -> outbound Part (preserves all fields)
+            all_parts.push(Part {
+                text: part.text.clone(),
+                thought: if part.thought { Some(true) } else { None },
+                thought_signature: part.thought_signature.clone(),
+                function_call: part.function_call.as_ref().map(|fc| FunctionCallPart {
+                    name: fc.name.clone(),
+                    args: fc.args.clone(),
+                }),
+                function_response: None,
+            });
+
             if let Some(fc) = part.function_call {
                 tool_calls.push(ToolCall {
                     id: format!("gemini_call_{}", tool_calls.len()),
@@ -431,13 +444,14 @@ impl CandidateContent {
             Some(answer_parts.join(""))
         };
 
-        (text, tool_calls)
+        (text, tool_calls, all_parts)
     }
 }
 
 struct GeminiResponse {
     text: Option<String>,
     tool_calls: Vec<ToolCall>,
+    raw_parts: Vec<Part>,
     usage: Option<TokenUsage>,
 }
 
@@ -1639,9 +1653,9 @@ impl GeminiProvider {
             .and_then(|c| c.into_iter().next())
             .and_then(|c| c.content);
 
-        let (text, tool_calls) = match content {
+        let (text, tool_calls, raw_parts) = match content {
             Some(c) => c.extract_response(),
-            None => (None, Vec::new()),
+            None => (None, Vec::new(), Vec::new()),
         };
 
         // When no tool calls and no text, report as error (mirrors old behavior)
@@ -1656,6 +1670,7 @@ impl GeminiProvider {
         Ok(GeminiResponse {
             text,
             tool_calls,
+            raw_parts,
             usage,
         })
     }
@@ -3398,7 +3413,7 @@ mod tests {
                 }),
             }],
         };
-        let (text, calls) = content.extract_response();
+        let (text, calls, _) = content.extract_response();
         assert!(text.is_none());
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_status");
@@ -3425,9 +3440,45 @@ mod tests {
                 },
             ],
         };
-        let (text, calls) = content.extract_response();
+        let (text, calls, _) = content.extract_response();
         assert_eq!(text.as_deref(), Some("Processing request."));
         assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn extract_response_returns_raw_parts_with_thinking() {
+        let content = CandidateContent {
+            parts: vec![
+                ResponsePart {
+                    text: Some("reasoning...".into()),
+                    thought: true,
+                    thought_signature: Some("sig1".into()),
+                    function_call: None,
+                },
+                ResponsePart {
+                    text: None,
+                    thought: false,
+                    thought_signature: Some("sig2".into()),
+                    function_call: Some(FunctionCallResponse {
+                        name: "search".into(),
+                        args: serde_json::json!({"q": "test"}),
+                    }),
+                },
+            ],
+        };
+        let (text, calls, raw_parts) = content.extract_response();
+
+        // text should be the thinking text (fallback since no non-thinking text)
+        assert_eq!(text.as_deref(), Some("reasoning..."));
+        // one tool call
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "search");
+        // raw_parts preserves ALL parts
+        assert_eq!(raw_parts.len(), 2);
+        assert_eq!(raw_parts[0].thought, Some(true));
+        assert_eq!(raw_parts[0].thought_signature.as_deref(), Some("sig1"));
+        assert_eq!(raw_parts[1].function_call.as_ref().unwrap().name, "search");
+        assert_eq!(raw_parts[1].thought_signature.as_deref(), Some("sig2"));
     }
 
     #[test]
