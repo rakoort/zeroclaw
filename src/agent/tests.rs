@@ -384,7 +384,11 @@ async fn turn_returns_text_when_no_tools_called() {
 #[tokio::test]
 async fn turn_executes_single_tool_then_returns() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "hello from tool"}"#)]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "echo",
+            r#"{"message": "hello from tool"}"#,
+        )]),
         text_response("I ran the tool"),
     ]));
 
@@ -440,7 +444,11 @@ async fn turn_bails_out_at_max_iterations() {
     let max_iters = 3;
     let mut responses = Vec::new();
     for i in 0..max_iters + 5 {
-        responses.push(tool_response(vec![ToolCall::new(format!("tc{i}"), "echo", r#"{"message": "loop"}"#)]));
+        responses.push(tool_response(vec![ToolCall::new(
+            format!("tc{i}"),
+            "echo",
+            r#"{"message": "loop"}"#,
+        )]));
     }
 
     let provider = Box::new(ScriptedProvider::new(responses));
@@ -862,7 +870,11 @@ async fn system_prompt_not_duplicated_on_second_turn() {
 #[tokio::test]
 async fn history_contains_all_expected_entries_after_tool_loop() {
     let provider = Box::new(ScriptedProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "tool-out"}"#)]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "echo",
+            r#"{"message": "tool-out"}"#,
+        )]),
         text_response("final answer"),
     ]));
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::client::{SlackClient, SlackApiError};
+use super::client::{SlackApiError, SlackClient};
 use crate::tools::traits::{Tool, ToolResult};
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -266,10 +266,7 @@ impl Tool for SlackSendFileTool {
             Err(e) => return Ok(err_result(e)),
         };
 
-        let upload_url = match upload_url_resp
-            .get("upload_url")
-            .and_then(Value::as_str)
-        {
+        let upload_url = match upload_url_resp.get("upload_url").and_then(Value::as_str) {
             Some(u) => u.to_string(),
             None => {
                 return Ok(ToolResult {
@@ -612,14 +609,30 @@ impl Tool for SlackReactTool {
 /// Return all 9 Slack tools backed by the given client.
 pub fn all_slack_tools(client: Arc<SlackClient>) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(SlackDmTool { client: Arc::clone(&client) }),
-        Arc::new(SlackSendTool { client: Arc::clone(&client) }),
-        Arc::new(SlackSendThreadTool { client: Arc::clone(&client) }),
-        Arc::new(SlackSendFileTool { client: Arc::clone(&client) }),
-        Arc::new(SlackHistoryTool { client: Arc::clone(&client) }),
-        Arc::new(SlackDmHistoryTool { client: Arc::clone(&client) }),
-        Arc::new(SlackThreadsTool { client: Arc::clone(&client) }),
-        Arc::new(SlackPresenceTool { client: Arc::clone(&client) }),
+        Arc::new(SlackDmTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackSendTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackSendThreadTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackSendFileTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackHistoryTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackDmHistoryTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackThreadsTool {
+            client: Arc::clone(&client),
+        }),
+        Arc::new(SlackPresenceTool {
+            client: Arc::clone(&client),
+        }),
         Arc::new(SlackReactTool { client }),
     ]
 }
@@ -643,10 +656,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = mock_client(&server);
         let tool = SlackSendTool { client };
-        let result = tool
-            .execute(json!({"message": "hi"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"message": "hi"})).await.unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("channel_id"));
     }
@@ -657,8 +667,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"ok": true, "ts": "1234"})),
+                ResponseTemplate::new(200).set_body_json(json!({"ok": true, "ts": "1234"})),
             )
             .mount(&server)
             .await;
@@ -678,18 +687,14 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/conversations.history"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"ok": true, "messages": []})),
+                ResponseTemplate::new(200).set_body_json(json!({"ok": true, "messages": []})),
             )
             .mount(&server)
             .await;
 
         let client = mock_client(&server);
         let tool = SlackHistoryTool { client };
-        let result = tool
-            .execute(json!({"channel_id": "C123"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"channel_id": "C123"})).await.unwrap();
         assert!(result.success);
     }
 
@@ -698,9 +703,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/reactions.add"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"ok": true})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
             .mount(&server)
             .await;
 
@@ -723,18 +726,14 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/users.getPresence"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"ok": true, "presence": "active"})),
+                ResponseTemplate::new(200).set_body_json(json!({"ok": true, "presence": "active"})),
             )
             .mount(&server)
             .await;
 
         let client = mock_client(&server);
         let tool = SlackPresenceTool { client };
-        let result = tool
-            .execute(json!({"user_id": "U123"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"user_id": "U123"})).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("active"));
     }
@@ -744,10 +743,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = mock_client(&server);
         let tool = SlackDmTool { client };
-        let result = tool
-            .execute(json!({"message": "hello"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"message": "hello"})).await.unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("user_id"));
     }
@@ -773,7 +769,8 @@ mod tests {
         for tool in &tools {
             let schema = tool.parameters_schema();
             assert_eq!(
-                schema["type"], "object",
+                schema["type"],
+                "object",
                 "Tool {} schema must be object",
                 tool.name()
             );

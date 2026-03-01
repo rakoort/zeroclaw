@@ -797,7 +797,11 @@ mod tests {
             // Turn 1 response: provider asks to read the PDF
             ChatResponse {
                 text: Some(String::new()),
-                tool_calls: vec![ToolCall::new("tc1", "file_read", r#"{"path": "report.pdf"}"#)],
+                tool_calls: vec![ToolCall::new(
+                    "tc1",
+                    "file_read",
+                    r#"{"path": "report.pdf"}"#,
+                )],
                 usage: None,
                 reasoning_content: None,
             },
