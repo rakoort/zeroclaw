@@ -744,6 +744,7 @@ mod tests {
                         tool_calls: vec![],
                         usage: None,
                         reasoning_content: None,
+                        provider_parts: None,
                     });
                 }
                 Ok(guard.remove(0))
@@ -800,6 +801,7 @@ mod tests {
                 tool_calls: vec![ToolCall::new("tc1", "file_read", r#"{"path": "report.pdf"}"#)],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
             // Turn 1 continued: provider sees tool result and answers
             ChatResponse {
@@ -807,6 +809,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
         ]);
 
@@ -889,12 +892,14 @@ mod tests {
                 tool_calls: vec![ToolCall::new("tc1", "file_read", r#"{"path": "data.bin"}"#)],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
             ChatResponse {
                 text: Some("The file appears to be binary data.".into()),
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
         ]);
 

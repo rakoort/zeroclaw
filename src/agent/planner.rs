@@ -535,6 +535,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 });
             }
             Ok(guard.remove(0))
@@ -549,6 +550,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         };
         let observer = crate::observability::NoopObserver;
@@ -579,6 +581,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         };
         let observer = crate::observability::NoopObserver;
@@ -609,6 +612,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         };
         let observer = crate::observability::NoopObserver;
@@ -637,11 +641,11 @@ mod tests {
             responses: Mutex::new(vec![
                 crate::providers::ChatResponse {
                     text: Some(r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up the answer"}]}"#.into()),
-                    tool_calls: vec![], usage: None, reasoning_content: None,
+                    tool_calls: vec![], usage: None, reasoning_content: None, provider_parts: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("The answer is 42.".into()),
-                    tool_calls: vec![], usage: None, reasoning_content: None,
+                    tool_calls: vec![], usage: None, reasoning_content: None, provider_parts: None,
                 },
             ]),
         };
@@ -706,6 +710,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         };
         let observer = CapturingObserver {

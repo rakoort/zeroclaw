@@ -61,6 +61,7 @@ impl Provider for MockProvider {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             });
         }
         Ok(guard.remove(0))
@@ -183,6 +184,7 @@ fn text_response(text: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }
 }
 
@@ -192,6 +194,7 @@ fn tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }
 }
 
@@ -337,6 +340,7 @@ async fn agent_handles_empty_provider_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }]));
 
     let mut agent = build_agent(provider, vec![Box::new(EchoTool)]);
@@ -352,6 +356,7 @@ async fn agent_handles_none_text_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }]));
 
     let mut agent = build_agent(provider, vec![Box::new(EchoTool)]);

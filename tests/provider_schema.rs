@@ -143,6 +143,7 @@ fn chat_response_text_only() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     };
 
     assert_eq!(resp.text_or_empty(), "Hello world");
@@ -156,6 +157,7 @@ fn chat_response_with_tool_calls() {
         tool_calls: vec![ToolCall::new("tc_1", "echo", "{}")],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     };
 
     assert!(resp.has_tool_calls());
@@ -170,6 +172,7 @@ fn chat_response_text_or_empty_handles_none() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     };
 
     assert_eq!(resp.text_or_empty(), "");
@@ -185,6 +188,7 @@ fn chat_response_multiple_tool_calls() {
         ],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     };
 
     assert!(resp.has_tool_calls());

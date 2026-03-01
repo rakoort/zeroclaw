@@ -252,6 +252,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            provider_parts: None,
         };
         let dispatcher = XmlToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);
@@ -266,6 +267,7 @@ mod tests {
             tool_calls: vec![crate::providers::ToolCall::new("tc1", "file_read", "{\"path\":\"a.txt\"}")],
             usage: None,
             reasoning_content: None,
+            provider_parts: None,
         };
         let dispatcher = NativeToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response);

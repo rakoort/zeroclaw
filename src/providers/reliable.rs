@@ -1770,6 +1770,7 @@ mod tests {
                 tool_calls: self.tool_calls.clone(),
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             })
         }
     }
@@ -1955,6 +1956,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             })
         }
     }

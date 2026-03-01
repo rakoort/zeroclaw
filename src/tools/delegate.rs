@@ -602,6 +602,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 })
             } else {
                 Ok(ChatResponse {
@@ -609,6 +610,7 @@ mod tests {
                     tool_calls: vec![ToolCall::new("call_1", "echo_tool", "{\"value\":\"ping\"}")],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 })
             }
         }
@@ -639,6 +641,7 @@ mod tests {
                 tool_calls: vec![ToolCall::new("loop", "echo_tool", "{\"value\":\"x\"}")],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             })
         }
     }

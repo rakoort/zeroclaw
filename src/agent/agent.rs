@@ -783,6 +783,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 });
             }
             Ok(guard.remove(0))
@@ -820,6 +821,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 });
             }
             Ok(guard.remove(0))
@@ -859,6 +861,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         });
 
@@ -895,12 +898,14 @@ mod tests {
                     tool_calls: vec![crate::providers::ToolCall::new("tc1", "echo", "{}")],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 },
             ]),
         });
@@ -942,6 +947,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
             seen_models: seen_models.clone(),
         });
@@ -1022,6 +1028,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
             seen_models: seen_models_simple.clone(),
         });
@@ -1076,6 +1083,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
             seen_models: seen_models_complex.clone(),
         });
@@ -1142,6 +1150,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             }]),
         });
 
@@ -1239,6 +1248,7 @@ mod planner_activation_tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 });
             }
             Ok(guard.remove(0))
@@ -1350,12 +1360,14 @@ mod planner_activation_tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
             crate::providers::ChatResponse {
                 text: Some("Planner-executed result.".into()),
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             },
         ]
     }
@@ -1371,6 +1383,7 @@ mod planner_activation_tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            provider_parts: None,
         }];
         let mut agent = build_planner_test_agent(0.3, 0.5, responses, seen_models.clone());
 

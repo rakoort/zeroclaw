@@ -3498,6 +3498,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             })
         }
     }
@@ -3516,6 +3517,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    provider_parts: None,
                 })
                 .collect();
             Self {

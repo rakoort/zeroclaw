@@ -1974,6 +1974,16 @@ impl Provider for GeminiProvider {
             tool_calls: resp.tool_calls,
             usage: resp.usage,
             reasoning_content: None,
+            provider_parts: if resp.raw_parts.is_empty() {
+                None
+            } else {
+                Some(
+                    resp.raw_parts
+                        .iter()
+                        .filter_map(|p| serde_json::to_value(p).ok())
+                        .collect(),
+                )
+            },
         })
     }
 
@@ -2154,6 +2164,16 @@ impl Provider for GeminiProvider {
             tool_calls: resp.tool_calls,
             usage: resp.usage,
             reasoning_content: None,
+            provider_parts: if resp.raw_parts.is_empty() {
+                None
+            } else {
+                Some(
+                    resp.raw_parts
+                        .iter()
+                        .filter_map(|p| serde_json::to_value(p).ok())
+                        .collect(),
+                )
+            },
         })
     }
 

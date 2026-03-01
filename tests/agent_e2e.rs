@@ -66,6 +66,7 @@ impl Provider for MockProvider {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             });
         }
         Ok(guard.remove(0))
@@ -192,6 +193,7 @@ impl Provider for RecordingProvider {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                provider_parts: None,
             });
         }
         Ok(guard.remove(0))
@@ -241,6 +243,7 @@ fn text_response(text: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }
 }
 
@@ -250,6 +253,7 @@ fn tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
+        provider_parts: None,
     }
 }
 
@@ -363,6 +367,7 @@ async fn e2e_xml_dispatcher_tool_call() {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            provider_parts: None,
         },
         text_response("XML tool executed"),
     ]));
