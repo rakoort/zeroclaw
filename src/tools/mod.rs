@@ -399,6 +399,13 @@ pub fn all_tools_with_runtime(
         }));
     }
 
+    // Native integration tools (Slack, Linear, etc.)
+    for integration in crate::integrations::collect_integrations(root_config) {
+        for tool in integration.tools() {
+            tool_arcs.push(tool);
+        }
+    }
+
     // Add delegation tool when agents are configured
     if !agents.is_empty() {
         let delegate_agents: HashMap<String, DelegateAgentConfig> = agents
@@ -851,6 +858,98 @@ mod tests {
         assert!(
             !names.contains(&"linear_issues"),
             "linear_issues should not be present without config"
+        );
+    }
+
+    #[test]
+    fn all_tools_includes_integration_slack_when_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let mut cfg = test_config(&tmp);
+        cfg.integrations.slack = Some(crate::config::SlackIntegrationConfig {
+            bot_token: "xoxb-test".into(),
+            app_token: "xapp-test".into(),
+            channel_id: None,
+            allowed_users: vec![],
+            mention_only: true,
+            mention_regex: None,
+            triage_model: None,
+        });
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"slack_send"),
+            "expected slack_send from integration"
+        );
+        assert!(
+            names.contains(&"slack_history"),
+            "expected slack_history from integration"
+        );
+    }
+
+    #[test]
+    fn all_tools_includes_integration_linear_when_configured() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+
+        let browser = BrowserConfig::default();
+        let http = crate::config::HttpRequestConfig::default();
+        let mut cfg = test_config(&tmp);
+        cfg.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+
+        let tools = all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &crate::config::WebFetchConfig::default(),
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"linear_issues"),
+            "expected linear_issues from integration"
+        );
+        assert!(
+            names.contains(&"linear_create_issue"),
+            "expected linear_create_issue from integration"
         );
     }
 
