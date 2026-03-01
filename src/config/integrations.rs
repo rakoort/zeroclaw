@@ -897,17 +897,6 @@ impl Default for CronConfig {
     }
 }
 
-// ── Tools ────────────────────────────────────────────────────────
-
-/// External CLI tool script configuration (`[tools]` section).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ToolsConfig {
-    /// Path to Slack CLI script relative to workspace (e.g. "skills/slack/scripts/slack-cli.ts").
-    pub slack_script: Option<String>,
-    /// Path to Linear CLI script relative to workspace (e.g. "skills/linear/scripts/linear-cli.ts").
-    pub linear_script: Option<String>,
-}
-
 // ── Integrations ────────────────────────────────────────────────
 
 /// Top-level integrations configuration (`[integrations]`).

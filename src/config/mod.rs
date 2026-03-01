@@ -20,7 +20,7 @@ pub use schema::{
     QdrantConfig, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig,
     RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig,
     SkillsConfig, SkillsPromptInjectionMode, SlackConfig, StorageConfig, StorageProviderConfig,
-    StorageProviderSection, StreamMode, TelegramConfig, ToolsConfig, TranscriptionConfig,
+    StorageProviderSection, StreamMode, TelegramConfig, TranscriptionConfig,
     TunnelConfig, WebFetchConfig, WebSearchConfig, WebhookConfig, IntegrationsConfig,
     SlackIntegrationConfig, LinearIntegrationConfig,
 };

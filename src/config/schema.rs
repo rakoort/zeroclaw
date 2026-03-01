@@ -145,10 +145,6 @@ pub struct Config {
     #[serde(default)]
     pub web_search: WebSearchConfig,
 
-    /// External CLI tool scripts (`[tools]`).
-    #[serde(default)]
-    pub tools: ToolsConfig,
-
     /// Service integrations (Slack, Linear, etc.) (`[integrations]`).
     #[serde(default)]
     pub integrations: IntegrationsConfig,
@@ -308,7 +304,6 @@ impl Default for Config {
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
-            tools: ToolsConfig::default(),
             integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             identity: IdentityConfig::default(),
@@ -1547,13 +1542,6 @@ mod tests {
     }
 
     #[test]
-    async fn tools_config_defaults_to_none() {
-        let config = Config::default();
-        assert!(config.tools.slack_script.is_none());
-        assert!(config.tools.linear_script.is_none());
-    }
-
-    #[test]
     async fn config_default_has_sane_values() {
         let c = Config::default();
         assert_eq!(c.default_provider.as_deref(), Some("openrouter"));
@@ -1851,7 +1839,6 @@ default_temperature = 0.7
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
-            tools: ToolsConfig::default(),
             integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             agent: AgentConfig::default(),
@@ -2035,7 +2022,6 @@ tool_dispatcher = "xml"
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
             web_search: WebSearchConfig::default(),
-            tools: ToolsConfig::default(),
             integrations: IntegrationsConfig::default(),
             proxy: ProxyConfig::default(),
             agent: AgentConfig::default(),
