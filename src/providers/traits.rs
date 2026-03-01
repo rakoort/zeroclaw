@@ -54,7 +54,11 @@ pub struct ToolCall {
 
 impl ToolCall {
     /// Create a new tool call with no provider-specific metadata.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),

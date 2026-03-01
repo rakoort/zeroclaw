@@ -246,7 +246,11 @@ async fn agent_handles_tool_call_with_empty_arguments() {
 #[tokio::test]
 async fn agent_handles_nonexistent_tool_gracefully() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "absolutely_nonexistent_tool", "{}")]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "absolutely_nonexistent_tool",
+            "{}",
+        )]),
         text_response("Recovered from unknown tool"),
     ]));
 
@@ -306,9 +310,7 @@ async fn agent_respects_max_tool_iterations() {
 
     // Create 20 tool call responses - more than the default limit of 10
     let mut responses: Vec<ChatResponse> = (0..20)
-        .map(|i| {
-            tool_response(vec![ToolCall::new(format!("tc_{i}"), "counter", "{}")])
-        })
+        .map(|i| tool_response(vec![ToolCall::new(format!("tc_{i}"), "counter", "{}")]))
         .collect();
     // Add a final text response that would be used if limit is reached
     responses.push(text_response("Final response after iterations"));
@@ -380,7 +382,11 @@ async fn agent_handles_whitespace_only_response() {
 #[tokio::test]
 async fn agent_handles_unicode_tool_arguments() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "こんにちは世界 🌍"}"#)]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "echo",
+            r#"{"message": "こんにちは世界 🌍"}"#,
+        )]),
         text_response("Unicode tool executed"),
     ]));
 
@@ -393,7 +399,11 @@ async fn agent_handles_unicode_tool_arguments() {
 #[tokio::test]
 async fn agent_handles_nested_json_tool_arguments() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "{\"nested\": true, \"deep\": {\"level\": 3}}"}"#)]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "echo",
+            r#"{"message": "{\"nested\": true, \"deep\": {\"level\": 3}}"}"#,
+        )]),
         text_response("Nested JSON tool executed"),
     ]));
 
@@ -406,7 +416,11 @@ async fn agent_handles_nested_json_tool_arguments() {
 #[tokio::test]
 async fn agent_handles_sequential_tool_then_text() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "step 1"}"#)]),
+        tool_response(vec![ToolCall::new(
+            "tc1",
+            "echo",
+            r#"{"message": "step 1"}"#,
+        )]),
         text_response("Final answer after tool"),
     ]));
 

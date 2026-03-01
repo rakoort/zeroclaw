@@ -365,13 +365,15 @@ impl CopilotProvider {
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tool_call| ProviderToolCall::new(
-                tool_call
-                    .id
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                tool_call.function.name,
-                tool_call.function.arguments,
-            ))
+            .map(|tool_call| {
+                ProviderToolCall::new(
+                    tool_call
+                        .id
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    tool_call.function.name,
+                    tool_call.function.arguments,
+                )
+            })
             .collect();
 
         Ok(ProviderChatResponse {
