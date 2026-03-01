@@ -1,7 +1,6 @@
-use reqwest::multipart::Form;
 use serde_json::Value;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_RETRY_SECS: u64 = 5;
@@ -67,11 +66,7 @@ impl SlackClient {
     }
 
     /// POST `{base_url}/api/{method}` with JSON body and bearer auth.
-    pub async fn api_post(
-        &self,
-        method: &str,
-        body: &Value,
-    ) -> Result<Value, SlackApiError> {
+    pub async fn api_post(&self, method: &str, body: &Value) -> Result<Value, SlackApiError> {
         let url = format!("{}/api/{}", self.base_url, method);
         let mut retries = 0u32;
 
@@ -136,33 +131,6 @@ impl SlackClient {
             let json: Value = resp.json().await.map_err(SlackApiError::Network)?;
             return parse_envelope(method, json);
         }
-    }
-
-    /// POST multipart form (for file uploads).
-    pub async fn api_post_multipart(
-        &self,
-        method: &str,
-        form: Form,
-    ) -> Result<Value, SlackApiError> {
-        let url = format!("{}/api/{}", self.base_url, method);
-        // Multipart forms are consumed on send so we cannot retry transparently.
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.bot_token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(SlackApiError::Network)?;
-
-        if resp.status() == 429 {
-            let retry_after = parse_retry_after(&resp);
-            warn!(method, ?retry_after, "slack multipart rate limited (no retry for multipart)");
-            return Err(SlackApiError::RateLimited { retry_after });
-        }
-
-        let json: Value = resp.json().await.map_err(SlackApiError::Network)?;
-        parse_envelope(method, json)
     }
 }
 
@@ -239,11 +207,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-bad".into(), String::new(), server.uri());
-        let result = client
-            .api_post("auth.test", &serde_json::json!({}))
-            .await;
+        let client = SlackClient::new_with_base_url("xoxb-bad".into(), String::new(), server.uri());
+        let result = client.api_post("auth.test", &serde_json::json!({})).await;
         assert!(matches!(result, Err(SlackApiError::AuthError { .. })));
     }
 
@@ -252,18 +217,13 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
-            .respond_with(
-                ResponseTemplate::new(429).append_header("Retry-After", "0"),
-            )
+            .respond_with(ResponseTemplate::new(429).append_header("Retry-After", "0"))
             .up_to_n_times(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"ok": true})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&server)
             .await;
 
@@ -281,18 +241,13 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/auth.test"))
             .and(header("Authorization", "Bearer xoxb-my-token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"ok": true})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&server)
             .await;
 
         let client =
             SlackClient::new_with_base_url("xoxb-my-token".into(), String::new(), server.uri());
-        let result = client
-            .api_post("auth.test", &serde_json::json!({}))
-            .await;
+        let result = client.api_post("auth.test", &serde_json::json!({})).await;
         assert!(result.is_ok());
     }
 
@@ -302,9 +257,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/users.getPresence"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({"ok": true, "presence": "active"}),
-                ),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "presence": "active"})),
             )
             .mount(&server)
             .await;
@@ -324,9 +278,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({"ok": false, "error": "channel_not_found"}),
-                ),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": false, "error": "channel_not_found"})),
             )
             .mount(&server)
             .await;

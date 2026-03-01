@@ -1805,8 +1805,7 @@ impl Provider for GeminiProvider {
                                     tc.get("arguments").and_then(|v| v.as_str()),
                                 ) {
                                     if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                                        tool_id_to_name
-                                            .insert(id.to_string(), name.to_string());
+                                        tool_id_to_name.insert(id.to_string(), name.to_string());
                                     }
                                     if let Ok(args) = serde_json::from_str(args_str) {
                                         parts.push(Part {
@@ -1815,7 +1814,10 @@ impl Provider for GeminiProvider {
                                                 args,
                                             }),
                                             // thoughtSignature goes on the part; thought is only for text parts
-                                            thought_signature: tc.get("thought_signature").and_then(|v| v.as_str()).map(String::from),
+                                            thought_signature: tc
+                                                .get("thought_signature")
+                                                .and_then(|v| v.as_str())
+                                                .map(String::from),
                                             ..Default::default()
                                         });
                                     }
@@ -1853,7 +1855,10 @@ impl Provider for GeminiProvider {
                         // Try to parse content as JSON; fall back to string wrapper
                         let response_value = match parsed.get("content") {
                             Some(v) if v.is_object() => v.clone(),
-                            Some(v) => match v.as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
+                            Some(v) => match v
+                                .as_str()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                            {
                                 Some(obj) if obj.is_object() => obj,
                                 _ => serde_json::json!({"output": v}),
                             },
@@ -1991,8 +1996,7 @@ impl Provider for GeminiProvider {
                                     tc.get("arguments").and_then(|v| v.as_str()),
                                 ) {
                                     if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                                        tool_id_to_name
-                                            .insert(id.to_string(), name.to_string());
+                                        tool_id_to_name.insert(id.to_string(), name.to_string());
                                     }
                                     if let Ok(args) = serde_json::from_str(args_str) {
                                         parts.push(Part {
@@ -2001,7 +2005,10 @@ impl Provider for GeminiProvider {
                                                 args,
                                             }),
                                             // thoughtSignature goes on the part; thought is only for text parts
-                                            thought_signature: tc.get("thought_signature").and_then(|v| v.as_str()).map(String::from),
+                                            thought_signature: tc
+                                                .get("thought_signature")
+                                                .and_then(|v| v.as_str())
+                                                .map(String::from),
                                             ..Default::default()
                                         });
                                     }
@@ -2038,7 +2045,10 @@ impl Provider for GeminiProvider {
                         // Try to parse content as JSON; fall back to string wrapper
                         let response_value = match parsed.get("content") {
                             Some(v) if v.is_object() => v.clone(),
-                            Some(v) => match v.as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
+                            Some(v) => match v
+                                .as_str()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                            {
                                 Some(obj) if obj.is_object() => obj,
                                 _ => serde_json::json!({"output": v}),
                             },
