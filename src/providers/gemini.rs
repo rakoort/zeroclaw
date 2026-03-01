@@ -261,29 +261,41 @@ struct Content {
     parts: Vec<Part>,
 }
 
-#[derive(Debug, Default, Serialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 struct Part {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     /// Thinking models: marks this part as internal reasoning.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     thought: Option<bool>,
     /// Opaque signature for thinking context — must be replayed exactly as received.
-    #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "thoughtSignature",
+        skip_serializing_if = "Option::is_none"
+    )]
     thought_signature: Option<String>,
-    #[serde(rename = "functionCall", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "functionCall",
+        skip_serializing_if = "Option::is_none"
+    )]
     function_call: Option<FunctionCallPart>,
-    #[serde(rename = "functionResponse", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "functionResponse",
+        skip_serializing_if = "Option::is_none"
+    )]
     function_response: Option<FunctionResponsePart>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct FunctionCallPart {
     name: String,
     args: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct FunctionResponsePart {
     name: String,
     response: serde_json::Value,
@@ -3416,5 +3428,21 @@ mod tests {
         let (text, calls) = content.extract_response();
         assert_eq!(text.as_deref(), Some("Processing request."));
         assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn part_round_trips_through_json() {
+        let original = Part {
+            text: Some("reasoning".into()),
+            thought: Some(true),
+            thought_signature: Some("sig123".into()),
+            function_call: None,
+            function_response: None,
+        };
+        let json = serde_json::to_value(&original).unwrap();
+        let restored: Part = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.text.as_deref(), Some("reasoning"));
+        assert_eq!(restored.thought, Some(true));
+        assert_eq!(restored.thought_signature.as_deref(), Some("sig123"));
     }
 }
