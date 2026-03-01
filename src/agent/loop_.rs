@@ -1745,6 +1745,7 @@ fn build_native_assistant_history(
     text: &str,
     tool_calls: &[ToolCall],
     reasoning_content: Option<&str>,
+    provider_parts: Option<&[serde_json::Value]>,
 ) -> String {
     let calls_json: Vec<serde_json::Value> = tool_calls
         .iter()
@@ -1779,6 +1780,13 @@ fn build_native_assistant_history(
         obj.as_object_mut().unwrap().insert(
             "reasoning_content".to_string(),
             serde_json::Value::String(rc.to_string()),
+        );
+    }
+
+    if let Some(parts) = provider_parts {
+        obj.as_object_mut().unwrap().insert(
+            "raw_model_parts".to_string(),
+            serde_json::Value::Array(parts.to_vec()),
         );
     }
 
@@ -2266,23 +2274,30 @@ pub(crate) async fn run_tool_call_loop(
                     // Preserve native tool call IDs in assistant history so role=tool
                     // follow-up messages can reference the exact call id.
                     let reasoning_content = resp.reasoning_content.clone();
-                    let assistant_history_content = if resp.tool_calls.is_empty() {
-                        if use_native_tools {
-                            build_native_assistant_history_from_parsed_calls(
-                                &response_text,
-                                &calls,
-                                reasoning_content.as_deref(),
-                            )
-                            .unwrap_or_else(|| response_text.clone())
-                        } else {
-                            response_text.clone()
-                        }
-                    } else {
+                    let assistant_history_content = if !resp.tool_calls.is_empty() {
                         build_native_assistant_history(
                             &response_text,
                             &resp.tool_calls,
                             reasoning_content.as_deref(),
+                            resp.provider_parts.as_deref(),
                         )
+                    } else if resp.provider_parts.is_some() {
+                        // Text-only but has provider parts (e.g. Gemini thinking signatures)
+                        build_native_assistant_history(
+                            &response_text,
+                            &[],
+                            reasoning_content.as_deref(),
+                            resp.provider_parts.as_deref(),
+                        )
+                    } else if use_native_tools {
+                        build_native_assistant_history_from_parsed_calls(
+                            &response_text,
+                            &calls,
+                            reasoning_content.as_deref(),
+                        )
+                        .unwrap_or_else(|| response_text.clone())
+                    } else {
+                        response_text.clone()
                     };
 
                     let native_calls = resp.tool_calls;
@@ -5549,7 +5564,7 @@ Let me check the result."#;
     #[test]
     fn build_native_assistant_history_includes_reasoning_content() {
         let calls = vec![ToolCall::new("call_1", "shell", "{}")];
-        let result = build_native_assistant_history("answer", &calls, Some("thinking step"));
+        let result = build_native_assistant_history("answer", &calls, Some("thinking step"), None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
         assert_eq!(parsed["reasoning_content"].as_str(), Some("thinking step"));
@@ -5559,7 +5574,7 @@ Let me check the result."#;
     #[test]
     fn build_native_assistant_history_omits_reasoning_content_when_none() {
         let calls = vec![ToolCall::new("call_1", "shell", "{}")];
-        let result = build_native_assistant_history("answer", &calls, None);
+        let result = build_native_assistant_history("answer", &calls, None, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["content"].as_str(), Some("answer"));
         assert!(parsed.get("reasoning_content").is_none());
@@ -5610,7 +5625,7 @@ Let me check the result."#;
             arguments: r#"{"city":"London"}"#.into(),
             thought_signature: Some("opaque_sig_abc123".into()),
         }];
-        let result = build_native_assistant_history("I'll check the weather.", &calls, None);
+        let result = build_native_assistant_history("I'll check the weather.", &calls, None, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         let tc = &parsed["tool_calls"][0];
@@ -5625,7 +5640,7 @@ Let me check the result."#;
     #[test]
     fn build_native_assistant_history_omits_thought_signature_when_none() {
         let calls = vec![ToolCall::new("call_1", "shell", "{}")];
-        let result = build_native_assistant_history("answer", &calls, None);
+        let result = build_native_assistant_history("answer", &calls, None, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         let tc = &parsed["tool_calls"][0];
@@ -5657,13 +5672,44 @@ Let me check the result."#;
                 thought_signature: Some("sig_C".into()),
             },
         ];
-        let result = build_native_assistant_history("", &calls, None);
+        let result = build_native_assistant_history("", &calls, None, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let tcs = parsed["tool_calls"].as_array().unwrap();
 
         assert_eq!(tcs[0]["thought_signature"].as_str(), Some("sig_A"));
         assert!(tcs[1].get("thought_signature").is_none());
         assert_eq!(tcs[2]["thought_signature"].as_str(), Some("sig_C"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // raw_model_parts (provider_parts) pass-through tests for history builder
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn build_native_assistant_history_includes_raw_model_parts() {
+        let calls = vec![ToolCall::new("gemini_call_0", "search", r#"{"q":"test"}"#)];
+        let provider_parts = vec![
+            serde_json::json!({"thought": true, "text": "reasoning", "thoughtSignature": "sig1"}),
+            serde_json::json!({"functionCall": {"name": "search", "args": {"q": "test"}}, "thoughtSignature": "sig2"}),
+        ];
+        let result = build_native_assistant_history("", &calls, None, Some(&provider_parts));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        let raw = parsed
+            .get("raw_model_parts")
+            .expect("raw_model_parts must be present");
+        let parts = raw.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["thoughtSignature"].as_str(), Some("sig1"));
+        assert_eq!(parts[1]["thoughtSignature"].as_str(), Some("sig2"));
+    }
+
+    #[test]
+    fn build_native_assistant_history_omits_raw_model_parts_when_none() {
+        let calls = vec![ToolCall::new("call_0", "shell", "{}")];
+        let result = build_native_assistant_history("text", &calls, None, None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("raw_model_parts").is_none());
     }
 
     #[tokio::test]
