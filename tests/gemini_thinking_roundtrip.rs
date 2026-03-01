@@ -130,11 +130,10 @@ async fn gemini_thinking_model_thought_signature_round_trip() {
         "Turn 1 tool call: name={}, id={}, thought_signature={:?}",
         tool_call.name,
         tool_call.id,
-        tool_call.thought_signature.as_deref().map(|s| format!(
-            "{}... ({} bytes)",
-            truncate_chars(s, 20),
-            s.len()
-        ))
+        tool_call
+            .thought_signature
+            .as_deref()
+            .map(|s| format!("{}... ({} bytes)", truncate_chars(s, 20), s.len()))
     );
 
     // Note: thought_signature may or may not be present depending on

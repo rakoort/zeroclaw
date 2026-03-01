@@ -633,11 +633,13 @@ impl Provider for OllamaProvider {
                 .map(|tc| {
                     let (name, args) = self.extract_tool_name_and_args(tc);
                     ToolCall::new(
-                        tc.id
+                        tc
+                            .id
                             .clone()
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                         name,
-                        serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+                        serde_json::to_string(&args)
+                            .unwrap_or_else(|_| "{}".to_string()),
                     )
                 })
                 .collect();

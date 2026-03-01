@@ -72,11 +72,7 @@ fn chat_message_json_roundtrip() {
 
 #[test]
 fn tool_call_has_required_fields() {
-    let tc = ToolCall::new(
-        "call_abc123",
-        "web_search",
-        r#"{"query": "rust programming"}"#,
-    );
+    let tc = ToolCall::new("call_abc123", "web_search", r#"{"query": "rust programming"}"#);
 
     let json = serde_json::to_value(&tc).unwrap();
     assert!(json.get("id").is_some(), "ToolCall must have 'id' field");
@@ -106,11 +102,7 @@ fn tool_call_id_preserved_in_serialization() {
 
 #[test]
 fn tool_call_arguments_contain_valid_json() {
-    let tc = ToolCall::new(
-        "call_1",
-        "file_write",
-        r#"{"path": "/tmp/test.txt", "content": "hello"}"#,
-    );
+    let tc = ToolCall::new("call_1", "file_write", r#"{"path": "/tmp/test.txt", "content": "hello"}"#);
 
     // Arguments should parse as valid JSON
     let args: serde_json::Value =

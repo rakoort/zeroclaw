@@ -1777,8 +1777,7 @@ mod tests {
     #[tokio::test]
     async fn chat_delegates_to_inner_provider() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let tool_call =
-            super::super::traits::ToolCall::new("call_1", "shell", r#"{"command":"date"}"#);
+        let tool_call = super::super::traits::ToolCall::new("call_1", "shell", r#"{"command":"date"}"#);
         let provider = ReliableProvider::new(
             vec![(
                 "primary".into(),
@@ -1810,8 +1809,7 @@ mod tests {
     #[tokio::test]
     async fn chat_retries_and_recovers() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let tool_call =
-            super::super::traits::ToolCall::new("call_1", "shell", r#"{"command":"date"}"#);
+        let tool_call = super::super::traits::ToolCall::new("call_1", "shell", r#"{"command":"date"}"#);
         let provider = ReliableProvider::new(
             vec![(
                 "primary".into(),

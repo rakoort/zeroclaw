@@ -317,11 +317,7 @@ async fn e2e_simple_text_response() {
 #[tokio::test]
 async fn e2e_single_tool_call_cycle() {
     let provider = Box::new(MockProvider::new(vec![
-        tool_response(vec![ToolCall::new(
-            "tc1",
-            "echo",
-            r#"{"message": "hello from tool"}"#,
-        )]),
+        tool_response(vec![ToolCall::new("tc1", "echo", r#"{"message": "hello from tool"}"#)]),
         text_response("Tool executed successfully"),
     ]));
 

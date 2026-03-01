@@ -263,11 +263,7 @@ mod tests {
     fn native_dispatcher_roundtrip() {
         let response = ChatResponse {
             text: Some("ok".into()),
-            tool_calls: vec![crate::providers::ToolCall::new(
-                "tc1",
-                "file_read",
-                "{\"path\":\"a.txt\"}",
-            )],
+            tool_calls: vec![crate::providers::ToolCall::new("tc1", "file_read", "{\"path\":\"a.txt\"}")],
             usage: None,
             reasoning_content: None,
         };

@@ -275,13 +275,11 @@ impl OpenAiProvider {
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tc| {
-                ProviderToolCall::new(
-                    tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                    tc.function.name,
-                    tc.function.arguments,
-                )
-            })
+            .map(|tc| ProviderToolCall::new(
+                tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                tc.function.name,
+                tc.function.arguments,
+            ))
             .collect::<Vec<_>>();
 
         ProviderChatResponse {

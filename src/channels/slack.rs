@@ -533,7 +533,13 @@ impl Channel for SlackChannel {
             }
 
             let post_url = format!("{}/chat.postMessage", self.api_base);
-            let result = slack_api_post(&self.client, &post_url, &self.bot_token, &body).await?;
+            let result = slack_api_post(
+                &self.client,
+                &post_url,
+                &self.bot_token,
+                &body,
+            )
+            .await?;
 
             if result.get("ok") == Some(&serde_json::Value::Bool(false)) {
                 let err = result
@@ -567,8 +573,13 @@ impl Channel for SlackChannel {
                 "timestamp": ack_ts
             });
             let remove_url = format!("{}/reactions.remove", self.api_base);
-            if let Err(e) =
-                slack_api_post(&self.client, &remove_url, &self.bot_token, &remove_body).await
+            if let Err(e) = slack_api_post(
+                &self.client,
+                &remove_url,
+                &self.bot_token,
+                &remove_body,
+            )
+            .await
             {
                 tracing::warn!("Failed to remove ack reaction: {e}");
             }
@@ -1489,10 +1500,9 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/chat.postMessage"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "ok": true, "ts": "1772224188.479959" })),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "ok": true, "ts": "1772224188.479959" }),
+            ))
             .mount(&server)
             .await;
 

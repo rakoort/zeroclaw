@@ -1445,54 +1445,30 @@ mod tests {
         let masked = mask_sensitive_fields(&cfg);
         // Secrets must be masked.
         assert_eq!(
-            masked
-                .integrations
-                .slack
-                .as_ref()
-                .map(|s| s.bot_token.as_str()),
+            masked.integrations.slack.as_ref().map(|s| s.bot_token.as_str()),
             Some(MASKED_SECRET)
         );
         assert_eq!(
-            masked
-                .integrations
-                .slack
-                .as_ref()
-                .map(|s| s.app_token.as_str()),
+            masked.integrations.slack.as_ref().map(|s| s.app_token.as_str()),
             Some(MASKED_SECRET)
         );
         assert_eq!(
-            masked
-                .integrations
-                .linear
-                .as_ref()
-                .map(|l| l.api_key.as_str()),
+            masked.integrations.linear.as_ref().map(|l| l.api_key.as_str()),
             Some(MASKED_SECRET)
         );
 
         // After hydration, real secrets must be restored.
         let hydrated = hydrate_config_for_save(masked, &cfg);
         assert_eq!(
-            hydrated
-                .integrations
-                .slack
-                .as_ref()
-                .map(|s| s.bot_token.as_str()),
+            hydrated.integrations.slack.as_ref().map(|s| s.bot_token.as_str()),
             Some("xoxb-real-token")
         );
         assert_eq!(
-            hydrated
-                .integrations
-                .slack
-                .as_ref()
-                .map(|s| s.app_token.as_str()),
+            hydrated.integrations.slack.as_ref().map(|s| s.app_token.as_str()),
             Some("xapp-real-token")
         );
         assert_eq!(
-            hydrated
-                .integrations
-                .linear
-                .as_ref()
-                .map(|l| l.api_key.as_str()),
+            hydrated.integrations.linear.as_ref().map(|l| l.api_key.as_str()),
             Some("lin_api_real_key")
         );
     }

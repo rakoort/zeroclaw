@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::client::{LinearApiError, LinearClient};
+use super::client::{LinearClient, LinearApiError};
 use crate::tools::traits::{Tool, ToolResult};
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -50,12 +50,8 @@ pub struct LinearIssuesTool {
 
 #[async_trait]
 impl Tool for LinearIssuesTool {
-    fn name(&self) -> &str {
-        "linear_issues"
-    }
-    fn description(&self) -> &str {
-        "List issues for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_issues" }
+    fn description(&self) -> &str { "List issues for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -91,11 +87,7 @@ impl Tool for LinearIssuesTool {
             }}"#
         );
 
-        match self
-            .client
-            .graphql(&query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(&query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -110,12 +102,8 @@ pub struct LinearCreateIssueTool {
 
 #[async_trait]
 impl Tool for LinearCreateIssueTool {
-    fn name(&self) -> &str {
-        "linear_create_issue"
-    }
-    fn description(&self) -> &str {
-        "Create a new Linear issue"
-    }
+    fn name(&self) -> &str { "linear_create_issue" }
+    fn description(&self) -> &str { "Create a new Linear issue" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -165,12 +153,8 @@ pub struct LinearUpdateIssueTool {
 
 #[async_trait]
 impl Tool for LinearUpdateIssueTool {
-    fn name(&self) -> &str {
-        "linear_update_issue"
-    }
-    fn description(&self) -> &str {
-        "Update an existing Linear issue"
-    }
+    fn name(&self) -> &str { "linear_update_issue" }
+    fn description(&self) -> &str { "Update an existing Linear issue" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -191,18 +175,10 @@ impl Tool for LinearUpdateIssueTool {
         };
 
         let mut input = json!({});
-        if let Some(v) = opt_str(&args, "title") {
-            input["title"] = json!(v);
-        }
-        if let Some(v) = opt_str(&args, "description") {
-            input["description"] = json!(v);
-        }
-        if let Some(v) = opt_str(&args, "state_id") {
-            input["stateId"] = json!(v);
-        }
-        if let Some(v) = opt_str(&args, "assignee_id") {
-            input["assigneeId"] = json!(v);
-        }
+        if let Some(v) = opt_str(&args, "title") { input["title"] = json!(v); }
+        if let Some(v) = opt_str(&args, "description") { input["description"] = json!(v); }
+        if let Some(v) = opt_str(&args, "state_id") { input["stateId"] = json!(v); }
+        if let Some(v) = opt_str(&args, "assignee_id") { input["assigneeId"] = json!(v); }
 
         let query = r#"mutation($id: String!, $input: IssueUpdateInput!) {
             issueUpdate(id: $id, input: $input) {
@@ -211,11 +187,7 @@ impl Tool for LinearUpdateIssueTool {
             }
         }"#;
 
-        match self
-            .client
-            .graphql(query, &json!({"id": issue_id, "input": input}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"id": issue_id, "input": input})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -230,12 +202,8 @@ pub struct LinearArchiveIssueTool {
 
 #[async_trait]
 impl Tool for LinearArchiveIssueTool {
-    fn name(&self) -> &str {
-        "linear_archive_issue"
-    }
-    fn description(&self) -> &str {
-        "Archive a Linear issue"
-    }
+    fn name(&self) -> &str { "linear_archive_issue" }
+    fn description(&self) -> &str { "Archive a Linear issue" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -270,12 +238,8 @@ pub struct LinearAddCommentTool {
 
 #[async_trait]
 impl Tool for LinearAddCommentTool {
-    fn name(&self) -> &str {
-        "linear_add_comment"
-    }
-    fn description(&self) -> &str {
-        "Add a comment to a Linear issue"
-    }
+    fn name(&self) -> &str { "linear_add_comment" }
+    fn description(&self) -> &str { "Add a comment to a Linear issue" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -303,14 +267,7 @@ impl Tool for LinearAddCommentTool {
             }
         }"#;
 
-        match self
-            .client
-            .graphql(
-                query,
-                &json!({"input": {"issueId": issue_id, "body": body}}),
-            )
-            .await
-        {
+        match self.client.graphql(query, &json!({"input": {"issueId": issue_id, "body": body}})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -325,12 +282,8 @@ pub struct LinearTeamsTool {
 
 #[async_trait]
 impl Tool for LinearTeamsTool {
-    fn name(&self) -> &str {
-        "linear_teams"
-    }
-    fn description(&self) -> &str {
-        "List all teams in the Linear workspace"
-    }
+    fn name(&self) -> &str { "linear_teams" }
+    fn description(&self) -> &str { "List all teams in the Linear workspace" }
     fn parameters_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
@@ -353,12 +306,8 @@ pub struct LinearUsersTool {
 
 #[async_trait]
 impl Tool for LinearUsersTool {
-    fn name(&self) -> &str {
-        "linear_users"
-    }
-    fn description(&self) -> &str {
-        "List members of a Linear team"
-    }
+    fn name(&self) -> &str { "linear_users" }
+    fn description(&self) -> &str { "List members of a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -378,11 +327,7 @@ impl Tool for LinearUsersTool {
                 members { nodes { id name email displayName } }
             }
         }"#;
-        match self
-            .client
-            .graphql(query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -397,12 +342,8 @@ pub struct LinearProjectsTool {
 
 #[async_trait]
 impl Tool for LinearProjectsTool {
-    fn name(&self) -> &str {
-        "linear_projects"
-    }
-    fn description(&self) -> &str {
-        "List projects for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_projects" }
+    fn description(&self) -> &str { "List projects for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -422,11 +363,7 @@ impl Tool for LinearProjectsTool {
                 projects { nodes { id name state } }
             }
         }"#;
-        match self
-            .client
-            .graphql(query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -441,12 +378,8 @@ pub struct LinearCyclesTool {
 
 #[async_trait]
 impl Tool for LinearCyclesTool {
-    fn name(&self) -> &str {
-        "linear_cycles"
-    }
-    fn description(&self) -> &str {
-        "List cycles for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_cycles" }
+    fn description(&self) -> &str { "List cycles for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -466,11 +399,7 @@ impl Tool for LinearCyclesTool {
                 cycles { nodes { id name number startsAt endsAt } }
             }
         }"#;
-        match self
-            .client
-            .graphql(query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -485,12 +414,8 @@ pub struct LinearLabelsTool {
 
 #[async_trait]
 impl Tool for LinearLabelsTool {
-    fn name(&self) -> &str {
-        "linear_labels"
-    }
-    fn description(&self) -> &str {
-        "List labels for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_labels" }
+    fn description(&self) -> &str { "List labels for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -510,11 +435,7 @@ impl Tool for LinearLabelsTool {
                 labels { nodes { id name color } }
             }
         }"#;
-        match self
-            .client
-            .graphql(query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -529,12 +450,8 @@ pub struct LinearStatesTool {
 
 #[async_trait]
 impl Tool for LinearStatesTool {
-    fn name(&self) -> &str {
-        "linear_states"
-    }
-    fn description(&self) -> &str {
-        "List workflow states for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_states" }
+    fn description(&self) -> &str { "List workflow states for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -554,11 +471,7 @@ impl Tool for LinearStatesTool {
                 states { nodes { id name type color position } }
             }
         }"#;
-        match self
-            .client
-            .graphql(query, &json!({"teamId": team_id}))
-            .await
-        {
+        match self.client.graphql(query, &json!({"teamId": team_id})).await {
             Ok(v) => Ok(ok_result(&v)),
             Err(e) => Ok(err_result(e)),
         }
@@ -573,12 +486,8 @@ pub struct LinearCreateLabelTool {
 
 #[async_trait]
 impl Tool for LinearCreateLabelTool {
-    fn name(&self) -> &str {
-        "linear_create_label"
-    }
-    fn description(&self) -> &str {
-        "Create a label for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_create_label" }
+    fn description(&self) -> &str { "Create a label for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -602,9 +511,7 @@ impl Tool for LinearCreateLabelTool {
         let color = opt_str(&args, "color");
 
         let mut input = json!({"teamId": team_id, "name": name});
-        if let Some(c) = color {
-            input["color"] = json!(c);
-        }
+        if let Some(c) = color { input["color"] = json!(c); }
 
         let query = r#"mutation($input: IssueLabelCreateInput!) {
             issueLabelCreate(input: $input) {
@@ -627,12 +534,8 @@ pub struct LinearCreateProjectTool {
 
 #[async_trait]
 impl Tool for LinearCreateProjectTool {
-    fn name(&self) -> &str {
-        "linear_create_project"
-    }
-    fn description(&self) -> &str {
-        "Create a project for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_create_project" }
+    fn description(&self) -> &str { "Create a project for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -656,9 +559,7 @@ impl Tool for LinearCreateProjectTool {
         let description = opt_str(&args, "description");
 
         let mut input = json!({"teamIds": [team_id], "name": name});
-        if let Some(d) = description {
-            input["description"] = json!(d);
-        }
+        if let Some(d) = description { input["description"] = json!(d); }
 
         let query = r#"mutation($input: ProjectCreateInput!) {
             projectCreate(input: $input) {
@@ -681,12 +582,8 @@ pub struct LinearCreateCycleTool {
 
 #[async_trait]
 impl Tool for LinearCreateCycleTool {
-    fn name(&self) -> &str {
-        "linear_create_cycle"
-    }
-    fn description(&self) -> &str {
-        "Create a cycle for a Linear team"
-    }
+    fn name(&self) -> &str { "linear_create_cycle" }
+    fn description(&self) -> &str { "Create a cycle for a Linear team" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -741,45 +638,19 @@ impl Tool for LinearCreateCycleTool {
 /// Return all 14 Linear tools backed by the given client.
 pub fn all_linear_tools(client: Arc<LinearClient>) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(LinearIssuesTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearCreateIssueTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearUpdateIssueTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearArchiveIssueTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearAddCommentTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearTeamsTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearUsersTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearProjectsTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearCyclesTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearLabelsTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearStatesTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearCreateLabelTool {
-            client: Arc::clone(&client),
-        }),
-        Arc::new(LinearCreateProjectTool {
-            client: Arc::clone(&client),
-        }),
+        Arc::new(LinearIssuesTool { client: Arc::clone(&client) }),
+        Arc::new(LinearCreateIssueTool { client: Arc::clone(&client) }),
+        Arc::new(LinearUpdateIssueTool { client: Arc::clone(&client) }),
+        Arc::new(LinearArchiveIssueTool { client: Arc::clone(&client) }),
+        Arc::new(LinearAddCommentTool { client: Arc::clone(&client) }),
+        Arc::new(LinearTeamsTool { client: Arc::clone(&client) }),
+        Arc::new(LinearUsersTool { client: Arc::clone(&client) }),
+        Arc::new(LinearProjectsTool { client: Arc::clone(&client) }),
+        Arc::new(LinearCyclesTool { client: Arc::clone(&client) }),
+        Arc::new(LinearLabelsTool { client: Arc::clone(&client) }),
+        Arc::new(LinearStatesTool { client: Arc::clone(&client) }),
+        Arc::new(LinearCreateLabelTool { client: Arc::clone(&client) }),
+        Arc::new(LinearCreateProjectTool { client: Arc::clone(&client) }),
         Arc::new(LinearCreateCycleTool { client }),
     ]
 }
@@ -802,7 +673,10 @@ mod tests {
         let server = MockServer::start().await;
         let client = mock_client(&server);
         let tool = LinearCreateIssueTool { client };
-        let result = tool.execute(json!({"title": "Bug"})).await.unwrap();
+        let result = tool
+            .execute(json!({"title": "Bug"}))
+            .await
+            .unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("team_id"));
     }
@@ -863,8 +737,7 @@ mod tests {
         for tool in &tools {
             let schema = tool.parameters_schema();
             assert_eq!(
-                schema["type"],
-                "object",
+                schema["type"], "object",
                 "Tool {} schema must be object",
                 tool.name()
             );

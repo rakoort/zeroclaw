@@ -66,7 +66,11 @@ impl LinearClient {
     /// Execute a GraphQL query or mutation.
     ///
     /// Linear uses a raw API key in the Authorization header (no `Bearer` prefix).
-    pub async fn graphql(&self, query: &str, variables: &Value) -> Result<Value, LinearApiError> {
+    pub async fn graphql(
+        &self,
+        query: &str,
+        variables: &Value,
+    ) -> Result<Value, LinearApiError> {
         let url = format!("{}/graphql", self.base_url);
         let body = json!({ "query": query, "variables": variables });
         let mut retries = 0u32;
@@ -94,9 +98,7 @@ impl LinearClient {
                     .unwrap_or(0);
 
                 if retries >= MAX_RETRIES {
-                    return Err(LinearApiError::RateLimited {
-                        reset_at_ms: reset_ms,
-                    });
+                    return Err(LinearApiError::RateLimited { reset_at_ms: reset_ms });
                 }
 
                 let wait = compute_wait_from_reset(reset_ms);
@@ -160,10 +162,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"data": {"viewer": {"id": "user_123"}}})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"data": {"viewer": {"id": "user_123"}}}),
+            ))
             .mount(&server)
             .await;
 
@@ -181,11 +182,15 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .and(header("Authorization", "lin_api_key_123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {}})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data": {}})),
+            )
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("lin_api_key_123".into(), server.uri());
+        let client =
+            LinearClient::new_with_base_url("lin_api_key_123".into(), server.uri());
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -230,7 +235,10 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {}})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data": {}})),
+            )
             .mount(&server)
             .await;
 

@@ -241,7 +241,10 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 impl SlackChannelAdapter {
     /// Run one Socket Mode WebSocket session; returns on disconnect.
-    async fn run_socket_mode(&self, tx: &mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+    async fn run_socket_mode(
+        &self,
+        tx: &mpsc::Sender<ChannelMessage>,
+    ) -> anyhow::Result<()> {
         // Get a WebSocket URL via apps.connections.open (uses app_token).
         let ws_url = self.open_socket_mode_connection().await?;
 
@@ -367,8 +370,10 @@ impl SlackChannelAdapter {
 
             // Mention gating.
             let effective_thread_ts = thread_ts.clone().unwrap_or_else(|| ts.clone());
-            let (triage_required, should_process) =
-                self.evaluate_mention_gate(text_content, &effective_thread_ts);
+            let (triage_required, should_process) = self.evaluate_mention_gate(
+                text_content,
+                &effective_thread_ts,
+            );
 
             if !should_process {
                 continue;
@@ -456,7 +461,11 @@ impl SlackChannelAdapter {
             .ok_or_else(|| anyhow::anyhow!("missing url in apps.connections.open response"))
     }
 
-    fn evaluate_mention_gate(&self, text: &str, thread_ts: &str) -> (bool, bool) {
+    fn evaluate_mention_gate(
+        &self,
+        text: &str,
+        thread_ts: &str,
+    ) -> (bool, bool) {
         if !self.shared.config.mention_only {
             return (false, true);
         }
@@ -482,7 +491,11 @@ impl SlackChannelAdapter {
         }
 
         // Check thread participation.
-        let participated = self.shared.participated_threads.lock().contains(thread_ts);
+        let participated = self
+            .shared
+            .participated_threads
+            .lock()
+            .contains(thread_ts);
 
         if participated {
             // Triage required — the bot has participated but wasn't explicitly mentioned.
@@ -563,7 +576,9 @@ fn is_user_allowed(user_id: &str, allowed_users: &[String]) -> bool {
     if allowed_users.is_empty() {
         return false;
     }
-    allowed_users.iter().any(|u| u == "*" || u == user_id)
+    allowed_users
+        .iter()
+        .any(|u| u == "*" || u == user_id)
 }
 
 fn parse_slack_ts(ts: &str) -> u64 {
@@ -635,8 +650,7 @@ mod tests {
         for tool in &tools {
             let schema = tool.parameters_schema();
             assert_eq!(
-                schema["type"],
-                "object",
+                schema["type"], "object",
                 "Tool {} schema must be object",
                 tool.name()
             );

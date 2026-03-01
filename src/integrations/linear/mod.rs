@@ -67,8 +67,7 @@ mod tests {
         for tool in &tools {
             let schema = tool.parameters_schema();
             assert_eq!(
-                schema["type"],
-                "object",
+                schema["type"], "object",
                 "Tool {} schema must be object",
                 tool.name()
             );
