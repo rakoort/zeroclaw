@@ -1813,6 +1813,38 @@ impl Provider for GeminiProvider {
                 "assistant" => {
                     // Check if this is a tool-call message (JSON with tool_calls field)
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        // Use raw_model_parts for faithful replay when available
+                        if let Some(raw_parts) =
+                            parsed.get("raw_model_parts").and_then(|v| v.as_array())
+                        {
+                            let parts: Vec<Part> = raw_parts
+                                .iter()
+                                .filter_map(|p| serde_json::from_value(p.clone()).ok())
+                                .collect();
+                            if !parts.is_empty() {
+                                // Populate tool_id_to_name from tool_calls for result matching
+                                if let Some(tcs) =
+                                    parsed.get("tool_calls").and_then(|v| v.as_array())
+                                {
+                                    for tc in tcs {
+                                        if let (Some(id), Some(name)) = (
+                                            tc.get("id").and_then(|v| v.as_str()),
+                                            tc.get("name").and_then(|v| v.as_str()),
+                                        ) {
+                                            tool_id_to_name
+                                                .insert(id.to_string(), name.to_string());
+                                        }
+                                    }
+                                }
+                                contents.push(Content {
+                                    role: Some("model".into()),
+                                    parts,
+                                });
+                                continue;
+                            }
+                        }
+
+                        // Fallback: reconstruct from tool_calls (non-thinking models, legacy)
                         if let Some(tool_calls) =
                             parsed.get("tool_calls").and_then(|tc| tc.as_array())
                         {
@@ -2014,6 +2046,38 @@ impl Provider for GeminiProvider {
                 "assistant" => {
                     // Check if this is a tool-call message (JSON with tool_calls field)
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        // Use raw_model_parts for faithful replay when available
+                        if let Some(raw_parts) =
+                            parsed.get("raw_model_parts").and_then(|v| v.as_array())
+                        {
+                            let parts: Vec<Part> = raw_parts
+                                .iter()
+                                .filter_map(|p| serde_json::from_value(p.clone()).ok())
+                                .collect();
+                            if !parts.is_empty() {
+                                // Populate tool_id_to_name from tool_calls for result matching
+                                if let Some(tcs) =
+                                    parsed.get("tool_calls").and_then(|v| v.as_array())
+                                {
+                                    for tc in tcs {
+                                        if let (Some(id), Some(name)) = (
+                                            tc.get("id").and_then(|v| v.as_str()),
+                                            tc.get("name").and_then(|v| v.as_str()),
+                                        ) {
+                                            tool_id_to_name
+                                                .insert(id.to_string(), name.to_string());
+                                        }
+                                    }
+                                }
+                                contents.push(Content {
+                                    role: Some("model".into()),
+                                    parts,
+                                });
+                                continue;
+                            }
+                        }
+
+                        // Fallback: reconstruct from tool_calls (non-thinking models, legacy)
                         if let Some(tool_calls) =
                             parsed.get("tool_calls").and_then(|tc| tc.as_array())
                         {
@@ -3515,5 +3579,60 @@ mod tests {
         assert_eq!(restored.text.as_deref(), Some("reasoning"));
         assert_eq!(restored.thought, Some(true));
         assert_eq!(restored.thought_signature.as_deref(), Some("sig123"));
+    }
+
+    #[test]
+    fn raw_model_parts_round_trip_preserves_thinking_signatures() {
+        // Simulate what extract_response produces
+        let original_parts = [
+            Part {
+                text: Some("reasoning...".into()),
+                thought: Some(true),
+                thought_signature: Some("sig_thinking".into()),
+                ..Default::default()
+            },
+            Part {
+                function_call: Some(FunctionCallPart {
+                    name: "search".into(),
+                    args: serde_json::json!({"q": "test"}),
+                }),
+                thought_signature: Some("sig_call".into()),
+                ..Default::default()
+            },
+        ];
+
+        // Serialize to JSON values (as stored in provider_parts)
+        let json_values: Vec<serde_json::Value> = original_parts
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap())
+            .collect();
+
+        // Simulate storing in history JSON
+        let history_json = serde_json::json!({
+            "content": null,
+            "tool_calls": [],
+            "raw_model_parts": json_values,
+        });
+
+        // Simulate replay: extract raw_model_parts and deserialize
+        let raw = history_json
+            .get("raw_model_parts")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let restored: Vec<Part> = raw
+            .iter()
+            .filter_map(|p| serde_json::from_value(p.clone()).ok())
+            .collect();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].thought, Some(true));
+        assert_eq!(
+            restored[0].thought_signature.as_deref(),
+            Some("sig_thinking")
+        );
+        assert_eq!(restored[0].text.as_deref(), Some("reasoning..."));
+        assert_eq!(restored[1].function_call.as_ref().unwrap().name, "search");
+        assert_eq!(restored[1].thought_signature.as_deref(), Some("sig_call"));
     }
 }
