@@ -224,6 +224,7 @@ pub async fn plan_then_execute(
             ChatRequest {
                 messages: &planner_messages,
                 tools: None,
+                route_hint: None,
             },
             planner_model,
             temperature,

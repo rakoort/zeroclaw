@@ -2183,6 +2183,7 @@ pub(crate) async fn run_tool_call_loop(
             ChatRequest {
                 messages: &prepared_messages.messages,
                 tools: request_tools,
+                route_hint: None,
             },
             model,
             temperature,

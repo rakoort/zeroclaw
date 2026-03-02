@@ -112,6 +112,9 @@ impl ChatResponse {
 pub struct ChatRequest<'a> {
     pub messages: &'a [ChatMessage],
     pub tools: Option<&'a [ToolSpec]>,
+    /// Semantic hint for the request context (e.g., "triage", "simple", "complex").
+    /// Providers may use this to adjust behavior (e.g., thinking budget).
+    pub route_hint: Option<&'a str>,
 }
 
 /// A tool result to feed back to the LLM.
@@ -802,6 +805,7 @@ mod tests {
         let request = ChatRequest {
             messages: &[ChatMessage::user("Hello")],
             tools: Some(&tools),
+            route_hint: None,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -819,6 +823,7 @@ mod tests {
         let request = ChatRequest {
             messages: &[ChatMessage::user("Hello")],
             tools: None,
+            route_hint: None,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -919,6 +924,7 @@ mod tests {
                 ChatMessage::system("BASE_SYSTEM_PROMPT"),
             ],
             tools: Some(&tools),
+            route_hint: None,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -941,6 +947,7 @@ mod tests {
         let request = ChatRequest {
             messages: &[ChatMessage::system("BASE"), ChatMessage::user("Hello")],
             tools: Some(&tools),
+            route_hint: None,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -963,6 +970,7 @@ mod tests {
         let request = ChatRequest {
             messages: &[ChatMessage::user("Hello")],
             tools: Some(&tools),
+            route_hint: None,
         };
 
         let err = provider.chat(request, "model", 0.7).await.unwrap_err();

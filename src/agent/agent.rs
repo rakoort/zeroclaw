@@ -608,6 +608,7 @@ impl Agent {
                         } else {
                             None
                         },
+                        route_hint: None,
                     },
                     &effective_model,
                     self.temperature,

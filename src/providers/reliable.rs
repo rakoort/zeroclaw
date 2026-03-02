@@ -777,6 +777,7 @@ impl Provider for ReliableProvider {
                     let req = ChatRequest {
                         messages: request.messages,
                         tools: request.tools,
+                        route_hint: request.route_hint,
                     };
                     match provider.chat(req, current_model, temperature).await {
                         Ok(resp) => {
@@ -1799,6 +1800,7 @@ mod tests {
         let request = ChatRequest {
             messages: &messages,
             tools: None,
+            route_hint: None,
         };
         let result = provider.chat(request, "test-model", 0.0).await.unwrap();
 
@@ -1832,6 +1834,7 @@ mod tests {
         let request = ChatRequest {
             messages: &messages,
             tools: None,
+            route_hint: None,
         };
         let result = provider.chat(request, "test-model", 0.0).await.unwrap();
 
@@ -1903,6 +1906,7 @@ mod tests {
         let request = ChatRequest {
             messages: &messages,
             tools: None,
+            route_hint: None,
         };
         let err = provider
             .chat(request, "test", 0.0)
@@ -2020,6 +2024,7 @@ mod tests {
         let request = ChatRequest {
             messages: &messages,
             tools: None,
+            route_hint: None,
         };
         let result = provider.chat(request, "claude-opus", 0.0).await.unwrap();
         assert_eq!(result.text.as_deref(), Some("ok from sonnet"));
@@ -2068,6 +2073,7 @@ mod tests {
         let request = ChatRequest {
             messages: &messages,
             tools: None,
+            route_hint: None,
         };
         let result = provider.chat(request, "test", 0.0).await.unwrap();
         assert_eq!(result.text.as_deref(), Some("from fallback"));
@@ -2118,5 +2124,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, "ok from fallback");
+    }
+
+    /// Mock that captures the `route_hint` received via `chat()`.
+    struct RouteHintCapturingMock {
+        captured_hints: parking_lot::Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for RouteHintCapturingMock {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok("ok".to_string())
+        }
+
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            self.captured_hints
+                .lock()
+                .push(request.route_hint.map(|s| s.to_string()));
+            Ok(ChatResponse {
+                text: Some("ok".to_string()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Provider for Arc<RouteHintCapturingMock> {
+        async fn chat_with_system(
+            &self,
+            system_prompt: Option<&str>,
+            message: &str,
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<String> {
+            self.as_ref()
+                .chat_with_system(system_prompt, message, model, temperature)
+                .await
+        }
+
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            self.as_ref().chat(request, model, temperature).await
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_propagates_route_hint_to_inner_provider() {
+        let mock = Arc::new(RouteHintCapturingMock {
+            captured_hints: parking_lot::Mutex::new(Vec::new()),
+        });
+
+        let provider = ReliableProvider::new(
+            vec![("inner".into(), Box::new(mock.clone()) as Box<dyn Provider>)],
+            0,
+            1,
+        );
+
+        let request = ChatRequest {
+            messages: &[ChatMessage::user("hello")],
+            tools: None,
+            route_hint: Some("triage"),
+        };
+        provider.chat(request, "test-model", 0.7).await.unwrap();
+
+        let hints = mock.captured_hints.lock();
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0], Some("triage".to_string()));
     }
 }
