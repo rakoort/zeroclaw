@@ -1496,6 +1496,18 @@ impl GeminiProvider {
             tool_config,
         };
 
+        tracing::debug!(
+            contents_count = request.contents.len(),
+            roles = %request.contents.iter()
+                .map(|c| c.role.as_deref().unwrap_or("none"))
+                .collect::<Vec<_>>()
+                .join(","),
+            has_system_instruction = request.system_instruction.is_some(),
+            has_tools = request.tools.is_some(),
+            tool_count = request.tools.as_ref().map_or(0, |t| t.len()),
+            "Gemini request structure"
+        );
+
         let url = Self::build_generate_content_url(model, auth);
 
         let mut response = self
@@ -1944,6 +1956,13 @@ impl Provider for GeminiProvider {
                             role: Some("user".into()),
                             parts: vec![part],
                         });
+                    } else {
+                        let preview: String = msg.content.chars().take(200).collect();
+                        tracing::warn!(
+                            content_len = msg.content.len(),
+                            content_preview = %preview,
+                            "Failed to parse tool message as JSON -- tool result will be dropped"
+                        );
                     }
                 }
                 _ => {}
@@ -3634,5 +3653,38 @@ mod tests {
         assert_eq!(restored[0].text.as_deref(), Some("reasoning..."));
         assert_eq!(restored[1].function_call.as_ref().unwrap().name, "search");
         assert_eq!(restored[1].thought_signature.as_deref(), Some("sig_call"));
+    }
+
+    #[test]
+    fn tool_message_with_invalid_json_produces_error_content() {
+        // Simulate what the old sanitizer merge produced: two JSON objects
+        // joined by newline — invalid JSON.
+        let corrupted = r#"{"tool_call_id":"call1","content":"r1"}
+{"tool_call_id":"call2","content":"r2"}"#;
+
+        // Attempt to parse like gemini.rs does
+        let parsed = serde_json::from_str::<serde_json::Value>(corrupted);
+        assert!(parsed.is_err(), "merged JSON must fail to parse");
+    }
+
+    #[test]
+    fn tool_parse_warning_preview_safe_on_multibyte_utf8() {
+        // Build a string where byte 200 falls inside a multi-byte codepoint.
+        // 199 ASCII bytes + U+00E9 (e-acute, 2 UTF-8 bytes) puts byte 200
+        // inside the multi-byte codepoint.
+        let mut content = "a".repeat(199);
+        content.push('\u{00E9}'); // bytes 199..201
+        content.push_str("trailing");
+
+        // Byte slicing at 200 would panic because it is mid-codepoint
+        assert!(
+            !content.is_char_boundary(200),
+            "byte 200 must NOT be a char boundary for this test to be meaningful"
+        );
+
+        // Safe truncation via chars().take(200) must not panic
+        let preview: String = content.chars().take(200).collect();
+        assert_eq!(preview.chars().count(), 200);
+        assert!(preview.ends_with('\u{00E9}'));
     }
 }

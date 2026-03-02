@@ -300,7 +300,8 @@ fn clean_schema_recursive(
 /// 1. Rewrite non-alphanumeric tool call IDs to alphanumeric-only equivalents.
 /// 2. Preserve system messages at the front unchanged.
 /// 3. Prepend a synthetic user turn if non-system messages start with assistant.
-/// 4. Merge consecutive same-role messages (content joined with `\n`).
+/// 4. Merge consecutive same-role messages (content joined with `\n`),
+///    except tool messages which must remain separate for JSON integrity.
 ///
 /// This is a pure function — no side effects, returns a new `Vec`.
 pub fn sanitize_transcript_for_gemini(messages: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -358,11 +359,11 @@ pub fn sanitize_transcript_for_gemini(messages: &[ChatMessage]) -> Vec<ChatMessa
         non_system_msgs.insert(0, ChatMessage::user("(session bootstrap)"));
     }
 
-    // Step 4: Merge consecutive same-role messages.
+    // Step 4: Merge consecutive same-role messages (except tool — provider handles those).
     let mut merged: Vec<ChatMessage> = Vec::new();
     for msg in non_system_msgs {
         if let Some(last) = merged.last_mut() {
-            if last.role == msg.role {
+            if last.role == msg.role && msg.role != "tool" {
                 last.content.push('\n');
                 last.content.push_str(&msg.content);
                 continue;
@@ -770,6 +771,31 @@ mod tests {
         assert_eq!(result[0].content, "Hello\nWorld");
         assert_eq!(result[1].role, "assistant");
         assert_eq!(result[1].content, "Hi\nThere");
+    }
+
+    #[test]
+    fn does_not_merge_consecutive_tool_messages() {
+        let tool1 = ChatMessage::tool(r#"{"tool_call_id":"call1","content":"result1"}"#);
+        let tool2 = ChatMessage::tool(r#"{"tool_call_id":"call2","content":"result2"}"#);
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Calling tools"),
+            tool1,
+            tool2,
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        // Tool messages must remain separate — merging corrupts their JSON
+        let tool_msgs: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_msgs.len(), 2, "tool messages must not be merged");
+        // Each must still be valid JSON
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&tool_msgs[0].content).is_ok(),
+            "first tool message must be valid JSON"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&tool_msgs[1].content).is_ok(),
+            "second tool message must be valid JSON"
+        );
     }
 
     #[test]

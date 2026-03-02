@@ -5,9 +5,7 @@ pub mod slack;
 
 // Re-export catalog types for callers (gateway API, main.rs CLI).
 #[allow(unused_imports)]
-pub use catalog::{
-    handle_command, IntegrationCategory, IntegrationEntry, IntegrationStatus,
-};
+pub use catalog::{handle_command, IntegrationCategory, IntegrationEntry, IntegrationStatus};
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -42,9 +40,7 @@ pub fn collect_integrations(config: &Config) -> Vec<Arc<dyn Integration>> {
     let mut integrations: Vec<Arc<dyn Integration>> = Vec::new();
 
     if let Some(ref slack_config) = config.integrations.slack {
-        integrations.push(Arc::new(slack::SlackIntegration::new(
-            slack_config.clone(),
-        )));
+        integrations.push(Arc::new(slack::SlackIntegration::new(slack_config.clone())));
     }
 
     if let Some(ref linear_config) = config.integrations.linear {
