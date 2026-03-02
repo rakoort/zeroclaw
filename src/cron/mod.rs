@@ -180,17 +180,34 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
         crate::CronCommands::Once {
             delay,
             command,
-            job_type: _job_type,
-            model: _model,
-            session_target: _session_target,
-            delivery_channel: _delivery_channel,
-            delivery_to: _delivery_to,
-            name: _name,
+            job_type,
+            model,
+            session_target,
+            delivery_channel,
+            delivery_to,
+            name,
         } => {
-            let job = add_once(config, &delay, &command)?;
-            println!("✅ Added one-shot cron job {}", job.id);
-            println!("  At  : {}", job.next_run.to_rfc3339());
-            println!("  Cmd : {}", job.command);
+            match job_type.as_str() {
+                "agent" => {
+                    let duration = parse_delay(&delay)?;
+                    let at = chrono::Utc::now() + duration;
+                    let schedule = Schedule::At { at };
+                    let delivery = build_delivery_config(delivery_channel, delivery_to);
+                    let target = parse_session_target(&session_target);
+                    let job = add_agent_job(
+                        config, name, schedule, &command, target, model, delivery, true,
+                    )?;
+                    println!("✅ Added one-shot agent cron job {}", job.id);
+                    println!("  At    : {}", job.next_run.to_rfc3339());
+                    println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
+                }
+                _ => {
+                    let job = add_once(config, &delay, &command)?;
+                    println!("✅ Added one-shot cron job {}", job.id);
+                    println!("  At  : {}", job.next_run.to_rfc3339());
+                    println!("  Cmd : {}", job.command);
+                }
+            }
             Ok(())
         }
         crate::CronCommands::Update {
@@ -628,5 +645,33 @@ mod tests {
         assert_eq!(jobs[0].job_type, JobType::Agent);
         assert_eq!(jobs[0].prompt.as_deref(), Some("Check health"));
         assert_eq!(jobs[0].session_target, SessionTarget::Main);
+    }
+
+    #[test]
+    fn once_agent_job_via_handler() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        handle_command(
+            crate::CronCommands::Once {
+                delay: "30m".into(),
+                command: "Remind me".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: Some("reminder".into()),
+            },
+            &config,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::Agent);
+        assert_eq!(jobs[0].prompt.as_deref(), Some("Remind me"));
+        assert_eq!(jobs[0].name.as_deref(), Some("reminder"));
+        assert!(jobs[0].delete_after_run);
     }
 }
