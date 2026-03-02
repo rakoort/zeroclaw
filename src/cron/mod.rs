@@ -21,21 +21,29 @@ pub use store::{
 };
 pub use types::{CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType, Schedule, SessionTarget};
 
-fn parse_session_target(s: &str) -> SessionTarget {
-    match s {
-        "main" => SessionTarget::Main,
-        _ => SessionTarget::Isolated,
+fn validate_job_type(job_type: &str) -> Result<()> {
+    match job_type {
+        "shell" | "agent" => Ok(()),
+        other => bail!("Invalid --type '{other}'. Expected 'shell' or 'agent'."),
     }
 }
 
-fn build_delivery_config(channel: Option<String>, to: Option<String>) -> Option<DeliveryConfig> {
-    channel.as_ref()?;
-    Some(DeliveryConfig {
-        mode: "announce".into(),
-        channel,
-        to,
-        best_effort: true,
-    })
+fn build_delivery_config(
+    channel: Option<String>,
+    to: Option<String>,
+) -> Result<Option<DeliveryConfig>> {
+    if channel.is_none() && to.is_some() {
+        bail!("--delivery-to requires --delivery-channel");
+    }
+    match channel {
+        None => Ok(None),
+        Some(ch) => Ok(Some(DeliveryConfig {
+            mode: "announce".into(),
+            channel: Some(ch),
+            to,
+            best_effort: true,
+        })),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -88,10 +96,11 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                 expr: expression,
                 tz,
             };
+            validate_job_type(&job_type)?;
             match job_type.as_str() {
                 "agent" => {
-                    let delivery = build_delivery_config(delivery_channel, delivery_to);
-                    let target = parse_session_target(&session_target);
+                    let delivery = build_delivery_config(delivery_channel, delivery_to)?;
+                    let target = SessionTarget::parse(&session_target);
                     let job = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, false,
                     )?;
@@ -124,10 +133,11 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
             let schedule = Schedule::At { at };
+            validate_job_type(&job_type)?;
             match job_type.as_str() {
                 "agent" => {
-                    let delivery = build_delivery_config(delivery_channel, delivery_to);
-                    let target = parse_session_target(&session_target);
+                    let delivery = build_delivery_config(delivery_channel, delivery_to)?;
+                    let target = SessionTarget::parse(&session_target);
                     let job = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, true,
                     )?;
@@ -155,10 +165,11 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             name,
         } => {
             let schedule = Schedule::Every { every_ms };
+            validate_job_type(&job_type)?;
             match job_type.as_str() {
                 "agent" => {
-                    let delivery = build_delivery_config(delivery_channel, delivery_to);
-                    let target = parse_session_target(&session_target);
+                    let delivery = build_delivery_config(delivery_channel, delivery_to)?;
+                    let target = SessionTarget::parse(&session_target);
                     let job = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, false,
                     )?;
@@ -187,13 +198,14 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             delivery_to,
             name,
         } => {
+            validate_job_type(&job_type)?;
             match job_type.as_str() {
                 "agent" => {
                     let duration = parse_delay(&delay)?;
                     let at = chrono::Utc::now() + duration;
                     let schedule = Schedule::At { at };
-                    let delivery = build_delivery_config(delivery_channel, delivery_to);
-                    let target = parse_session_target(&session_target);
+                    let delivery = build_delivery_config(delivery_channel, delivery_to)?;
+                    let target = SessionTarget::parse(&session_target);
                     let job = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, true,
                     )?;
@@ -528,38 +540,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_target_isolated() {
-        assert_eq!(
-            super::parse_session_target("isolated"),
-            SessionTarget::Isolated
-        );
+    fn validate_job_type_accepts_shell() {
+        super::validate_job_type("shell").unwrap();
     }
 
     #[test]
-    fn parse_session_target_main() {
-        assert_eq!(super::parse_session_target("main"), SessionTarget::Main);
+    fn validate_job_type_accepts_agent() {
+        super::validate_job_type("agent").unwrap();
     }
 
     #[test]
-    fn parse_session_target_defaults_to_isolated() {
-        assert_eq!(
-            super::parse_session_target("bogus"),
-            SessionTarget::Isolated
-        );
+    fn validate_job_type_rejects_invalid() {
+        let err = super::validate_job_type("foobar").unwrap_err();
+        assert!(err.to_string().contains("Invalid --type"));
     }
 
     #[test]
     fn build_delivery_config_none_when_no_channel() {
-        assert!(super::build_delivery_config(None, None).is_none());
+        assert!(super::build_delivery_config(None, None).unwrap().is_none());
     }
 
     #[test]
     fn build_delivery_config_some_when_channel_set() {
-        let cfg =
-            super::build_delivery_config(Some("discord".into()), Some("123456".into())).unwrap();
+        let cfg = super::build_delivery_config(Some("discord".into()), Some("123456".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(cfg.channel, Some("discord".into()));
         assert_eq!(cfg.to, Some("123456".into()));
         assert_eq!(cfg.mode, "announce");
+    }
+
+    #[test]
+    fn build_delivery_config_rejects_to_without_channel() {
+        let err =
+            super::build_delivery_config(None, Some("123".into())).unwrap_err();
+        assert!(err.to_string().contains("--delivery-to requires"));
     }
 
     #[test]
