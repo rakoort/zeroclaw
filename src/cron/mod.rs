@@ -77,22 +77,37 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             expression,
             tz,
             command,
-            job_type: _job_type,
-            model: _model,
-            session_target: _session_target,
-            delivery_channel: _delivery_channel,
-            delivery_to: _delivery_to,
-            name: _name,
+            job_type,
+            model,
+            session_target,
+            delivery_channel,
+            delivery_to,
+            name,
         } => {
             let schedule = Schedule::Cron {
                 expr: expression,
                 tz,
             };
-            let job = add_shell_job(config, None, schedule, &command)?;
-            println!("✅ Added cron job {}", job.id);
-            println!("  Expr: {}", job.expression);
-            println!("  Next: {}", job.next_run.to_rfc3339());
-            println!("  Cmd : {}", job.command);
+            match job_type.as_str() {
+                "agent" => {
+                    let delivery = build_delivery_config(delivery_channel, delivery_to);
+                    let target = parse_session_target(&session_target);
+                    let job = add_agent_job(
+                        config, name, schedule, &command, target, model, delivery, false,
+                    )?;
+                    println!("✅ Added agent cron job {}", job.id);
+                    println!("  Expr  : {}", job.expression);
+                    println!("  Next  : {}", job.next_run.to_rfc3339());
+                    println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
+                }
+                _ => {
+                    let job = add_shell_job(config, name, schedule, &command)?;
+                    println!("✅ Added cron job {}", job.id);
+                    println!("  Expr: {}", job.expression);
+                    println!("  Next: {}", job.next_run.to_rfc3339());
+                    println!("  Cmd : {}", job.command);
+                }
+            }
             Ok(())
         }
         crate::CronCommands::AddAt {
@@ -499,5 +514,35 @@ mod tests {
         assert_eq!(cfg.channel, Some("discord".into()));
         assert_eq!(cfg.to, Some("123456".into()));
         assert_eq!(cfg.mode, "announce");
+    }
+
+    #[test]
+    fn add_agent_job_via_handler() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        handle_command(
+            crate::CronCommands::Add {
+                expression: "*/5 * * * *".into(),
+                tz: None,
+                command: "Summarize alerts".into(),
+                job_type: "agent".into(),
+                model: Some("gpt-4o".into()),
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: Some("alert-summary".into()),
+            },
+            &config,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::Agent);
+        assert_eq!(jobs[0].prompt.as_deref(), Some("Summarize alerts"));
+        assert_eq!(jobs[0].model.as_deref(), Some("gpt-4o"));
+        assert_eq!(jobs[0].name.as_deref(), Some("alert-summary"));
+        assert!(jobs[0].command.is_empty());
     }
 }
