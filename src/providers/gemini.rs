@@ -1944,6 +1944,12 @@ impl Provider for GeminiProvider {
                             role: Some("user".into()),
                             parts: vec![part],
                         });
+                    } else {
+                        tracing::warn!(
+                            content_len = msg.content.len(),
+                            content_preview = &msg.content[..msg.content.len().min(200)],
+                            "Failed to parse tool message as JSON -- tool result will be dropped"
+                        );
                     }
                 }
                 _ => {}
