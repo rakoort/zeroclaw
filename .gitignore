@@ -29,3 +29,6 @@ venv/
 *.pem
 credentials.json
 .worktrees/
+
+# Claude Code TDD guard data
+.claude/tdd-guard-superpowers/data/
