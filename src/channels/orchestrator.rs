@@ -2770,6 +2770,10 @@ pub async fn start_channels(config: Config) -> Result<()> {
             if config.hooks.builtin.command_logger {
                 runner.register(Box::new(crate::hooks::builtin::CommandLoggerHook::new()));
             }
+            // Always enable mrkdwn sanitisation when Slack is active.
+            if config.integrations.slack.is_some() {
+                runner.register(Box::new(crate::hooks::builtin::SlackMrkdwnHook::new()));
+            }
             Some(Arc::new(runner))
         } else {
             None
