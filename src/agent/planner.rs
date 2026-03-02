@@ -8,6 +8,13 @@ use crate::observability::{Observer, ObserverEvent};
 use crate::providers::{ChatMessage, ChatRequest, Provider};
 use crate::tools::{Tool, ToolSpec};
 
+/// Per-action tool-call budget for planner executor actions.
+/// Generous enough for focused multi-step actions (read+parse, search+format),
+/// tight enough to prevent runaway loops.
+const MAX_EXECUTOR_ACTION_ITERATIONS: usize = 15;
+const _: () = assert!(MAX_EXECUTOR_ACTION_ITERATIONS > 5, "budget must exceed old hardcoded cap");
+const _: () = assert!(MAX_EXECUTOR_ACTION_ITERATIONS <= 50, "budget must stay bounded");
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Plan {
     #[serde(default)]
@@ -262,6 +269,8 @@ pub async fn plan_then_execute(
     let groups = plan.grouped_actions();
     let mut accumulated: Vec<String> = Vec::new();
     let mut last_output = String::new();
+    let mut any_succeeded = false;
+    let mut failed_group_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
     let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
 
@@ -299,6 +308,8 @@ pub async fn plan_then_execute(
                 // a borrow on `group` across the await point.
                 let action_type = action.action_type.clone();
                 let action_group = action.group;
+                let action_desc = action.description.clone();
+                let budget = max_tool_iterations.min(MAX_EXECUTOR_ACTION_ITERATIONS);
 
                 let ct = cancellation_token.clone();
 
@@ -315,7 +326,7 @@ pub async fn plan_then_execute(
                         None, // no approval manager
                         channel_name,
                         &crate::config::MultimodalConfig::default(),
-                        max_tool_iterations.min(5),
+                        max_tool_iterations.min(MAX_EXECUTOR_ACTION_ITERATIONS),
                         ct,
                         None, // no delta sender
                         hooks,
@@ -336,6 +347,8 @@ pub async fn plan_then_execute(
                             tracing::warn!(
                                 action_type = action_type.as_str(),
                                 group = action_group,
+                                budget = budget,
+                                description = action_desc.as_str(),
                                 "Action execution failed: {e}"
                             );
                             ActionResult {
@@ -355,10 +368,24 @@ pub async fn plan_then_execute(
 
         for result in &results {
             accumulated.push(result.to_accumulated_line());
+            if !result.success {
+                failed_group_ids.insert(result.group);
+            }
         }
         if let Some(last_success) = results.iter().rev().find(|r| r.success) {
             last_output = last_success.summary.clone();
+            any_succeeded = true;
         }
+    }
+
+    if !any_succeeded {
+        let total_actions = groups.iter().map(|g| g.len()).sum::<usize>();
+        let failed_groups: Vec<u32> = failed_group_ids.into_iter().collect();
+        tracing::warn!(
+            total_actions = total_actions,
+            failed_groups = ?failed_groups,
+            "All plan actions failed; consider whether this request should passthrough"
+        );
     }
 
     Ok(PlanExecutionResult::Executed {
