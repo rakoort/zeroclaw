@@ -22,6 +22,7 @@ use super::{
     SYSTEMD_RESTART_ARGS, SYSTEMD_STATUS_ARGS, TRIAGE_PROMPT,
 };
 use super::{Channel, NostrChannel, SendMessage};
+use crate::config::ModelRouteConfig;
 // Items re-imported from parent for test visibility (tests use `use super::*`).
 #[cfg(test)]
 use super::{
@@ -2779,11 +2780,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
             .slack
             .as_ref()
             .and_then(|sl| sl.triage_model.clone()),
-        planner_model: config
-            .model_routes
-            .iter()
-            .find(|r| r.hint == "planner")
-            .map(|_| "hint:planner".to_string()),
+        planner_model: resolve_planner_model(&config.model_routes),
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
@@ -2794,6 +2791,14 @@ pub async fn start_channels(config: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Extract the planner model name from model routes configuration.
+fn resolve_planner_model(routes: &[ModelRouteConfig]) -> Option<String> {
+    routes
+        .iter()
+        .find(|r| r.hint == "planner")
+        .map(|r| r.model.clone())
 }
 
 #[cfg(test)]
@@ -6214,6 +6219,46 @@ This is an example JSON object for profile settings."#;
             turns.iter().all(|turn| !turn.content.contains("[IMAGE:")),
             "failed vision turn must not persist image marker content"
         );
+    }
+
+    #[test]
+    fn resolve_planner_model_returns_actual_model_from_route() {
+        let routes = vec![crate::config::ModelRouteConfig {
+            hint: "planner".to_string(),
+            provider: "gemini".to_string(),
+            model: "gemini-2.0-flash-thinking-exp".to_string(),
+            api_key: None,
+            fallbacks: vec![],
+            context_window: None,
+        }];
+
+        let result = resolve_planner_model(&routes);
+        assert_eq!(
+            result,
+            Some("gemini-2.0-flash-thinking-exp".to_string()),
+            "should use actual model name, not hint:planner"
+        );
+    }
+
+    #[test]
+    fn resolve_planner_model_returns_none_when_no_planner_route() {
+        let routes = vec![crate::config::ModelRouteConfig {
+            hint: "reasoning".to_string(),
+            provider: "openai".to_string(),
+            model: "o1".to_string(),
+            api_key: None,
+            fallbacks: vec![],
+            context_window: None,
+        }];
+
+        let result = resolve_planner_model(&routes);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_planner_model_returns_none_for_empty_routes() {
+        let result = resolve_planner_model(&[]);
+        assert_eq!(result, None);
     }
 }
 
