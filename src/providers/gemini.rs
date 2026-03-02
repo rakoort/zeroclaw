@@ -302,10 +302,22 @@ struct FunctionResponsePart {
 }
 
 #[derive(Debug, Serialize, Clone)]
+struct ThinkingConfig {
+    /// Token budget for thinking (Gemini 2.5). 0 = disable, -1 = dynamic.
+    #[serde(rename = "thinkingBudget", skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<i32>,
+    /// Thinking level (Gemini 3+): "minimal", "low", "medium", "high".
+    #[serde(rename = "thinkingLevel", skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
 struct GenerationConfig {
     temperature: f64,
     #[serde(rename = "maxOutputTokens")]
     max_output_tokens: u32,
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1502,6 +1514,7 @@ impl GeminiProvider {
             generation_config: GenerationConfig {
                 temperature,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools,
             tool_config,
@@ -2606,6 +2619,7 @@ mod tests {
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools: None,
             tool_config: None,
@@ -2650,6 +2664,7 @@ mod tests {
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools: None,
             tool_config: None,
@@ -2697,6 +2712,7 @@ mod tests {
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools: None,
             tool_config: None,
@@ -2738,6 +2754,7 @@ mod tests {
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools: None,
             tool_config: None,
@@ -2770,6 +2787,7 @@ mod tests {
                 generation_config: Some(GenerationConfig {
                     temperature: 0.7,
                     max_output_tokens: 8192,
+                    thinking_config: None,
                 }),
                 tools: None,
                 tool_config: None,
@@ -3340,6 +3358,7 @@ mod tests {
             generation_config: GenerationConfig {
                 temperature: 0.7,
                 max_output_tokens: 8192,
+                thinking_config: None,
             },
             tools: None,
             tool_config: None,
@@ -3752,5 +3771,46 @@ mod tests {
 
         // Third kept part: function call
         assert!(parts[2].function_call.is_some());
+    }
+
+    #[test]
+    fn thinking_config_serializes_with_budget() {
+        let config = GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 8192,
+            thinking_config: Some(ThinkingConfig {
+                thinking_budget: Some(1024),
+                thinking_level: None,
+            }),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingBudget"], 1024);
+        assert!(json["thinkingConfig"].get("thinkingLevel").is_none());
+    }
+
+    #[test]
+    fn thinking_config_serializes_with_level() {
+        let config = GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 8192,
+            thinking_config: Some(ThinkingConfig {
+                thinking_budget: None,
+                thinking_level: Some("low".to_string()),
+            }),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["thinkingConfig"]["thinkingLevel"], "low");
+        assert!(json["thinkingConfig"].get("thinkingBudget").is_none());
+    }
+
+    #[test]
+    fn thinking_config_omitted_when_none() {
+        let config = GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 8192,
+            thinking_config: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(json.get("thinkingConfig").is_none());
     }
 }
