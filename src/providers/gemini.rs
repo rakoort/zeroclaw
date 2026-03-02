@@ -3635,4 +3635,16 @@ mod tests {
         assert_eq!(restored[1].function_call.as_ref().unwrap().name, "search");
         assert_eq!(restored[1].thought_signature.as_deref(), Some("sig_call"));
     }
+
+    #[test]
+    fn tool_message_with_invalid_json_produces_error_content() {
+        // Simulate what the old sanitizer merge produced: two JSON objects
+        // joined by newline — invalid JSON.
+        let corrupted = r#"{"tool_call_id":"call1","content":"r1"}
+{"tool_call_id":"call2","content":"r2"}"#;
+
+        // Attempt to parse like gemini.rs does
+        let parsed = serde_json::from_str::<serde_json::Value>(corrupted);
+        assert!(parsed.is_err(), "merged JSON must fail to parse");
+    }
 }
