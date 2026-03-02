@@ -149,6 +149,7 @@ pub(crate) struct ChannelRuntimeContext {
     pub(crate) hooks: Option<Arc<crate::hooks::HookRunner>>,
     pub(crate) non_cli_excluded_tools: Arc<Vec<String>>,
     pub(crate) triage_model: Option<String>,
+    pub(crate) planner_model: Option<String>,
 }
 
 #[derive(Clone)]

@@ -1408,36 +1408,110 @@ pub(crate) async fn process_channel_message(
         Cancelled,
     }
 
+    // ── Planner path (when configured) ──────────────────────────
+    let mut planner_response: Option<String> = None;
+
+    if let Some(ref planner_model) = ctx.planner_model {
+        let tool_specs: Vec<crate::tools::ToolSpec> =
+            ctx.tools_registry.iter().map(|t| t.spec()).collect();
+
+        let excluded_tools: &[String] = if msg.channel == "cli" {
+            &[]
+        } else {
+            ctx.non_cli_excluded_tools.as_ref()
+        };
+
+        let system_prompt_str = build_channel_system_prompt(
+            ctx.system_prompt.as_str(),
+            &msg.channel,
+            &msg.reply_target,
+        );
+
+        match crate::agent::planner::plan_then_execute(
+            active_provider.as_ref(),
+            planner_model,
+            route.model.as_str(),
+            &system_prompt_str,
+            &enriched_content,
+            "", // memory context already injected into history
+            ctx.tools_registry.as_ref(),
+            &tool_specs,
+            ctx.observer.as_ref(),
+            route.provider.as_str(),
+            runtime_defaults.temperature,
+            ctx.max_tool_iterations,
+            msg.channel.as_str(),
+            Some(cancellation_token.clone()),
+            ctx.hooks.as_deref(),
+            excluded_tools,
+        )
+        .await
+        {
+            Ok(crate::agent::planner::PlanExecutionResult::Passthrough) => {
+                tracing::info!(
+                    channel = %msg.channel,
+                    sender = %msg.sender,
+                    "Planner returned passthrough, using tool call loop"
+                );
+                // Fall through to run_tool_call_loop below
+            }
+            Ok(crate::agent::planner::PlanExecutionResult::Executed {
+                output,
+                action_results,
+            }) => {
+                tracing::info!(
+                    channel = %msg.channel,
+                    sender = %msg.sender,
+                    actions = action_results.len(),
+                    "Planner/executor completed for channel"
+                );
+                planner_response = Some(output);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    channel = %msg.channel,
+                    error = %e,
+                    "Planner failed, falling back to tool call loop"
+                );
+                // Fall through to run_tool_call_loop below
+            }
+        }
+    }
+
     let timeout_budget_secs =
         channel_message_timeout_budget_secs(ctx.message_timeout_secs, ctx.max_tool_iterations);
-    let llm_result = tokio::select! {
-        () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
-        result = tokio::time::timeout(
-            Duration::from_secs(timeout_budget_secs),
-            run_tool_call_loop(
-                active_provider.as_ref(),
-                &mut history,
-                ctx.tools_registry.as_ref(),
-                ctx.observer.as_ref(),
-                route.provider.as_str(),
-                route.model.as_str(),
-                runtime_defaults.temperature,
-                true,
-                None,
-                msg.channel.as_str(),
-                &ctx.multimodal,
-                ctx.max_tool_iterations,
-                Some(cancellation_token.clone()),
-                delta_tx,
-                ctx.hooks.as_deref(),
-                if msg.channel == "cli" {
-                    &[]
-                } else {
-                    ctx.non_cli_excluded_tools.as_ref()
-                },
-                None, // route_hint: channel orchestrator doesn't classify queries
-            ),
-        ) => LlmExecutionResult::Completed(result),
+    let llm_result = if let Some(response) = planner_response {
+        LlmExecutionResult::Completed(Ok(Ok(response)))
+    } else {
+        tokio::select! {
+            () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
+            result = tokio::time::timeout(
+                Duration::from_secs(timeout_budget_secs),
+                run_tool_call_loop(
+                    active_provider.as_ref(),
+                    &mut history,
+                    ctx.tools_registry.as_ref(),
+                    ctx.observer.as_ref(),
+                    route.provider.as_str(),
+                    route.model.as_str(),
+                    runtime_defaults.temperature,
+                    true,
+                    None,
+                    msg.channel.as_str(),
+                    &ctx.multimodal,
+                    ctx.max_tool_iterations,
+                    Some(cancellation_token.clone()),
+                    delta_tx,
+                    ctx.hooks.as_deref(),
+                    if msg.channel == "cli" {
+                        &[]
+                    } else {
+                        ctx.non_cli_excluded_tools.as_ref()
+                    },
+                    None, // route_hint: channel orchestrator doesn't classify queries
+                ),
+            ) => LlmExecutionResult::Completed(result),
+        }
     };
 
     if let Some(handle) = draft_updater {
@@ -2705,6 +2779,11 @@ pub async fn start_channels(config: Config) -> Result<()> {
             .slack
             .as_ref()
             .and_then(|sl| sl.triage_model.clone()),
+        planner_model: config
+            .model_routes
+            .iter()
+            .find(|r| r.hint == "planner")
+            .map(|_| "hint:planner".to_string()),
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
@@ -2919,6 +2998,7 @@ mod tests {
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -2969,6 +3049,7 @@ mod tests {
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -3022,6 +3103,7 @@ mod tests {
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -3498,6 +3580,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3562,6 +3645,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3640,6 +3724,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3704,6 +3789,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3777,6 +3863,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3871,6 +3958,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -3947,6 +4035,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -4038,6 +4127,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -4114,6 +4204,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -4179,6 +4270,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -4355,6 +4447,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -4444,6 +4537,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4545,6 +4639,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4628,6 +4723,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -4692,6 +4788,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -5233,6 +5330,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -5327,6 +5425,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -5417,6 +5516,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -5971,6 +6071,7 @@ This is an example JSON object for profile settings."#;
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -6042,6 +6143,7 @@ This is an example JSON object for profile settings."#;
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         });
 
         process_channel_message(
@@ -6311,6 +6413,7 @@ mod watch_dispatch_tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
+            planner_model: None,
         })
     }
 
