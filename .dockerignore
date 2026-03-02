@@ -3,6 +3,12 @@
 .gitignore
 .githooks
 
+# Worktrees (can be tens of GB)
+.worktrees
+
+# Claude Code config
+.claude
+
 # Rust build artifacts (can be multiple GB)
 target
 
