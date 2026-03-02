@@ -406,18 +406,29 @@ impl CandidateContent {
         let mut all_parts: Vec<Part> = Vec::new();
 
         for part in self.parts {
-            // Convert ResponsePart -> outbound Part (preserves all fields)
-            all_parts.push(Part {
-                text: part.text.clone(),
-                thought: if part.thought { Some(true) } else { None },
-                thought_signature: part.thought_signature.clone(),
-                function_call: part.function_call.as_ref().map(|fc| FunctionCallPart {
-                    name: fc.name.clone(),
-                    args: fc.args.clone(),
-                }),
-                function_response: None,
-            });
+            // Drop thinking-only parts (thought=true, no signature) — they're raw
+            // chain-of-thought text that grows context without serving any purpose
+            // on replay. Keep signatures (required by Gemini for continuity),
+            // function calls, and non-thought text.
+            let is_thinking_only =
+                part.thought && part.thought_signature.is_none() && part.function_call.is_none();
 
+            if !is_thinking_only {
+                all_parts.push(Part {
+                    text: part.text.clone(),
+                    thought: if part.thought { Some(true) } else { None },
+                    thought_signature: part.thought_signature.clone(),
+                    function_call: part.function_call.as_ref().map(|fc| FunctionCallPart {
+                        name: fc.name.clone(),
+                        args: fc.args.clone(),
+                    }),
+                    function_response: None,
+                });
+            }
+
+            // Tool call and answer extraction continues for ALL parts
+            // (we still want to surface thinking text as the response even
+            // though we don't store it in history for replay).
             if let Some(fc) = part.function_call {
                 tool_calls.push(ToolCall {
                     id: format!("gemini_call_{}", tool_calls.len()),
@@ -3686,5 +3697,60 @@ mod tests {
         let preview: String = content.chars().take(200).collect();
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('\u{00E9}'));
+    }
+
+    #[test]
+    fn extract_response_strips_thinking_only_parts() {
+        let content = CandidateContent {
+            parts: vec![
+                // Thinking part with NO signature — should be DROPPED
+                ResponsePart {
+                    text: Some("Let me think about this...".to_string()),
+                    thought: true,
+                    thought_signature: None,
+                    function_call: None,
+                },
+                // Thinking part WITH signature — should be KEPT
+                ResponsePart {
+                    text: None,
+                    thought: true,
+                    thought_signature: Some("sig123abc".to_string()),
+                    function_call: None,
+                },
+                // Non-thought text — should be KEPT
+                ResponsePart {
+                    text: Some("Hello!".to_string()),
+                    thought: false,
+                    thought_signature: None,
+                    function_call: None,
+                },
+                // Function call — should be KEPT
+                ResponsePart {
+                    text: None,
+                    thought: false,
+                    thought_signature: None,
+                    function_call: Some(FunctionCallResponse {
+                        name: "get_weather".to_string(),
+                        args: serde_json::json!({"city": "London"}),
+                    }),
+                },
+            ],
+        };
+
+        let (_text, _tool_calls, parts) = content.extract_response();
+
+        // Should have 3 parts: signature, text, function_call (thinking-only dropped)
+        assert_eq!(parts.len(), 3, "thinking-only part should be stripped");
+
+        // First kept part: thought_signature
+        assert!(parts[0].thought_signature.is_some());
+        assert_eq!(parts[0].thought_signature.as_deref(), Some("sig123abc"));
+
+        // Second kept part: non-thought text
+        assert_eq!(parts[1].text.as_deref(), Some("Hello!"));
+        assert!(parts[1].thought.is_none());
+
+        // Third kept part: function call
+        assert!(parts[2].function_call.is_some());
     }
 }
