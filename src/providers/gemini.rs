@@ -3687,5 +3687,4 @@ mod tests {
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('\u{00E9}'));
     }
-
 }

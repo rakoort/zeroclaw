@@ -300,7 +300,8 @@ fn clean_schema_recursive(
 /// 1. Rewrite non-alphanumeric tool call IDs to alphanumeric-only equivalents.
 /// 2. Preserve system messages at the front unchanged.
 /// 3. Prepend a synthetic user turn if non-system messages start with assistant.
-/// 4. Merge consecutive same-role messages (content joined with `\n`).
+/// 4. Merge consecutive same-role messages (content joined with `\n`),
+///    except tool messages which must remain separate for JSON integrity.
 ///
 /// This is a pure function — no side effects, returns a new `Vec`.
 pub fn sanitize_transcript_for_gemini(messages: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -358,7 +359,7 @@ pub fn sanitize_transcript_for_gemini(messages: &[ChatMessage]) -> Vec<ChatMessa
         non_system_msgs.insert(0, ChatMessage::user("(session bootstrap)"));
     }
 
-    // Step 4: Merge consecutive same-role messages.
+    // Step 4: Merge consecutive same-role messages (except tool — provider handles those).
     let mut merged: Vec<ChatMessage> = Vec::new();
     for msg in non_system_msgs {
         if let Some(last) = merged.last_mut() {
