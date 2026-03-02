@@ -608,7 +608,7 @@ impl Agent {
                         } else {
                             None
                         },
-                        route_hint: None,
+                        route_hint: effective_model.strip_prefix("hint:"),
                     },
                     &effective_model,
                     self.temperature,

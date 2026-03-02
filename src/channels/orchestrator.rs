@@ -1435,6 +1435,7 @@ pub(crate) async fn process_channel_message(
                 } else {
                     ctx.non_cli_excluded_tools.as_ref()
                 },
+                None, // route_hint: channel orchestrator doesn't classify queries
             ),
         ) => LlmExecutionResult::Completed(result),
     };

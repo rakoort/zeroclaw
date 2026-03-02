@@ -224,7 +224,7 @@ pub async fn plan_then_execute(
             ChatRequest {
                 messages: &planner_messages,
                 tools: None,
-                route_hint: None,
+                route_hint: Some("planner"),
             },
             planner_model,
             temperature,
@@ -308,6 +308,7 @@ pub async fn plan_then_execute(
                         None, // no delta sender
                         None, // no hooks
                         &excluded_tools,
+                        None, // route_hint: executor uses resolved model directly
                     )
                     .await;
 
