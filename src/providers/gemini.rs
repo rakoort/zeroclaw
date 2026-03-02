@@ -1496,6 +1496,18 @@ impl GeminiProvider {
             tool_config,
         };
 
+        tracing::debug!(
+            contents_count = request.contents.len(),
+            roles = %request.contents.iter()
+                .map(|c| c.role.as_deref().unwrap_or("none"))
+                .collect::<Vec<_>>()
+                .join(","),
+            has_system_instruction = request.system_instruction.is_some(),
+            has_tools = request.tools.is_some(),
+            tool_count = request.tools.as_ref().map_or(0, |t| t.len()),
+            "Gemini request structure"
+        );
+
         let url = Self::build_generate_content_url(model, auth);
 
         let mut response = self
@@ -3675,4 +3687,5 @@ mod tests {
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('\u{00E9}'));
     }
+
 }
