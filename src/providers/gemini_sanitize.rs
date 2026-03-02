@@ -773,6 +773,36 @@ mod tests {
     }
 
     #[test]
+    fn does_not_merge_consecutive_tool_messages() {
+        let tool1 = ChatMessage::tool(
+            r#"{"tool_call_id":"call1","content":"result1"}"#,
+        );
+        let tool2 = ChatMessage::tool(
+            r#"{"tool_call_id":"call2","content":"result2"}"#,
+        );
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Calling tools"),
+            tool1,
+            tool2,
+        ];
+        let result = sanitize_transcript_for_gemini(&messages);
+        // Tool messages must remain separate — merging corrupts their JSON
+        let tool_msgs: Vec<&ChatMessage> =
+            result.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_msgs.len(), 2, "tool messages must not be merged");
+        // Each must still be valid JSON
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&tool_msgs[0].content).is_ok(),
+            "first tool message must be valid JSON"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&tool_msgs[1].content).is_ok(),
+            "second tool message must be valid JSON"
+        );
+    }
+
+    #[test]
     fn rewrites_non_alphanumeric_tool_call_ids() {
         let messages = vec![
             ChatMessage::user(r#"Tool call id="call_abc-123_def" executed"#),
