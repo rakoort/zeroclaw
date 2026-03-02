@@ -674,6 +674,31 @@ async fn refresh_gemini_cli_token_async(
     .map_err(|e| anyhow::anyhow!("Token refresh task panicked: {e}"))?
 }
 
+/// Maps a route hint to a Gemini thinkingConfig.
+///
+/// | Hint       | Budget | Rationale                    |
+/// |------------|--------|------------------------------|
+/// | triage     | 0      | Binary relevance check       |
+/// | heartbeat  | 0      | Periodic check-in            |
+/// | simple     | 0      | Greetings, acknowledgments   |
+/// | planner    | 1024   | Structured output, not deep  |
+/// | medium     | 1024   | Standard tool use            |
+/// | complex    | 4096   | Multi-step reasoning         |
+/// | reasoning  | -1     | Dynamic (maximum)            |
+fn thinking_config_for_hint(hint: Option<&str>) -> Option<ThinkingConfig> {
+    let budget = match hint? {
+        "triage" | "heartbeat" | "simple" => 0,
+        "planner" | "medium" => 1024,
+        "complex" => 4096,
+        "reasoning" => -1,
+        _ => return None,
+    };
+    Some(ThinkingConfig {
+        thinking_budget: Some(budget),
+        thinking_level: None,
+    })
+}
+
 impl GeminiProvider {
     /// Create a new Gemini provider.
     ///
@@ -1457,6 +1482,7 @@ impl GeminiProvider {
         temperature: f64,
         tools: Option<Vec<GeminiToolDeclaration>>,
         tool_config: Option<GeminiToolConfig>,
+        thinking_config: Option<ThinkingConfig>,
     ) -> anyhow::Result<GeminiResponse> {
         let auth = self.auth.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -1514,7 +1540,7 @@ impl GeminiProvider {
             generation_config: GenerationConfig {
                 temperature,
                 max_output_tokens: 8192,
-                thinking_config: None,
+                thinking_config,
             },
             tools,
             tool_config,
@@ -1762,7 +1788,15 @@ impl Provider for GeminiProvider {
         }];
 
         let resp = self
-            .send_generate_content(contents, system_instruction, model, temperature, None, None)
+            .send_generate_content(
+                contents,
+                system_instruction,
+                model,
+                temperature,
+                None,
+                None,
+                None,
+            )
             .await?;
         Ok(resp.text.unwrap_or_default())
     }
@@ -1818,7 +1852,15 @@ impl Provider for GeminiProvider {
         };
 
         let resp = self
-            .send_generate_content(contents, system_instruction, model, temperature, None, None)
+            .send_generate_content(
+                contents,
+                system_instruction,
+                model,
+                temperature,
+                None,
+                None,
+                None,
+            )
             .await?;
         Ok(resp.text.unwrap_or_default())
     }
@@ -1829,6 +1871,7 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
+        let thinking_config = thinking_config_for_hint(request.route_hint);
         let sanitized_messages = sanitize_transcript_for_gemini(request.messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
@@ -2041,6 +2084,7 @@ impl Provider for GeminiProvider {
                 temperature,
                 gemini_tools,
                 tool_config,
+                thinking_config,
             )
             .await?;
 
@@ -2263,6 +2307,7 @@ impl Provider for GeminiProvider {
                 temperature,
                 gemini_tools,
                 tool_config,
+                None,
             )
             .await?;
 
@@ -3812,5 +3857,43 @@ mod tests {
         };
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("thinkingConfig").is_none());
+    }
+
+    #[test]
+    fn route_hint_maps_to_thinking_budget() {
+        let cases = vec![
+            (Some("triage"), Some(0)),
+            (Some("heartbeat"), Some(0)),
+            (Some("simple"), Some(0)),
+            (Some("planner"), Some(1024)),
+            (Some("medium"), Some(1024)),
+            (Some("complex"), Some(4096)),
+            (Some("reasoning"), Some(-1)),
+            (None, None),            // No hint -> no thinkingConfig
+            (Some("unknown"), None), // Unknown hint -> no thinkingConfig
+        ];
+
+        for (hint, expected_budget) in cases {
+            let config = thinking_config_for_hint(hint);
+            match expected_budget {
+                Some(budget) => {
+                    let tc = config
+                        .unwrap_or_else(|| panic!("expected ThinkingConfig for hint {:?}", hint));
+                    assert_eq!(
+                        tc.thinking_budget,
+                        Some(budget),
+                        "wrong budget for hint {:?}",
+                        hint
+                    );
+                }
+                None => {
+                    assert!(
+                        config.is_none(),
+                        "expected no ThinkingConfig for hint {:?}",
+                        hint
+                    );
+                }
+            }
+        }
     }
 }
