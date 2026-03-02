@@ -147,19 +147,34 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
         crate::CronCommands::AddEvery {
             every_ms,
             command,
-            job_type: _job_type,
-            model: _model,
-            session_target: _session_target,
-            delivery_channel: _delivery_channel,
-            delivery_to: _delivery_to,
-            name: _name,
+            job_type,
+            model,
+            session_target,
+            delivery_channel,
+            delivery_to,
+            name,
         } => {
             let schedule = Schedule::Every { every_ms };
-            let job = add_shell_job(config, None, schedule, &command)?;
-            println!("✅ Added interval cron job {}", job.id);
-            println!("  Every(ms): {every_ms}");
-            println!("  Next     : {}", job.next_run.to_rfc3339());
-            println!("  Cmd      : {}", job.command);
+            match job_type.as_str() {
+                "agent" => {
+                    let delivery = build_delivery_config(delivery_channel, delivery_to);
+                    let target = parse_session_target(&session_target);
+                    let job = add_agent_job(
+                        config, name, schedule, &command, target, model, delivery, false,
+                    )?;
+                    println!("✅ Added interval agent cron job {}", job.id);
+                    println!("  Every(ms): {every_ms}");
+                    println!("  Next     : {}", job.next_run.to_rfc3339());
+                    println!("  Prompt   : {}", job.prompt.as_deref().unwrap_or(""));
+                }
+                _ => {
+                    let job = add_shell_job(config, name, schedule, &command)?;
+                    println!("✅ Added interval cron job {}", job.id);
+                    println!("  Every(ms): {every_ms}");
+                    println!("  Next     : {}", job.next_run.to_rfc3339());
+                    println!("  Cmd      : {}", job.command);
+                }
+            }
             Ok(())
         }
         crate::CronCommands::Once {
@@ -586,5 +601,32 @@ mod tests {
         assert_eq!(jobs[0].job_type, JobType::Agent);
         assert_eq!(jobs[0].prompt.as_deref(), Some("Send reminder"));
         assert_eq!(jobs[0].delivery.channel.as_deref(), Some("discord"));
+    }
+
+    #[test]
+    fn add_every_agent_job_via_handler() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        handle_command(
+            crate::CronCommands::AddEvery {
+                every_ms: 60000,
+                command: "Check health".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "main".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: None,
+            },
+            &config,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::Agent);
+        assert_eq!(jobs[0].prompt.as_deref(), Some("Check health"));
+        assert_eq!(jobs[0].session_target, SessionTarget::Main);
     }
 }
