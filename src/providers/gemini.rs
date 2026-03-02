@@ -1945,9 +1945,10 @@ impl Provider for GeminiProvider {
                             parts: vec![part],
                         });
                     } else {
+                        let preview: String = msg.content.chars().take(200).collect();
                         tracing::warn!(
                             content_len = msg.content.len(),
-                            content_preview = &msg.content[..msg.content.len().min(200)],
+                            content_preview = %preview,
                             "Failed to parse tool message as JSON -- tool result will be dropped"
                         );
                     }
@@ -3652,5 +3653,26 @@ mod tests {
         // Attempt to parse like gemini.rs does
         let parsed = serde_json::from_str::<serde_json::Value>(corrupted);
         assert!(parsed.is_err(), "merged JSON must fail to parse");
+    }
+
+    #[test]
+    fn tool_parse_warning_preview_safe_on_multibyte_utf8() {
+        // Build a string where byte 200 falls inside a multi-byte codepoint.
+        // 199 ASCII bytes + U+00E9 (e-acute, 2 UTF-8 bytes) puts byte 200
+        // inside the multi-byte codepoint.
+        let mut content = "a".repeat(199);
+        content.push('\u{00E9}'); // bytes 199..201
+        content.push_str("trailing");
+
+        // Byte slicing at 200 would panic because it is mid-codepoint
+        assert!(
+            !content.is_char_boundary(200),
+            "byte 200 must NOT be a char boundary for this test to be meaningful"
+        );
+
+        // Safe truncation via chars().take(200) must not panic
+        let preview: String = content.chars().take(200).collect();
+        assert_eq!(preview.chars().count(), 200);
+        assert!(preview.ends_with('\u{00E9}'));
     }
 }
