@@ -21,6 +21,23 @@ pub use store::{
 };
 pub use types::{CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType, Schedule, SessionTarget};
 
+fn parse_session_target(s: &str) -> SessionTarget {
+    match s {
+        "main" => SessionTarget::Main,
+        _ => SessionTarget::Isolated,
+    }
+}
+
+fn build_delivery_config(channel: Option<String>, to: Option<String>) -> Option<DeliveryConfig> {
+    channel.as_ref()?;
+    Some(DeliveryConfig {
+        mode: "announce".into(),
+        channel,
+        to,
+        best_effort: true,
+    })
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<()> {
     match command {
@@ -447,5 +464,40 @@ mod tests {
 
         let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
         assert!(security.is_command_allowed("echo safe"));
+    }
+
+    #[test]
+    fn parse_session_target_isolated() {
+        assert_eq!(
+            super::parse_session_target("isolated"),
+            SessionTarget::Isolated
+        );
+    }
+
+    #[test]
+    fn parse_session_target_main() {
+        assert_eq!(super::parse_session_target("main"), SessionTarget::Main);
+    }
+
+    #[test]
+    fn parse_session_target_defaults_to_isolated() {
+        assert_eq!(
+            super::parse_session_target("bogus"),
+            SessionTarget::Isolated
+        );
+    }
+
+    #[test]
+    fn build_delivery_config_none_when_no_channel() {
+        assert!(super::build_delivery_config(None, None).is_none());
+    }
+
+    #[test]
+    fn build_delivery_config_some_when_channel_set() {
+        let cfg =
+            super::build_delivery_config(Some("discord".into()), Some("123456".into())).unwrap();
+        assert_eq!(cfg.channel, Some("discord".into()));
+        assert_eq!(cfg.to, Some("123456".into()));
+        assert_eq!(cfg.mode, "announce");
     }
 }
