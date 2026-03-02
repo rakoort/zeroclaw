@@ -4,6 +4,8 @@ use anyhow::{bail, Result};
 
 mod schedule;
 mod store;
+#[cfg(test)]
+mod test_agent_fields;
 mod types;
 
 pub mod scheduler;
@@ -58,6 +60,12 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             expression,
             tz,
             command,
+            job_type: _job_type,
+            model: _model,
+            session_target: _session_target,
+            delivery_channel: _delivery_channel,
+            delivery_to: _delivery_to,
+            name: _name,
         } => {
             let schedule = Schedule::Cron {
                 expr: expression,
@@ -70,7 +78,16 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             println!("  Cmd : {}", job.command);
             Ok(())
         }
-        crate::CronCommands::AddAt { at, command } => {
+        crate::CronCommands::AddAt {
+            at,
+            command,
+            job_type: _job_type,
+            model: _model,
+            session_target: _session_target,
+            delivery_channel: _delivery_channel,
+            delivery_to: _delivery_to,
+            name: _name,
+        } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
@@ -81,7 +98,16 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             println!("  Cmd : {}", job.command);
             Ok(())
         }
-        crate::CronCommands::AddEvery { every_ms, command } => {
+        crate::CronCommands::AddEvery {
+            every_ms,
+            command,
+            job_type: _job_type,
+            model: _model,
+            session_target: _session_target,
+            delivery_channel: _delivery_channel,
+            delivery_to: _delivery_to,
+            name: _name,
+        } => {
             let schedule = Schedule::Every { every_ms };
             let job = add_shell_job(config, None, schedule, &command)?;
             println!("✅ Added interval cron job {}", job.id);
@@ -90,7 +116,16 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             println!("  Cmd      : {}", job.command);
             Ok(())
         }
-        crate::CronCommands::Once { delay, command } => {
+        crate::CronCommands::Once {
+            delay,
+            command,
+            job_type: _job_type,
+            model: _model,
+            session_target: _session_target,
+            delivery_channel: _delivery_channel,
+            delivery_to: _delivery_to,
+            name: _name,
+        } => {
             let job = add_once(config, &delay, &command)?;
             println!("✅ Added one-shot cron job {}", job.id);
             println!("  At  : {}", job.next_run.to_rfc3339());

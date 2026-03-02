@@ -191,9 +191,12 @@ Uses standard 5-field cron syntax: 'min hour day month weekday'. \
 Times are evaluated in UTC by default; use --tz with an IANA \
 timezone name to override.
 
+Use --type agent to create an agent job instead of a shell job.
+
 Examples:
   zeroclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York
-  zeroclaw cron add '*/30 * * * *' 'Check system health'")]
+  zeroclaw cron add '*/30 * * * *' 'Check system health'
+  zeroclaw cron add '0 9 * * *' 'Summarize overnight alerts' --type agent")]
     Add {
         /// Cron expression
         expression: String,
@@ -202,6 +205,24 @@ Examples:
         tz: Option<String>,
         /// Command to run
         command: String,
+        /// Job type: shell (default) or agent
+        #[arg(long = "type", default_value = "shell")]
+        job_type: String,
+        /// Model override for agent jobs
+        #[arg(long)]
+        model: Option<String>,
+        /// Session target for agent jobs: isolated (default) or main
+        #[arg(long, default_value = "isolated")]
+        session_target: String,
+        /// Delivery channel type for agent jobs (telegram, discord, slack, mattermost)
+        #[arg(long)]
+        delivery_channel: Option<String>,
+        /// Delivery target (channel ID or chat ID) for agent jobs
+        #[arg(long)]
+        delivery_to: Option<String>,
+        /// Human-readable job name
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Add a one-shot scheduled task at an RFC3339 timestamp
     #[command(long_about = "\
@@ -209,14 +230,35 @@ Add a one-shot task that fires at a specific UTC timestamp.
 
 The timestamp must be in RFC 3339 format (e.g. 2025-01-15T14:00:00Z).
 
+Use --type agent to create an agent job instead of a shell job.
+
 Examples:
   zeroclaw cron add-at 2025-01-15T14:00:00Z 'Send reminder'
-  zeroclaw cron add-at 2025-12-31T23:59:00Z 'Happy New Year!'")]
+  zeroclaw cron add-at 2025-12-31T23:59:00Z 'Happy New Year!'
+  zeroclaw cron add-at 2025-06-01T09:00:00Z 'Morning briefing' --type agent")]
     AddAt {
         /// One-shot timestamp in RFC3339 format
         at: String,
         /// Command to run
         command: String,
+        /// Job type: shell (default) or agent
+        #[arg(long = "type", default_value = "shell")]
+        job_type: String,
+        /// Model override for agent jobs
+        #[arg(long)]
+        model: Option<String>,
+        /// Session target for agent jobs: isolated (default) or main
+        #[arg(long, default_value = "isolated")]
+        session_target: String,
+        /// Delivery channel type for agent jobs (telegram, discord, slack, mattermost)
+        #[arg(long)]
+        delivery_channel: Option<String>,
+        /// Delivery target (channel ID or chat ID) for agent jobs
+        #[arg(long)]
+        delivery_to: Option<String>,
+        /// Human-readable job name
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Add a fixed-interval scheduled task
     #[command(long_about = "\
@@ -224,14 +266,35 @@ Add a task that repeats at a fixed interval.
 
 Interval is specified in milliseconds. For example, 60000 = 1 minute.
 
+Use --type agent to create an agent job instead of a shell job.
+
 Examples:
   zeroclaw cron add-every 60000 'Ping heartbeat'     # every minute
-  zeroclaw cron add-every 3600000 'Hourly report'    # every hour")]
+  zeroclaw cron add-every 3600000 'Hourly report'    # every hour
+  zeroclaw cron add-every 3600000 'Check alerts' --type agent")]
     AddEvery {
         /// Interval in milliseconds
         every_ms: u64,
         /// Command to run
         command: String,
+        /// Job type: shell (default) or agent
+        #[arg(long = "type", default_value = "shell")]
+        job_type: String,
+        /// Model override for agent jobs
+        #[arg(long)]
+        model: Option<String>,
+        /// Session target for agent jobs: isolated (default) or main
+        #[arg(long, default_value = "isolated")]
+        session_target: String,
+        /// Delivery channel type for agent jobs (telegram, discord, slack, mattermost)
+        #[arg(long)]
+        delivery_channel: Option<String>,
+        /// Delivery target (channel ID or chat ID) for agent jobs
+        #[arg(long)]
+        delivery_to: Option<String>,
+        /// Human-readable job name
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Add a one-shot delayed task (e.g. "30m", "2h", "1d")
     #[command(long_about = "\
@@ -240,15 +303,36 @@ Add a one-shot task that fires after a delay from now.
 Accepts human-readable durations: s (seconds), m (minutes), \
 h (hours), d (days).
 
+Use --type agent to create an agent job instead of a shell job.
+
 Examples:
   zeroclaw cron once 30m 'Run backup in 30 minutes'
   zeroclaw cron once 2h 'Follow up on deployment'
-  zeroclaw cron once 1d 'Daily check'")]
+  zeroclaw cron once 1d 'Daily check'
+  zeroclaw cron once 30m 'Summarize recent activity' --type agent")]
     Once {
         /// Delay duration
         delay: String,
         /// Command to run
         command: String,
+        /// Job type: shell (default) or agent
+        #[arg(long = "type", default_value = "shell")]
+        job_type: String,
+        /// Model override for agent jobs
+        #[arg(long)]
+        model: Option<String>,
+        /// Session target for agent jobs: isolated (default) or main
+        #[arg(long, default_value = "isolated")]
+        session_target: String,
+        /// Delivery channel type for agent jobs (telegram, discord, slack, mattermost)
+        #[arg(long)]
+        delivery_channel: Option<String>,
+        /// Delivery target (channel ID or chat ID) for agent jobs
+        #[arg(long)]
+        delivery_to: Option<String>,
+        /// Human-readable job name
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Remove a scheduled task
     Remove {
