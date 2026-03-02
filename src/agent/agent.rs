@@ -566,6 +566,11 @@ impl Agent {
                 "router",
                 self.temperature,
                 self.config.max_tool_iterations,
+                // Channel context defaults for CLI
+                "cli", // channel_name
+                None,  // cancellation_token
+                None,  // hooks
+                &[],   // excluded_tools
             )
             .await;
 

@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use tokio_util::sync::CancellationToken;
 
 use crate::observability::{Observer, ObserverEvent};
 use crate::providers::{ChatMessage, ChatRequest, Provider};
@@ -184,6 +185,11 @@ pub async fn plan_then_execute(
     provider_name: &str,
     temperature: f64,
     max_tool_iterations: usize,
+    // Channel context
+    channel_name: &str,
+    cancellation_token: Option<CancellationToken>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
 ) -> Result<PlanExecutionResult> {
     // Build planner messages (system prompt + context + user message, NO tools)
     let planner_system = format!(
@@ -270,15 +276,19 @@ pub async fn plan_then_execute(
                 let executor_system = build_executor_prompt(action, &group_accumulated);
                 let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
 
-                let excluded_tools: Vec<String> = if action.tools.is_empty() {
-                    Vec::new()
-                } else {
-                    all_tool_names
-                        .iter()
-                        .filter(|name| !wanted_tools.contains(name))
-                        .cloned()
-                        .collect()
-                };
+                // Combine action-level exclusions with channel-level exclusions
+                let mut combined_excluded = excluded_tools.to_vec();
+                if !action.tools.is_empty() {
+                    // Action specifies wanted tools; exclude everything else
+                    combined_excluded.extend(
+                        all_tool_names
+                            .iter()
+                            .filter(|name| !wanted_tools.contains(name))
+                            .cloned(),
+                    );
+                }
+                combined_excluded.sort();
+                combined_excluded.dedup();
 
                 let mut action_messages = vec![
                     ChatMessage::system(executor_system),
@@ -289,6 +299,8 @@ pub async fn plan_then_execute(
                 // a borrow on `group` across the await point.
                 let action_type = action.action_type.clone();
                 let action_group = action.group;
+
+                let ct = cancellation_token.clone();
 
                 async move {
                     let result = crate::agent::loop_::run_tool_call_loop(
@@ -301,13 +313,13 @@ pub async fn plan_then_execute(
                         temperature,
                         true, // silent -- suppress stdout during executor
                         None, // no approval manager
-                        "",   // channel_name
+                        channel_name,
                         &crate::config::MultimodalConfig::default(),
                         max_tool_iterations.min(5),
-                        None, // no cancellation token
+                        ct,
                         None, // no delta sender
-                        None, // no hooks
-                        &excluded_tools,
+                        hooks,
+                        &combined_excluded,
                         None, // route_hint: executor uses resolved model directly
                     )
                     .await;
@@ -569,6 +581,10 @@ mod tests {
             "router",
             0.7,
             5,
+            "",   // channel_name
+            None, // cancellation_token
+            None, // hooks
+            &[],  // excluded_tools
         )
         .await
         .expect("should not error");
@@ -600,6 +616,10 @@ mod tests {
             "router",
             0.7,
             5,
+            "",   // channel_name
+            None, // cancellation_token
+            None, // hooks
+            &[],  // excluded_tools
         )
         .await
         .expect("should not error on invalid JSON");
@@ -631,6 +651,10 @@ mod tests {
             "router",
             0.7,
             5,
+            "",   // channel_name
+            None, // cancellation_token
+            None, // hooks
+            &[],  // excluded_tools
         )
         .await
         .expect("should not error");
@@ -665,6 +689,10 @@ mod tests {
             "router",
             0.7,
             5,
+            "",   // channel_name
+            None, // cancellation_token
+            None, // hooks
+            &[],  // excluded_tools
         )
         .await
         .expect("should succeed");
@@ -731,6 +759,10 @@ mod tests {
             "router",
             0.7,
             5,
+            "",   // channel_name
+            None, // cancellation_token
+            None, // hooks
+            &[],  // excluded_tools
         )
         .await
         .expect("should not error");
