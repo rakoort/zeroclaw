@@ -113,21 +113,35 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
         crate::CronCommands::AddAt {
             at,
             command,
-            job_type: _job_type,
-            model: _model,
-            session_target: _session_target,
-            delivery_channel: _delivery_channel,
-            delivery_to: _delivery_to,
-            name: _name,
+            job_type,
+            model,
+            session_target,
+            delivery_channel,
+            delivery_to,
+            name,
         } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
             let schedule = Schedule::At { at };
-            let job = add_shell_job(config, None, schedule, &command)?;
-            println!("✅ Added one-shot cron job {}", job.id);
-            println!("  At  : {}", job.next_run.to_rfc3339());
-            println!("  Cmd : {}", job.command);
+            match job_type.as_str() {
+                "agent" => {
+                    let delivery = build_delivery_config(delivery_channel, delivery_to);
+                    let target = parse_session_target(&session_target);
+                    let job = add_agent_job(
+                        config, name, schedule, &command, target, model, delivery, true,
+                    )?;
+                    println!("✅ Added one-shot agent cron job {}", job.id);
+                    println!("  At    : {}", job.next_run.to_rfc3339());
+                    println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
+                }
+                _ => {
+                    let job = add_shell_job(config, name, schedule, &command)?;
+                    println!("✅ Added one-shot cron job {}", job.id);
+                    println!("  At  : {}", job.next_run.to_rfc3339());
+                    println!("  Cmd : {}", job.command);
+                }
+            }
             Ok(())
         }
         crate::CronCommands::AddEvery {
@@ -544,5 +558,33 @@ mod tests {
         assert_eq!(jobs[0].model.as_deref(), Some("gpt-4o"));
         assert_eq!(jobs[0].name.as_deref(), Some("alert-summary"));
         assert!(jobs[0].command.is_empty());
+    }
+
+    #[test]
+    fn add_at_agent_job_via_handler() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+
+        handle_command(
+            crate::CronCommands::AddAt {
+                at: future,
+                command: "Send reminder".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: Some("discord".into()),
+                delivery_to: Some("999".into()),
+                name: None,
+            },
+            &config,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::Agent);
+        assert_eq!(jobs[0].prompt.as_deref(), Some("Send reminder"));
+        assert_eq!(jobs[0].delivery.channel.as_deref(), Some("discord"));
     }
 }
