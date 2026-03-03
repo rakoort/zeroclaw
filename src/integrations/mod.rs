@@ -52,6 +52,28 @@ pub fn collect_integrations(config: &Config) -> Vec<Arc<dyn Integration>> {
     integrations
 }
 
+/// Build a one-line-per-integration summary of active (configured) integrations
+/// for use in the classifier prompt. Only includes integrations with runtime
+/// tools (i.e., those returned by `collect_integrations`).
+pub fn active_integration_summary(config: &Config) -> String {
+    let integrations = collect_integrations(config);
+    if integrations.is_empty() {
+        return String::new();
+    }
+    let catalog = catalog_registry::all_integrations();
+    let mut lines = Vec::new();
+    for integration in &integrations {
+        let name = integration.name();
+        let description = catalog
+            .iter()
+            .find(|e| e.name.to_lowercase() == name.to_lowercase())
+            .map(|e| e.description)
+            .unwrap_or("External integration");
+        lines.push(format!("- {name}: {description}"));
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +136,28 @@ mod tests {
         assert_eq!(integrations[0].name(), "linear");
         assert_eq!(integrations[0].tools().len(), 14);
         assert!(integrations[0].as_channel().is_none());
+    }
+
+    #[test]
+    fn active_integration_summary_returns_configured_integrations() {
+        let mut config = crate::config::Config::default();
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        let summary = active_integration_summary(&config);
+        assert!(
+            summary.contains("linear"),
+            "should contain integration name"
+        );
+    }
+
+    #[test]
+    fn active_integration_summary_empty_when_none_configured() {
+        let config = crate::config::Config::default();
+        let summary = active_integration_summary(&config);
+        assert!(
+            summary.is_empty(),
+            "should be empty when no integrations configured"
+        );
     }
 }
