@@ -1410,6 +1410,10 @@ pub(crate) async fn process_channel_message(
     }
 
     // ── Planner path (when configured) ──────────────────────────
+    // TODO: wire integration tool filtering here too. The Agent::turn() path
+    // computes excluded integration tools via excluded_integration_tools().
+    // The orchestrator needs the same filtering applied to both
+    // plan_then_execute and run_tool_call_loop excluded_tools lists.
     let mut planner_response: Option<String> = None;
 
     if let Some(ref planner_model) = ctx.planner_model {

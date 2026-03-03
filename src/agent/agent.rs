@@ -45,6 +45,8 @@ pub struct Agent {
     last_integrations: Vec<String>,
     /// Pre-computed integration catalog for classifier prompt.
     integration_catalog: String,
+    /// Mapping of integration name to its tool names, for filtering.
+    integration_tool_names: HashMap<String, Vec<String>>,
 }
 
 pub struct AgentBuilder {
@@ -67,6 +69,7 @@ pub struct AgentBuilder {
     available_hints: Option<Vec<String>>,
     route_model_by_hint: Option<HashMap<String, String>>,
     integration_catalog: Option<String>,
+    integration_tool_names: Option<HashMap<String, Vec<String>>>,
 }
 
 impl AgentBuilder {
@@ -91,6 +94,7 @@ impl AgentBuilder {
             available_hints: None,
             route_model_by_hint: None,
             integration_catalog: None,
+            integration_tool_names: None,
         }
     }
 
@@ -195,6 +199,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn integration_tool_names(mut self, names: HashMap<String, Vec<String>>) -> Self {
+        self.integration_tool_names = Some(names);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -242,6 +251,7 @@ impl AgentBuilder {
             last_confidence: 0.0,
             last_integrations: Vec::new(),
             integration_catalog: self.integration_catalog.unwrap_or_default(),
+            integration_tool_names: self.integration_tool_names.unwrap_or_default(),
         })
     }
 }
@@ -262,6 +272,25 @@ impl Agent {
     /// Returns the integrations selected by the last classification.
     pub fn last_integrations(&self) -> &[String] {
         &self.last_integrations
+    }
+
+    /// Compute integration tool names to exclude based on classifier selection.
+    /// Returns empty if no classifier route is configured (backward compatible).
+    fn excluded_integration_tools(&self) -> Vec<String> {
+        if !self.route_model_by_hint.contains_key("classifier") {
+            return Vec::new();
+        }
+        let mut excluded = Vec::new();
+        for (integration_name, tool_names) in &self.integration_tool_names {
+            if !self
+                .last_integrations
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(integration_name))
+            {
+                excluded.extend(tool_names.iter().cloned());
+            }
+        }
+        excluded
     }
 
     pub fn from_config(config: &Config) -> Result<Self> {
@@ -341,6 +370,19 @@ impl Agent {
             .collect();
         let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
 
+        let integration_tool_map: HashMap<String, Vec<String>> = {
+            let integrations = crate::integrations::collect_integrations(config);
+            integrations
+                .iter()
+                .map(|i| {
+                    let name = i.name().to_string();
+                    let tool_names: Vec<String> =
+                        i.tools().iter().map(|t| t.spec().name.clone()).collect();
+                    (name, tool_names)
+                })
+                .collect()
+        };
+
         Agent::builder()
             .provider(provider)
             .tools(tools)
@@ -360,6 +402,7 @@ impl Agent {
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
             .integration_catalog(crate::integrations::active_integration_summary(config))
+            .integration_tool_names(integration_tool_map)
             .identity_config(config.identity.clone())
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
@@ -624,6 +667,7 @@ impl Agent {
             .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
 
         let effective_model = self.classify_model(user_message).await;
+        let excluded_integration_tools = self.excluded_integration_tools();
 
         // -- Planner activation gate (three-zone) --
         // Zone 1: agentic_score < skip_threshold        → skip planner entirely
@@ -669,7 +713,7 @@ impl Agent {
                 "cli", // channel_name
                 None,  // cancellation_token
                 None,  // hooks
-                &[],   // excluded_tools
+                &excluded_integration_tools,
             )
             .await;
 
@@ -700,6 +744,17 @@ impl Agent {
             }
         }
 
+        // Filter tool specs to exclude integration tools from unselected integrations.
+        let effective_tool_specs: Vec<ToolSpec> = if excluded_integration_tools.is_empty() {
+            self.tool_specs.clone()
+        } else {
+            self.tool_specs
+                .iter()
+                .filter(|spec| !excluded_integration_tools.contains(&spec.name))
+                .cloned()
+                .collect()
+        };
+
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
             let response = match self
@@ -708,7 +763,7 @@ impl Agent {
                     ChatRequest {
                         messages: &messages,
                         tools: if self.tool_dispatcher.should_send_tool_specs() {
-                            Some(&self.tool_specs)
+                            Some(&effective_tool_specs)
                         } else {
                             None
                         },
@@ -1308,6 +1363,174 @@ mod tests {
             agent.last_confidence > 0.0,
             "classification should produce non-zero confidence, got {}",
             agent.last_confidence
+        );
+    }
+
+    #[test]
+    fn excluded_integration_tools_empty_without_classifier_route() {
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .integration_tool_names(HashMap::from([
+                (
+                    "slack".into(),
+                    vec!["slack_post".into(), "slack_list".into()],
+                ),
+                ("linear".into(), vec!["linear_create".into()]),
+            ]))
+            .build()
+            .expect("agent builder should succeed");
+
+        // No classifier route configured, so nothing should be excluded.
+        assert!(
+            agent.excluded_integration_tools().is_empty(),
+            "Without a classifier route, no tools should be excluded"
+        );
+    }
+
+    #[test]
+    fn excluded_integration_tools_excludes_unselected_integrations() {
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .route_model_by_hint(HashMap::from([(
+                "classifier".into(),
+                "model-classifier".into(),
+            )]))
+            .integration_tool_names(HashMap::from([
+                (
+                    "slack".into(),
+                    vec!["slack_post".into(), "slack_list".into()],
+                ),
+                ("linear".into(), vec!["linear_create".into()]),
+            ]))
+            .build()
+            .expect("agent builder should succeed");
+
+        // Simulate classifier selecting only "linear".
+        agent.last_integrations = vec!["linear".to_string()];
+
+        let excluded = agent.excluded_integration_tools();
+        // Slack tools should be excluded; linear tools should not.
+        assert!(
+            excluded.contains(&"slack_post".to_string()),
+            "slack_post should be excluded when slack is not selected"
+        );
+        assert!(
+            excluded.contains(&"slack_list".to_string()),
+            "slack_list should be excluded when slack is not selected"
+        );
+        assert!(
+            !excluded.contains(&"linear_create".to_string()),
+            "linear_create should NOT be excluded when linear is selected"
+        );
+    }
+
+    #[test]
+    fn excluded_integration_tools_case_insensitive_match() {
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .route_model_by_hint(HashMap::from([(
+                "classifier".into(),
+                "model-classifier".into(),
+            )]))
+            .integration_tool_names(HashMap::from([("slack".into(), vec!["slack_post".into()])]))
+            .build()
+            .expect("agent builder should succeed");
+
+        // Classifier returns "Slack" (capitalized); integration is "slack".
+        agent.last_integrations = vec!["Slack".to_string()];
+
+        let excluded = agent.excluded_integration_tools();
+        assert!(
+            excluded.is_empty(),
+            "Case-insensitive match should keep Slack tools available"
+        );
+    }
+
+    #[test]
+    fn excluded_integration_tools_excludes_all_when_no_integrations_selected() {
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .route_model_by_hint(HashMap::from([(
+                "classifier".into(),
+                "model-classifier".into(),
+            )]))
+            .integration_tool_names(HashMap::from([
+                ("slack".into(), vec!["slack_post".into()]),
+                ("linear".into(), vec!["linear_create".into()]),
+            ]))
+            .build()
+            .expect("agent builder should succeed");
+
+        // Classifier route exists but last_integrations is empty (default).
+        let excluded = agent.excluded_integration_tools();
+        assert_eq!(
+            excluded.len(),
+            2,
+            "All integration tools should be excluded when none are selected"
         );
     }
 }
