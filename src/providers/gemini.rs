@@ -2298,10 +2298,8 @@ impl Provider for GeminiProvider {
             }])
         });
 
-        let tool_config = build_tool_config_for_request(
-            gemini_tools.is_some(),
-            self.tool_call_mode.as_deref(),
-        );
+        let tool_config =
+            build_tool_config_for_request(gemini_tools.is_some(), self.tool_call_mode.as_deref());
 
         let resp = self
             .send_generate_content(
