@@ -678,29 +678,53 @@ async fn refresh_gemini_cli_token_async(
     .map_err(|e| anyhow::anyhow!("Token refresh task panicked: {e}"))?
 }
 
+/// Returns true if the model name indicates a Gemini 3.x family model.
+fn is_gemini3_model(model: &str) -> bool {
+    let normalized = model.strip_prefix("models/").unwrap_or(model);
+    normalized.starts_with("gemini-3")
+}
+
 /// Maps a route hint to a Gemini thinkingConfig.
 ///
-/// | Hint       | Budget | Rationale                    |
-/// |------------|--------|------------------------------|
-/// | triage     | 0      | Binary relevance check       |
-/// | heartbeat  | 0      | Periodic check-in            |
-/// | simple     | 0      | Greetings, acknowledgments   |
-/// | planner    | 1024   | Structured output, not deep  |
-/// | medium     | 1024   | Standard tool use            |
-/// | complex    | 4096   | Multi-step reasoning         |
-/// | reasoning  | -1     | Dynamic (maximum)            |
-fn thinking_config_for_hint(hint: Option<&str>) -> Option<ThinkingConfig> {
-    let budget = match hint? {
-        "triage" | "heartbeat" | "simple" => 0,
-        "planner" | "medium" => 1024,
-        "complex" => 4096,
-        "reasoning" => -1,
-        _ => return None,
-    };
-    Some(ThinkingConfig {
-        thinking_budget: Some(budget),
-        thinking_level: None,
-    })
+/// For Gemini 2.5 models, uses `thinkingBudget` (token count).
+/// For Gemini 3.x models, uses `thinkingLevel` (minimal/low/medium/high).
+///
+/// | Hint       | Budget (2.5) | Level (3.x) | Rationale                    |
+/// |------------|--------------|-------------|------------------------------|
+/// | triage     | 0            | minimal     | Binary relevance check       |
+/// | heartbeat  | 0            | minimal     | Periodic check-in            |
+/// | simple     | 0            | minimal     | Greetings, acknowledgments   |
+/// | planner    | 1024         | low         | Structured output, not deep  |
+/// | medium     | 1024         | low         | Standard tool use            |
+/// | complex    | 4096         | medium      | Multi-step reasoning         |
+/// | reasoning  | -1           | high        | Dynamic (maximum)            |
+fn thinking_config_for_hint(hint: Option<&str>, model: &str) -> Option<ThinkingConfig> {
+    let hint = hint?;
+    if is_gemini3_model(model) {
+        let level = match hint {
+            "triage" | "heartbeat" | "simple" => "minimal",
+            "planner" | "medium" => "low",
+            "complex" => "medium",
+            "reasoning" => "high",
+            _ => return None,
+        };
+        Some(ThinkingConfig {
+            thinking_budget: None,
+            thinking_level: Some(level.into()),
+        })
+    } else {
+        let budget = match hint {
+            "triage" | "heartbeat" | "simple" => 0,
+            "planner" | "medium" => 1024,
+            "complex" => 4096,
+            "reasoning" => -1,
+            _ => return None,
+        };
+        Some(ThinkingConfig {
+            thinking_budget: Some(budget),
+            thinking_level: None,
+        })
+    }
 }
 
 /// Build tool config based on whether tools are present and whether a
@@ -2068,7 +2092,7 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let thinking_config = thinking_config_for_hint(request.route_hint);
+        let thinking_config = thinking_config_for_hint(request.route_hint, model);
         let sanitized_messages = sanitize_transcript_for_gemini(request.messages);
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
@@ -4062,7 +4086,7 @@ mod tests {
         ];
 
         for (hint, expected_budget) in cases {
-            let config = thinking_config_for_hint(hint);
+            let config = thinking_config_for_hint(hint, "gemini-2.5-flash");
             match expected_budget {
                 Some(budget) => {
                     let tc = config
@@ -4215,5 +4239,50 @@ mod tests {
             parse_malformed_function_call(candidate.finish_message.as_deref().unwrap()).unwrap();
         assert_eq!(recovered.name, "slack_send");
         assert_eq!(recovered.args["channel_id"], "C1");
+    }
+
+    #[test]
+    fn thinking_config_gemini25_uses_budget() {
+        let config = thinking_config_for_hint(Some("complex"), "gemini-2.5-flash").unwrap();
+        assert_eq!(config.thinking_budget, Some(4096));
+        assert!(config.thinking_level.is_none());
+    }
+
+    #[test]
+    fn thinking_config_gemini3_uses_level() {
+        let config = thinking_config_for_hint(Some("complex"), "gemini-3-flash-preview").unwrap();
+        assert!(config.thinking_budget.is_none());
+        assert_eq!(config.thinking_level.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn thinking_config_gemini3_simple_is_minimal() {
+        let config = thinking_config_for_hint(Some("simple"), "gemini-3-pro").unwrap();
+        assert!(config.thinking_budget.is_none());
+        assert_eq!(config.thinking_level.as_deref(), Some("minimal"));
+    }
+
+    #[test]
+    fn thinking_config_gemini3_reasoning_is_high() {
+        let config =
+            thinking_config_for_hint(Some("reasoning"), "models/gemini-3-flash-preview").unwrap();
+        assert!(config.thinking_budget.is_none());
+        assert_eq!(config.thinking_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn thinking_config_unknown_hint_returns_none() {
+        assert!(thinking_config_for_hint(Some("unknown"), "gemini-2.5-flash").is_none());
+        assert!(thinking_config_for_hint(None, "gemini-2.5-flash").is_none());
+    }
+
+    #[test]
+    fn is_gemini3_model_detection() {
+        assert!(is_gemini3_model("gemini-3-flash-preview"));
+        assert!(is_gemini3_model("models/gemini-3-pro"));
+        assert!(is_gemini3_model("gemini-3.1-pro"));
+        assert!(!is_gemini3_model("gemini-2.5-flash"));
+        assert!(!is_gemini3_model("gemini-2.0-flash"));
+        assert!(!is_gemini3_model("models/gemini-1.5-pro"));
     }
 }
