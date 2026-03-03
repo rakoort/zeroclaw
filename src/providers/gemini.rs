@@ -349,6 +349,10 @@ struct InternalGenerateContentResponse {
 struct Candidate {
     #[serde(default)]
     content: Option<CandidateContent>,
+    #[serde(default, rename = "finishReason")]
+    finish_reason: Option<String>,
+    #[serde(default, rename = "finishMessage")]
+    finish_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3895,5 +3899,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn candidate_deserializes_finish_reason_and_message() {
+        // Present fields
+        let json = serde_json::json!({
+            "content": { "parts": [{ "text": "hello" }] },
+            "finishReason": "MALFORMED_FUNCTION_CALL",
+            "finishMessage": "Malformed function call: call:slack_send{\"ch\": \"C1\"}"
+        });
+        let c: Candidate = serde_json::from_value(json).unwrap();
+        assert_eq!(c.finish_reason.as_deref(), Some("MALFORMED_FUNCTION_CALL"));
+        assert!(c.finish_message.as_ref().unwrap().contains("slack_send"));
+
+        // Absent fields (backward compat)
+        let json = serde_json::json!({
+            "content": { "parts": [{ "text": "hello" }] }
+        });
+        let c: Candidate = serde_json::from_value(json).unwrap();
+        assert!(c.finish_reason.is_none());
+        assert!(c.finish_message.is_none());
     }
 }
