@@ -1907,6 +1907,7 @@ pub(crate) async fn agent_turn(
         None,
         &[],
         None,
+        None,
     )
     .await
 }
@@ -2098,6 +2099,7 @@ pub(crate) async fn run_tool_call_loop(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     route_hint: Option<&str>,
+    required_tool_names: Option<&[String]>,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2186,6 +2188,7 @@ pub(crate) async fn run_tool_call_loop(
                 messages: &prepared_messages.messages,
                 tools: request_tools,
                 route_hint,
+                required_tool_names,
             },
             model,
             temperature,
@@ -3063,6 +3066,7 @@ pub async fn run(
             None,
             &[],
             None,
+            None,
         )
         .await?;
         final_output = response.clone();
@@ -3185,6 +3189,7 @@ pub async fn run(
                 None,
                 None,
                 &[],
+                None,
                 None,
             )
             .await
@@ -3733,6 +3738,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3780,6 +3786,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3820,6 +3827,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             None,
         )
         .await
@@ -3948,6 +3956,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         )
         .await
         .expect("parallel execution should complete");
@@ -4018,6 +4027,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4074,6 +4084,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             None,
         )
         .await
@@ -5755,6 +5766,7 @@ Let me check the result."#;
             None,
             None,
             &[],
+            None,
             None,
         )
         .await
