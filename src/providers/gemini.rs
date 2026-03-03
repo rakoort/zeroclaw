@@ -1878,14 +1878,48 @@ impl GeminiProvider {
             output_tokens: u.candidates_token_count,
         });
 
-        let content = result
-            .candidates
-            .and_then(|c| c.into_iter().next())
-            .and_then(|c| c.content);
+        let candidate = result.candidates.and_then(|c| c.into_iter().next());
 
-        let (text, tool_calls, raw_parts) = match content {
-            Some(c) => c.extract_response(),
-            None => (None, Vec::new(), Vec::new()),
+        let (text, tool_calls, raw_parts) = if let Some(candidate) = candidate {
+            if candidate.finish_reason.as_deref() == Some("MALFORMED_FUNCTION_CALL") {
+                // Attempt recovery from finishMessage
+                match candidate
+                    .finish_message
+                    .as_deref()
+                    .and_then(parse_malformed_function_call)
+                {
+                    Some(recovered) => {
+                        tracing::warn!(
+                            tool = %recovered.name,
+                            "Recovered malformed function call from finishMessage"
+                        );
+                        let tool_call = ToolCall {
+                            id: "gemini_call_0".to_string(),
+                            name: recovered.name.clone(),
+                            arguments: recovered.args.to_string(),
+                            thought_signature: None,
+                        };
+                        (None, vec![tool_call], Vec::new())
+                    }
+                    None => {
+                        tracing::warn!(
+                            finish_message =
+                                candidate.finish_message.as_deref().unwrap_or("<empty>"),
+                            "MALFORMED_FUNCTION_CALL but could not parse finishMessage"
+                        );
+                        anyhow::bail!(
+                            "Gemini returned MALFORMED_FUNCTION_CALL and recovery failed"
+                        );
+                    }
+                }
+            } else {
+                match candidate.content {
+                    Some(c) => c.extract_response(),
+                    None => (None, Vec::new(), Vec::new()),
+                }
+            }
+        } else {
+            (None, Vec::new(), Vec::new())
         };
 
         // When no tool calls and no text, report as error (mirrors old behavior)
@@ -4175,5 +4209,41 @@ mod tests {
         let result = parse_malformed_function_call(msg).unwrap();
         assert_eq!(result.name, "get_time");
         assert!(result.args.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_call_recovered_produces_tool_call() {
+        // Simulate what Gemini returns: a candidate with empty content,
+        // finishReason=MALFORMED_FUNCTION_CALL, and the call in finishMessage.
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {},
+                "finishReason": "MALFORMED_FUNCTION_CALL",
+                "finishMessage": "Malformed function call: call:slack_send{\"channel_id\": \"C1\", \"message\": \"hi\"}"
+            }]
+        });
+        let response: GenerateContentResponse = serde_json::from_value(json).unwrap();
+        let result = response.into_effective_response();
+
+        // Extract the first candidate and attempt recovery
+        let candidate = result.candidates.unwrap().into_iter().next().unwrap();
+        assert_eq!(
+            candidate.finish_reason.as_deref(),
+            Some("MALFORMED_FUNCTION_CALL")
+        );
+
+        // Content should be empty/None
+        let content_empty = candidate
+            .content
+            .as_ref()
+            .map(|c| c.parts.is_empty())
+            .unwrap_or(true);
+        assert!(content_empty);
+
+        // Recovery should work
+        let recovered =
+            parse_malformed_function_call(candidate.finish_message.as_deref().unwrap()).unwrap();
+        assert_eq!(recovered.name, "slack_send");
+        assert_eq!(recovered.args["channel_id"], "C1");
     }
 }
