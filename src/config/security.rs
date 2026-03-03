@@ -157,6 +157,12 @@ pub struct RuntimeConfig {
     /// - `Some(false)`: disable reasoning/thinking when supported
     #[serde(default)]
     pub reasoning_enabled: Option<bool>,
+
+    /// Optional tool-call mode for Gemini: `"auto"` (default) or `"validated"`.
+    /// When set to `"validated"`, Gemini guarantees schema adherence on function
+    /// calls without forcing a tool call.
+    #[serde(default)]
+    pub tool_call_mode: Option<String>,
 }
 
 /// Docker runtime configuration (`[runtime.docker]` section).
@@ -231,6 +237,7 @@ impl Default for RuntimeConfig {
             kind: default_runtime_kind(),
             docker: DockerRuntimeConfig::default(),
             reasoning_enabled: None,
+            tool_call_mode: None,
         }
     }
 }

@@ -678,6 +678,8 @@ pub struct ProviderRuntimeOptions {
     pub zeroclaw_dir: Option<PathBuf>,
     pub secrets_encrypt: bool,
     pub reasoning_enabled: Option<bool>,
+    /// Optional tool-call mode for Gemini: "auto" (default) or "validated".
+    pub tool_call_mode: Option<String>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -688,6 +690,7 @@ impl Default for ProviderRuntimeOptions {
             zeroclaw_dir: None,
             secrets_encrypt: true,
             reasoning_enabled: None,
+            tool_call_mode: None,
         }
     }
 }
@@ -990,11 +993,14 @@ fn create_provider_with_url_and_options(
                     )
                 });
             let auth_service = AuthService::new(&state_dir, options.secrets_encrypt);
-            Ok(Box::new(gemini::GeminiProvider::new_with_auth(
-                key,
-                auth_service,
-                options.auth_profile_override.clone(),
-            )))
+            Ok(Box::new(
+                gemini::GeminiProvider::new_with_auth(
+                    key,
+                    auth_service,
+                    options.auth_profile_override.clone(),
+                )
+                .with_tool_call_mode(options.tool_call_mode.clone()),
+            ))
         }
         "telnyx" => Ok(Box::new(telnyx::TelnyxProvider::new(key))),
 

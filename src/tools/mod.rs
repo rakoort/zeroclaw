@@ -345,6 +345,7 @@ pub fn all_tools_with_runtime(
                     .map(std::path::PathBuf::from),
                 secrets_encrypt: root_config.secrets.encrypt,
                 reasoning_enabled: root_config.runtime.reasoning_enabled,
+                tool_call_mode: root_config.runtime.tool_call_mode.clone(),
             },
         )
         .with_parent_tools(parent_tools)

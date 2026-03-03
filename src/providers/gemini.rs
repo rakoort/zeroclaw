@@ -29,6 +29,8 @@ pub struct GeminiProvider {
     auth_service: Option<AuthService>,
     /// Override profile name for managed auth.
     auth_profile_override: Option<String>,
+    /// Optional tool-call mode override: "auto" (default) or "validated".
+    tool_call_mode: Option<String>,
 }
 
 /// Mutable OAuth token state — supports runtime refresh for long-lived processes.
@@ -915,6 +917,7 @@ impl GeminiProvider {
             oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
             auth_service: None,
             auth_profile_override: None,
+            tool_call_mode: None,
         }
     }
 
@@ -990,7 +993,14 @@ impl GeminiProvider {
                 None
             },
             auth_profile_override: profile_override,
+            tool_call_mode: None,
         }
+    }
+
+    /// Set the tool-call mode (e.g., "validated"). None means "auto".
+    pub fn with_tool_call_mode(mut self, mode: Option<String>) -> Self {
+        self.tool_call_mode = mode;
+        self
     }
 
     fn normalize_non_empty(value: &str) -> Option<String> {
@@ -2291,8 +2301,11 @@ impl Provider for GeminiProvider {
             }])
         });
 
-        let tool_config =
-            build_tool_config_for_request(gemini_tools.is_some(), request.force_tool_call, None);
+        let tool_config = build_tool_config_for_request(
+            gemini_tools.is_some(),
+            request.force_tool_call,
+            self.tool_call_mode.as_deref(),
+        );
 
         let resp = self
             .send_generate_content(
@@ -2644,6 +2657,7 @@ mod tests {
             oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
             auth_service: None,
             auth_profile_override: None,
+            tool_call_mode: None,
         }
     }
 
@@ -3473,6 +3487,7 @@ mod tests {
             oauth_index: Arc::new(tokio::sync::Mutex::new(0)),
             auth_service: None, // Missing auth_service
             auth_profile_override: None,
+            tool_call_mode: None,
         };
 
         let result = provider.warmup().await;
@@ -4274,6 +4289,13 @@ mod tests {
     fn thinking_config_unknown_hint_returns_none() {
         assert!(thinking_config_for_hint(Some("unknown"), "gemini-2.5-flash").is_none());
         assert!(thinking_config_for_hint(None, "gemini-2.5-flash").is_none());
+    }
+
+    #[test]
+    fn provider_stores_tool_call_mode() {
+        let provider =
+            GeminiProvider::new(Some("key")).with_tool_call_mode(Some("validated".into()));
+        assert_eq!(provider.tool_call_mode.as_deref(), Some("validated"));
     }
 
     #[test]
