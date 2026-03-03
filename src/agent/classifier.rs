@@ -4,6 +4,7 @@ use crate::config::schema::{
     ClassificationMode, ClassificationTiers, QueryClassificationConfig, ScoringConfig,
     ScoringOverrides, Tier,
 };
+use crate::providers::{ChatMessage, ChatRequest, Provider};
 
 // ── 14-dimension scorer ─────────────────────────────────────────
 
@@ -776,6 +777,76 @@ pub fn build_classifier_prompt(
         Output ONLY valid JSON, no markdown fences:\n\
         {{\"tier\": \"...\", \"agentic_score\": 0.0, \"integrations\": [], \"reasoning\": \"...\"}}"
     )
+}
+
+/// Refine a weighted-scoring classification decision with an LLM call.
+///
+/// Sends the preliminary scoring signals and the user message to the
+/// classifier model. On success, updates the decision's tier, agentic_score,
+/// integrations, and hint in-place. On failure (unparseable response or
+/// network error), the decision is left unchanged and a warning is logged.
+pub async fn refine_with_llm(
+    decision: &mut ClassificationDecision,
+    provider: &dyn Provider,
+    classifier_model: &str,
+    user_message: &str,
+    integration_catalog: &str,
+    tiers: &ClassificationTiers,
+) {
+    let prompt = build_classifier_prompt(
+        decision.agentic_score,
+        &decision.signals,
+        user_message.len() / 4,
+        integration_catalog,
+    );
+    let messages = vec![
+        ChatMessage::system(prompt),
+        ChatMessage::user(user_message.to_string()),
+    ];
+    match provider
+        .chat(
+            ChatRequest {
+                messages: &messages,
+                tools: None,
+                route_hint: Some("classifier"),
+            },
+            classifier_model,
+            0.0,
+        )
+        .await
+    {
+        Ok(response) => {
+            if let Some(text) = &response.text {
+                match parse_llm_classification(text) {
+                    Ok(llm_result) => {
+                        tracing::info!(
+                            target: "query_classification",
+                            llm_tier = ?llm_result.tier,
+                            llm_agentic_score = llm_result.agentic_score,
+                            llm_integrations = ?llm_result.integrations,
+                            llm_reasoning = llm_result.reasoning.as_str(),
+                            "LLM classifier refined classification"
+                        );
+                        decision.tier = llm_result.tier;
+                        decision.agentic_score = llm_result.agentic_score;
+                        decision.integrations = llm_result.integrations;
+                        decision.hint = match decision.tier {
+                            Tier::Simple => tiers.simple.clone().unwrap_or_default(),
+                            Tier::Medium => tiers.medium.clone().unwrap_or_default(),
+                            Tier::Complex => tiers.complex.clone().unwrap_or_default(),
+                            Tier::Reasoning => tiers.reasoning.clone().unwrap_or_default(),
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!("LLM classifier returned unparseable response: {e}");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("LLM classifier call failed, using weighted-only classification: {e}");
+        }
+    }
 }
 
 /// Classify a user message against the configured rules and return the

@@ -74,6 +74,38 @@ pub fn active_integration_summary(config: &Config) -> String {
     lines.join("\n")
 }
 
+/// Compute the tool names to exclude based on classifier integration selection.
+/// Returns tool names from integrations NOT in `selected`.
+/// If `selected` is empty, all integration tools are excluded.
+pub fn excluded_tool_names(
+    integration_tool_names: &std::collections::HashMap<String, Vec<String>>,
+    selected: &[String],
+) -> Vec<String> {
+    let mut excluded = Vec::new();
+    for (integration_name, tool_names) in integration_tool_names {
+        if !selected
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(integration_name))
+        {
+            excluded.extend(tool_names.iter().cloned());
+        }
+    }
+    excluded
+}
+
+/// Build a mapping of integration name to its tool names from configured integrations.
+pub fn build_integration_tool_map(config: &Config) -> std::collections::HashMap<String, Vec<String>> {
+    let integrations = collect_integrations(config);
+    integrations
+        .iter()
+        .map(|i| {
+            let name = i.name().to_string();
+            let tool_names: Vec<String> = i.tools().iter().map(|t| t.spec().name.clone()).collect();
+            (name, tool_names)
+        })
+        .collect()
+}
+
 /// Filter integration tools to only those from the selected integrations.
 /// Returns tools from integrations whose `name()` appears in `selected`.
 pub fn filter_tools_by_integrations(
@@ -226,5 +258,57 @@ mod tests {
         let selected = vec!["Linear".to_string()];
         let filtered = filter_tools_by_integrations(&integrations, &selected);
         assert_eq!(filtered.len(), 14);
+    }
+
+    #[test]
+    fn excluded_tool_names_excludes_unselected() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("slack".to_string(), vec!["slack_post".into(), "slack_reply".into()]);
+        map.insert("linear".to_string(), vec!["linear_create".into()]);
+
+        let selected = vec!["linear".to_string()];
+        let excluded = excluded_tool_names(&map, &selected);
+
+        assert!(excluded.contains(&"slack_post".to_string()));
+        assert!(excluded.contains(&"slack_reply".to_string()));
+        assert!(!excluded.contains(&"linear_create".to_string()));
+    }
+
+    #[test]
+    fn excluded_tool_names_case_insensitive() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("slack".to_string(), vec!["slack_post".into()]);
+
+        let selected = vec!["Slack".to_string()];
+        let excluded = excluded_tool_names(&map, &selected);
+        assert!(excluded.is_empty());
+    }
+
+    #[test]
+    fn excluded_tool_names_empty_selection_excludes_all() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("slack".to_string(), vec!["slack_post".into()]);
+        map.insert("linear".to_string(), vec!["linear_create".into()]);
+
+        let excluded = excluded_tool_names(&map, &[]);
+        assert_eq!(excluded.len(), 2);
+    }
+
+    #[test]
+    fn build_integration_tool_map_returns_empty_for_default_config() {
+        let config = crate::config::Config::default();
+        let map = build_integration_tool_map(&config);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn build_integration_tool_map_includes_configured_integrations() {
+        let mut config = crate::config::Config::default();
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        let map = build_integration_tool_map(&config);
+        assert!(map.contains_key("linear"));
+        assert_eq!(map["linear"].len(), 14);
     }
 }

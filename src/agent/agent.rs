@@ -280,17 +280,10 @@ impl Agent {
         if !self.route_model_by_hint.contains_key("classifier") {
             return Vec::new();
         }
-        let mut excluded = Vec::new();
-        for (integration_name, tool_names) in &self.integration_tool_names {
-            if !self
-                .last_integrations
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(integration_name))
-            {
-                excluded.extend(tool_names.iter().cloned());
-            }
-        }
-        excluded
+        crate::integrations::excluded_tool_names(
+            &self.integration_tool_names,
+            &self.last_integrations,
+        )
     }
 
     pub fn from_config(config: &Config) -> Result<Self> {
@@ -370,18 +363,7 @@ impl Agent {
             .collect();
         let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
 
-        let integration_tool_map: HashMap<String, Vec<String>> = {
-            let integrations = crate::integrations::collect_integrations(config);
-            integrations
-                .iter()
-                .map(|i| {
-                    let name = i.name().to_string();
-                    let tool_names: Vec<String> =
-                        i.tools().iter().map(|t| t.spec().name.clone()).collect();
-                    (name, tool_names)
-                })
-                .collect()
-        };
+        let integration_tool_map = crate::integrations::build_integration_tool_map(config);
 
         Agent::builder()
             .provider(provider)
@@ -526,78 +508,17 @@ impl Agent {
 
             // Refine classification with LLM if classifier model route exists
             if let Some(classifier_model) = self.route_model_by_hint.get("classifier").cloned() {
-                let prompt = super::classifier::build_classifier_prompt(
-                    decision.agentic_score,
-                    &decision.signals,
-                    user_message.len() / 4,
+                super::classifier::refine_with_llm(
+                    &mut decision,
+                    self.provider.as_ref(),
+                    &classifier_model,
+                    user_message,
                     &self.integration_catalog,
-                );
-                let messages = vec![
-                    ChatMessage::system(prompt),
-                    ChatMessage::user(user_message.to_string()),
-                ];
-                match self
-                    .provider
-                    .chat(
-                        ChatRequest {
-                            messages: &messages,
-                            tools: None,
-                            route_hint: Some("classifier"),
-                        },
-                        &classifier_model,
-                        0.0,
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        if let Some(text) = &response.text {
-                            match super::classifier::parse_llm_classification(text) {
-                                Ok(llm_result) => {
-                                    tracing::info!(
-                                        target: "query_classification",
-                                        llm_tier = ?llm_result.tier,
-                                        llm_agentic_score = llm_result.agentic_score,
-                                        llm_integrations = ?llm_result.integrations,
-                                        llm_reasoning = llm_result.reasoning.as_str(),
-                                        "LLM classifier refined classification"
-                                    );
-                                    // Override decision with LLM results
-                                    decision.tier = llm_result.tier;
-                                    decision.agentic_score = llm_result.agentic_score;
-                                    decision.integrations = llm_result.integrations;
-                                    // Re-derive hint from new tier using config
-                                    let tier_hints = &self.classification_config.tiers;
-                                    decision.hint = match decision.tier {
-                                        crate::config::schema::Tier::Simple => {
-                                            tier_hints.simple.clone().unwrap_or_default()
-                                        }
-                                        crate::config::schema::Tier::Medium => {
-                                            tier_hints.medium.clone().unwrap_or_default()
-                                        }
-                                        crate::config::schema::Tier::Complex => {
-                                            tier_hints.complex.clone().unwrap_or_default()
-                                        }
-                                        crate::config::schema::Tier::Reasoning => {
-                                            tier_hints.reasoning.clone().unwrap_or_default()
-                                        }
-                                    };
-                                    // Update stored scoring metadata with LLM results
-                                    self.last_agentic_score = decision.agentic_score;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "LLM classifier returned unparseable response: {e}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "LLM classifier call failed, using weighted-only classification: {e}"
-                        );
-                    }
-                }
+                    &self.classification_config.tiers,
+                )
+                .await;
+                // Update stored scoring metadata with LLM results
+                self.last_agentic_score = decision.agentic_score;
             }
 
             // Store integrations for tool filtering
