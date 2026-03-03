@@ -41,6 +41,10 @@ pub struct Agent {
     last_agentic_score: f64,
     /// Confidence from the last classification (0.0..1.0).
     last_confidence: f64,
+    /// Integrations selected by the last classification.
+    last_integrations: Vec<String>,
+    /// Pre-computed integration catalog for classifier prompt.
+    integration_catalog: String,
 }
 
 pub struct AgentBuilder {
@@ -62,6 +66,7 @@ pub struct AgentBuilder {
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
     route_model_by_hint: Option<HashMap<String, String>>,
+    integration_catalog: Option<String>,
 }
 
 impl AgentBuilder {
@@ -85,6 +90,7 @@ impl AgentBuilder {
             classification_config: None,
             available_hints: None,
             route_model_by_hint: None,
+            integration_catalog: None,
         }
     }
 
@@ -184,6 +190,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn integration_catalog(mut self, catalog: String) -> Self {
+        self.integration_catalog = Some(catalog);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -229,6 +240,8 @@ impl AgentBuilder {
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             last_agentic_score: 0.0,
             last_confidence: 0.0,
+            last_integrations: Vec::new(),
+            integration_catalog: self.integration_catalog.unwrap_or_default(),
         })
     }
 }
@@ -244,6 +257,11 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+    }
+
+    /// Returns the integrations selected by the last classification.
+    pub fn last_integrations(&self) -> &[String] {
+        &self.last_integrations
     }
 
     pub fn from_config(config: &Config) -> Result<Self> {
@@ -341,6 +359,7 @@ impl Agent {
             .classification_config(config.query_classification.clone())
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
+            .integration_catalog(crate::integrations::active_integration_summary(config))
             .identity_config(config.identity.clone())
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
@@ -446,14 +465,14 @@ impl Agent {
         futures_util::future::join_all(futs).await
     }
 
-    fn classify_model(&mut self, user_message: &str) -> String {
+    async fn classify_model(&mut self, user_message: &str) -> String {
         let turn_count = self
             .history
             .iter()
             .filter(|msg| matches!(msg, ConversationMessage::Chat(cm) if cm.role == "user"))
             .count();
 
-        if let Some(decision) = super::classifier::classify_with_context(
+        if let Some(mut decision) = super::classifier::classify_with_context(
             &self.classification_config,
             user_message,
             turn_count,
@@ -461,6 +480,85 @@ impl Agent {
             // Store scoring metadata for downstream planner activation.
             self.last_agentic_score = decision.agentic_score;
             self.last_confidence = decision.confidence;
+
+            // Refine classification with LLM if classifier model route exists
+            if let Some(classifier_model) = self.route_model_by_hint.get("classifier").cloned() {
+                let prompt = super::classifier::build_classifier_prompt(
+                    decision.agentic_score,
+                    &decision.signals,
+                    user_message.len() / 4,
+                    &self.integration_catalog,
+                );
+                let messages = vec![
+                    ChatMessage::system(prompt),
+                    ChatMessage::user(user_message.to_string()),
+                ];
+                match self
+                    .provider
+                    .chat(
+                        ChatRequest {
+                            messages: &messages,
+                            tools: None,
+                            route_hint: Some("classifier"),
+                        },
+                        &classifier_model,
+                        0.0,
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        if let Some(text) = &response.text {
+                            match super::classifier::parse_llm_classification(text) {
+                                Ok(llm_result) => {
+                                    tracing::info!(
+                                        target: "query_classification",
+                                        llm_tier = ?llm_result.tier,
+                                        llm_agentic_score = llm_result.agentic_score,
+                                        llm_integrations = ?llm_result.integrations,
+                                        llm_reasoning = llm_result.reasoning.as_str(),
+                                        "LLM classifier refined classification"
+                                    );
+                                    // Override decision with LLM results
+                                    decision.tier = llm_result.tier;
+                                    decision.agentic_score = llm_result.agentic_score;
+                                    decision.integrations = llm_result.integrations;
+                                    // Re-derive hint from new tier using config
+                                    let tier_hints = &self.classification_config.tiers;
+                                    decision.hint = match decision.tier {
+                                        crate::config::schema::Tier::Simple => {
+                                            tier_hints.simple.clone().unwrap_or_default()
+                                        }
+                                        crate::config::schema::Tier::Medium => {
+                                            tier_hints.medium.clone().unwrap_or_default()
+                                        }
+                                        crate::config::schema::Tier::Complex => {
+                                            tier_hints.complex.clone().unwrap_or_default()
+                                        }
+                                        crate::config::schema::Tier::Reasoning => {
+                                            tier_hints.reasoning.clone().unwrap_or_default()
+                                        }
+                                    };
+                                    // Update stored scoring metadata with LLM results
+                                    self.last_agentic_score = decision.agentic_score;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "LLM classifier returned unparseable response: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "LLM classifier call failed, using weighted-only classification: {e}"
+                        );
+                    }
+                }
+            }
+
+            // Store integrations for tool filtering
+            self.last_integrations = decision.integrations.clone();
 
             if self.available_hints.contains(&decision.hint) {
                 let resolved_model = self
@@ -525,7 +623,7 @@ impl Agent {
         self.history
             .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
 
-        let effective_model = self.classify_model(user_message);
+        let effective_model = self.classify_model(user_message).await;
 
         // -- Planner activation gate (three-zone) --
         // Zone 1: agentic_score < skip_threshold        → skip planner entirely
