@@ -151,6 +151,10 @@ pub(crate) struct ChannelRuntimeContext {
     pub(crate) non_cli_excluded_tools: Arc<Vec<String>>,
     pub(crate) triage_model: Option<String>,
     pub(crate) planner_model: Option<String>,
+    pub(crate) classification_config: crate::config::QueryClassificationConfig,
+    pub(crate) integration_tool_names: std::collections::HashMap<String, Vec<String>>,
+    pub(crate) integration_catalog: String,
+    pub(crate) classifier_model: Option<String>,
 }
 
 #[derive(Clone)]

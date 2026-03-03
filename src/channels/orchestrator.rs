@@ -1410,21 +1410,50 @@ pub(crate) async fn process_channel_message(
     }
 
     // ── Planner path (when configured) ──────────────────────────
-    // TODO: wire integration tool filtering here too. The Agent::turn() path
-    // computes excluded integration tools via excluded_integration_tools().
-    // The orchestrator needs the same filtering applied to both
-    // plan_then_execute and run_tool_call_loop excluded_tools lists.
     let mut planner_response: Option<String> = None;
+
+    // ── Integration filtering (classifier-driven) ──────────
+    // Run weighted classification + optional LLM refinement to determine
+    // which integrations are needed, then compute excluded tool names.
+    let integration_excluded_tools: Vec<String> = {
+        let mut excluded = Vec::new();
+        if let Some(mut decision) = crate::agent::classifier::classify_with_context(
+            &ctx.classification_config,
+            &msg.content,
+            0, // channel messages don't track turn count
+        ) {
+            if let Some(ref classifier_model) = ctx.classifier_model {
+                crate::agent::classifier::refine_with_llm(
+                    &mut decision,
+                    active_provider.as_ref(),
+                    classifier_model,
+                    &msg.content,
+                    &ctx.integration_catalog,
+                    &ctx.classification_config.tiers,
+                )
+                .await;
+            }
+            excluded = crate::integrations::excluded_tool_names(
+                &ctx.integration_tool_names,
+                &decision.integrations,
+            );
+        }
+        excluded
+    };
+
+    let channel_excluded_tools: Vec<String> = {
+        let mut tools: Vec<String> = if msg.channel == "cli" {
+            vec![]
+        } else {
+            ctx.non_cli_excluded_tools.to_vec()
+        };
+        tools.extend(integration_excluded_tools);
+        tools
+    };
 
     if let Some(ref planner_model) = ctx.planner_model {
         let tool_specs: Vec<crate::tools::ToolSpec> =
             ctx.tools_registry.iter().map(|t| t.spec()).collect();
-
-        let excluded_tools: &[String] = if msg.channel == "cli" {
-            &[]
-        } else {
-            ctx.non_cli_excluded_tools.as_ref()
-        };
 
         let system_prompt_str = build_channel_system_prompt(
             ctx.system_prompt.as_str(),
@@ -1449,7 +1478,7 @@ pub(crate) async fn process_channel_message(
             msg.channel.as_str(),
             Some(cancellation_token.clone()),
             ctx.hooks.as_deref(),
-            excluded_tools,
+            &channel_excluded_tools,
         )
         .await
         {
@@ -1509,11 +1538,7 @@ pub(crate) async fn process_channel_message(
                     Some(cancellation_token.clone()),
                     delta_tx,
                     ctx.hooks.as_deref(),
-                    if msg.channel == "cli" {
-                        &[]
-                    } else {
-                        ctx.non_cli_excluded_tools.as_ref()
-                    },
+                    &channel_excluded_tools,
                     None, // route_hint: channel orchestrator doesn't classify queries
                 ),
             ) => LlmExecutionResult::Completed(result),
@@ -2791,6 +2816,10 @@ pub async fn start_channels(config: Config) -> Result<()> {
             .as_ref()
             .and_then(|sl| sl.triage_model.clone()),
         planner_model: resolve_planner_model(&config.model_routes),
+        classification_config: config.query_classification.clone(),
+        integration_tool_names: crate::integrations::build_integration_tool_map(&config),
+        integration_catalog: crate::integrations::active_integration_summary(&config),
+        classifier_model: resolve_classifier_model(&config.model_routes),
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
@@ -2808,6 +2837,14 @@ fn resolve_planner_model(routes: &[ModelRouteConfig]) -> Option<String> {
     routes
         .iter()
         .find(|r| r.hint == "planner")
+        .map(|r| r.model.clone())
+}
+
+/// Extract the classifier model name from model routes configuration.
+fn resolve_classifier_model(routes: &[ModelRouteConfig]) -> Option<String> {
+    routes
+        .iter()
+        .find(|r| r.hint == "classifier")
         .map(|r| r.model.clone())
 }
 
@@ -3015,6 +3052,10 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -3067,6 +3108,10 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -3122,6 +3167,10 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -3600,6 +3649,10 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -3666,6 +3719,10 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -3746,6 +3803,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -3812,6 +3873,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -3887,6 +3952,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -3983,6 +4052,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4061,6 +4134,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4154,6 +4231,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4232,6 +4313,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4299,6 +4384,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4477,6 +4566,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -4568,6 +4661,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4671,6 +4768,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4756,6 +4857,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -4822,6 +4927,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -5365,6 +5474,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -5461,6 +5574,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -5553,6 +5670,10 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -6109,6 +6230,10 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -6182,6 +6307,10 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         });
 
         process_channel_message(
@@ -6493,6 +6622,10 @@ mod watch_dispatch_tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            classification_config: crate::config::QueryClassificationConfig::default(),
+            integration_tool_names: HashMap::new(),
+            integration_catalog: String::new(),
+            classifier_model: None,
         })
     }
 
