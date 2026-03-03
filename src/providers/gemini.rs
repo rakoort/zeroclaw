@@ -2230,10 +2230,10 @@ impl Provider for GeminiProvider {
                             }),
                             ..Default::default()
                         };
-                        // Merge consecutive tool results into one Content to maintain
-                        // strict role alternation (Gemini requires user/model/user/model).
+                        // Merge consecutive tool results into one Content because
+                        // Gemini requires function response count == function call count per turn.
                         if let Some(last) = contents.last_mut() {
-                            if last.role.as_deref() == Some("user")
+                            if last.role.as_deref() == Some("tool")
                                 && last.parts.iter().all(|p| p.function_response.is_some())
                             {
                                 last.parts.push(part);
@@ -2241,7 +2241,7 @@ impl Provider for GeminiProvider {
                             }
                         }
                         contents.push(Content {
-                            role: Some("user".into()),
+                            role: Some("tool".into()),
                             parts: vec![part],
                         });
                     } else {
@@ -2467,10 +2467,10 @@ impl Provider for GeminiProvider {
                             }),
                             ..Default::default()
                         };
-                        // Merge consecutive tool results into one Content to maintain
-                        // strict role alternation (Gemini requires user/model/user/model).
+                        // Merge consecutive tool results into one Content because
+                        // Gemini requires function response count == function call count per turn.
                         if let Some(last) = contents.last_mut() {
-                            if last.role.as_deref() == Some("user")
+                            if last.role.as_deref() == Some("tool")
                                 && last.parts.iter().all(|p| p.function_response.is_some())
                             {
                                 last.parts.push(part);
@@ -2478,7 +2478,7 @@ impl Provider for GeminiProvider {
                             }
                         }
                         contents.push(Content {
-                            role: Some("user".into()),
+                            role: Some("tool".into()),
                             parts: vec![part],
                         });
                     }
