@@ -87,7 +87,6 @@ async fn provider_vision_support() -> Result<()> {
         messages: &messages,
         tools: None,
         route_hint: None,
-        force_tool_call: false,
     };
 
     // Send request to provider
@@ -212,7 +211,6 @@ async fn openai_codex_second_vision_support() -> Result<()> {
         messages: &messages,
         tools: None,
         route_hint: None,
-        force_tool_call: false,
     };
 
     // Send request to provider

@@ -1907,7 +1907,6 @@ pub(crate) async fn agent_turn(
         None,
         &[],
         None,
-        false,
     )
     .await
 }
@@ -2099,7 +2098,6 @@ pub(crate) async fn run_tool_call_loop(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     route_hint: Option<&str>,
-    force_tool_call: bool,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2188,7 +2186,6 @@ pub(crate) async fn run_tool_call_loop(
                 messages: &prepared_messages.messages,
                 tools: request_tools,
                 route_hint,
-                force_tool_call,
             },
             model,
             temperature,
@@ -3067,7 +3064,6 @@ pub async fn run(
             None,
             &[],
             None,
-            false,
         )
         .await?;
         final_output = response.clone();
@@ -3191,7 +3187,6 @@ pub async fn run(
                 None,
                 &[],
                 None,
-                false,
             )
             .await
             {
@@ -3740,7 +3735,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3788,7 +3782,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3830,7 +3823,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3958,7 +3950,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect("parallel execution should complete");
@@ -4029,7 +4020,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4087,7 +4077,6 @@ mod tests {
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -5769,7 +5758,6 @@ Let me check the result."#;
             None,
             &[],
             None,
-            false,
         )
         .await
         .expect("tool loop should complete successfully");

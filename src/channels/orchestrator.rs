@@ -1540,7 +1540,6 @@ pub(crate) async fn process_channel_message(
                     ctx.hooks.as_deref(),
                     &channel_excluded_tools,
                     None, // route_hint: channel orchestrator doesn't classify queries
-                    false, // force_tool_call: not used in channel path
                 ),
             ) => LlmExecutionResult::Completed(result),
         }

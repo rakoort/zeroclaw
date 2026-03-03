@@ -809,7 +809,6 @@ pub async fn refine_with_llm(
                 messages: &messages,
                 tools: None,
                 route_hint: Some("classifier"),
-                force_tool_call: false,
             },
             classifier_model,
             0.0,

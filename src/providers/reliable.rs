@@ -778,7 +778,6 @@ impl Provider for ReliableProvider {
                         messages: request.messages,
                         tools: request.tools,
                         route_hint: request.route_hint,
-                        force_tool_call: request.force_tool_call,
                     };
                     match provider.chat(req, current_model, temperature).await {
                         Ok(resp) => {
@@ -1802,7 +1801,6 @@ mod tests {
             messages: &messages,
             tools: None,
             route_hint: None,
-            force_tool_call: false,
         };
         let result = provider.chat(request, "test-model", 0.0).await.unwrap();
 
@@ -1837,7 +1835,6 @@ mod tests {
             messages: &messages,
             tools: None,
             route_hint: None,
-            force_tool_call: false,
         };
         let result = provider.chat(request, "test-model", 0.0).await.unwrap();
 
@@ -1910,7 +1907,6 @@ mod tests {
             messages: &messages,
             tools: None,
             route_hint: None,
-            force_tool_call: false,
         };
         let err = provider
             .chat(request, "test", 0.0)
@@ -2029,7 +2025,6 @@ mod tests {
             messages: &messages,
             tools: None,
             route_hint: None,
-            force_tool_call: false,
         };
         let result = provider.chat(request, "claude-opus", 0.0).await.unwrap();
         assert_eq!(result.text.as_deref(), Some("ok from sonnet"));
@@ -2079,7 +2074,6 @@ mod tests {
             messages: &messages,
             tools: None,
             route_hint: None,
-            force_tool_call: false,
         };
         let result = provider.chat(request, "test", 0.0).await.unwrap();
         assert_eq!(result.text.as_deref(), Some("from fallback"));
@@ -2216,7 +2210,6 @@ mod tests {
             messages: &[ChatMessage::user("hello")],
             tools: None,
             route_hint: Some("triage"),
-            force_tool_call: false,
         };
         provider.chat(request, "test-model", 0.7).await.unwrap();
 

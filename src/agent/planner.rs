@@ -232,7 +232,6 @@ pub async fn plan_then_execute(
                 messages: &planner_messages,
                 tools: None,
                 route_hint: Some("planner"),
-                force_tool_call: false,
             },
             planner_model,
             temperature,
@@ -309,7 +308,6 @@ pub async fn plan_then_execute(
                 let ct = cancellation_token.clone();
 
                 async move {
-                    let force_tool_call = !wanted_tools.is_empty();
                     let result = crate::agent::loop_::run_tool_call_loop(
                         provider,
                         &mut action_messages,
@@ -328,7 +326,6 @@ pub async fn plan_then_execute(
                         hooks,
                         &combined_excluded,
                         None, // route_hint: executor uses resolved model directly
-                        force_tool_call,
                     )
                     .await;
 

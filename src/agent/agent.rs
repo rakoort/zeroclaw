@@ -689,7 +689,6 @@ impl Agent {
                             None
                         },
                         route_hint: effective_model.strip_prefix("hint:"),
-                        force_tool_call: false,
                     },
                     &effective_model,
                     self.temperature,
