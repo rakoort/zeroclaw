@@ -1831,7 +1831,8 @@ impl GeminiProvider {
                 && Self::should_retry_oauth_without_generation_config(status, &error_text)
             {
                 tracing::warn!(
-                    "Gemini OAuth internal endpoint rejected generationConfig; retrying without generationConfig"
+                    retry_reason = "generation_config_rejected",
+                    "Gemini OAuth endpoint rejected generationConfig; retrying without it"
                 );
                 response = self
                     .build_generate_content_request(
@@ -1857,7 +1858,8 @@ impl GeminiProvider {
                 && Self::should_retry_oauth_without_generation_config(status, &error_text)
             {
                 tracing::warn!(
-                    "Gemini OAuth internal endpoint rejected generationConfig; retrying without generationConfig"
+                    retry_reason = "generation_config_rejected",
+                    "Gemini OAuth endpoint rejected generationConfig; retrying without it"
                 );
                 response = self
                     .build_generate_content_request(
