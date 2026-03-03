@@ -567,6 +567,7 @@ fn score_v2(
             confidence: 0.85_f64.max(calibrate_confidence(0.3, scoring.confidence_steepness)),
             agentic_score,
             signals,
+            integrations: Vec::new(),
         });
     }
 
@@ -583,6 +584,7 @@ fn score_v2(
             confidence: calibrate_confidence(0.4, scoring.confidence_steepness),
             agentic_score,
             signals,
+            integrations: Vec::new(),
         });
     }
 
@@ -631,6 +633,7 @@ fn score_v2(
         confidence,
         agentic_score,
         signals,
+        integrations: Vec::new(),
     })
 }
 
@@ -685,6 +688,9 @@ pub struct ClassificationDecision {
     pub agentic_score: f64,
     /// Human-readable signal explanations from each scoring dimension.
     pub signals: Vec<String>,
+    /// Integration names selected by the classifier (e.g. `["linear", "slack"]`).
+    /// Empty means no external integrations needed.
+    pub integrations: Vec<String>,
 }
 
 impl Default for ClassificationDecision {
@@ -696,6 +702,7 @@ impl Default for ClassificationDecision {
             confidence: 0.5,
             agentic_score: 0.0,
             signals: Vec::new(),
+            integrations: Vec::new(),
         }
     }
 }
@@ -1170,5 +1177,37 @@ mod tests {
     fn sigmoid_confidence_far_from_boundary() {
         let confidence = calibrate_confidence(0.5, 12.0);
         assert!(confidence > 0.99);
+    }
+
+    #[test]
+    fn weighted_classification_produces_empty_integrations() {
+        let config = make_weighted_v2_config();
+        let decision = classify_with_context(&config, "hi", 0)
+            .expect("weighted classification should return a decision");
+        assert!(
+            decision.integrations.is_empty(),
+            "default weighted classification should produce no integrations, got: {:?}",
+            decision.integrations
+        );
+    }
+
+    #[test]
+    fn rules_classification_produces_empty_integrations() {
+        let config = make_config(
+            true,
+            vec![ClassificationRule {
+                hint: "fast".into(),
+                keywords: vec!["hello".into()],
+                priority: 5,
+                ..Default::default()
+            }],
+        );
+        let decision = classify_with_decision(&config, "hello")
+            .expect("rules classification should return a decision");
+        assert!(
+            decision.integrations.is_empty(),
+            "rules classification should produce no integrations, got: {:?}",
+            decision.integrations
+        );
     }
 }
