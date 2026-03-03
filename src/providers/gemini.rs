@@ -2488,16 +2488,9 @@ impl Provider for GeminiProvider {
             }])
         };
 
-        let tool_config = if gemini_tools.is_some() {
-            Some(GeminiToolConfig {
-                function_calling_config: FunctionCallingConfigMode {
-                    mode: "AUTO".into(),
-                    allowed_function_names: None,
-                },
-            })
-        } else {
-            None
-        };
+        // chat_with_tools has no access to ChatRequest, so always uses AUTO mode.
+        // Callers needing ANY mode must route through chat() instead.
+        let tool_config = build_tool_config_for_request(gemini_tools.is_some(), None);
 
         let resp = self
             .send_generate_content(
