@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 use crate::config::schema::{
     ClassificationMode, ClassificationTiers, QueryClassificationConfig, ScoringConfig,
     ScoringOverrides, Tier,
@@ -707,6 +709,75 @@ impl Default for ClassificationDecision {
     }
 }
 
+/// LLM classifier response (parsed from JSON).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmClassificationResponse {
+    pub tier: Tier,
+    pub agentic_score: f64,
+    #[serde(default)]
+    pub integrations: Vec<String>,
+    #[serde(default)]
+    pub reasoning: String,
+}
+
+/// Parse a JSON string into an [`LlmClassificationResponse`].
+pub fn parse_llm_classification(
+    json: &str,
+) -> Result<LlmClassificationResponse, serde_json::Error> {
+    serde_json::from_str(json.trim())
+}
+
+/// Build the system prompt sent to the LLM classifier.
+///
+/// Embeds the preliminary weighted-score analysis, detected signals, token
+/// estimate, and available integration catalog so the LLM can refine the
+/// tier decision.
+pub fn build_classifier_prompt(
+    weighted_score: f64,
+    signals: &[String],
+    token_estimate: usize,
+    integration_catalog: &str,
+) -> String {
+    let tier_suggestion = if weighted_score < 0.0 {
+        "simple"
+    } else if weighted_score < 0.3 {
+        "medium"
+    } else if weighted_score < 0.5 {
+        "complex"
+    } else {
+        "reasoning"
+    };
+
+    let signals_str = if signals.is_empty() {
+        "none".to_string()
+    } else {
+        signals.join(", ")
+    };
+
+    let integrations_block = if integration_catalog.is_empty() {
+        "No external integrations configured.".to_string()
+    } else {
+        format!("Available integrations:\n{integration_catalog}")
+    };
+
+    format!(
+        "You are a message classifier. Given a user message, a preliminary analysis, \
+        and available integrations, output a JSON classification.\n\n\
+        Preliminary analysis:\n\
+        - Score: {weighted_score:.2} (leans {tier_suggestion})\n\
+        - Signals: {signals_str}\n\
+        - Token estimate: {token_estimate}\n\n\
+        {integrations_block}\n\n\
+        Rules:\n\
+        - tier: simple, medium, complex, or reasoning\n\
+        - agentic_score: 0.0 to 1.0 (how much multi-step tool use is needed)\n\
+        - integrations: list of integration names the message needs (empty if none)\n\
+        - reasoning: one sentence explaining your classification\n\n\
+        Output ONLY valid JSON, no markdown fences:\n\
+        {{\"tier\": \"...\", \"agentic_score\": 0.0, \"integrations\": [], \"reasoning\": \"...\"}}"
+    )
+}
+
 /// Classify a user message against the configured rules and return the
 /// matching hint string, if any.
 ///
@@ -1209,5 +1280,39 @@ mod tests {
             "rules classification should produce no integrations, got: {:?}",
             decision.integrations
         );
+    }
+
+    #[test]
+    fn parse_llm_classification_response_valid() {
+        let json = r#"{"tier": "medium", "agentic_score": 0.4, "integrations": ["linear"], "reasoning": "user asking about tasks"}"#;
+        let result = parse_llm_classification(json).unwrap();
+        assert_eq!(result.tier, Tier::Medium);
+        assert!((result.agentic_score - 0.4).abs() < 0.01);
+        assert_eq!(result.integrations, vec!["linear"]);
+    }
+
+    #[test]
+    fn parse_llm_classification_response_empty_integrations() {
+        let json = r#"{"tier": "simple", "agentic_score": 0.0, "integrations": [], "reasoning": "greeting"}"#;
+        let result = parse_llm_classification(json).unwrap();
+        assert_eq!(result.tier, Tier::Simple);
+        assert!(result.integrations.is_empty());
+    }
+
+    #[test]
+    fn parse_llm_classification_response_invalid_json() {
+        let result = parse_llm_classification("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_classifier_prompt_includes_integrations() {
+        let weighted_score = 0.05;
+        let signals = vec!["simple_indicators".to_string()];
+        let integration_catalog = "- linear: Issue tracking\n- slack: Workspace apps";
+        let prompt = build_classifier_prompt(weighted_score, &signals, 3, integration_catalog);
+        assert!(prompt.contains("linear"));
+        assert!(prompt.contains("Issue tracking"));
+        assert!(prompt.contains("0.05"));
     }
 }
