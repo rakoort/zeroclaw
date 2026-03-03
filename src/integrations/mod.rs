@@ -74,6 +74,19 @@ pub fn active_integration_summary(config: &Config) -> String {
     lines.join("\n")
 }
 
+/// Filter integration tools to only those from the selected integrations.
+/// Returns tools from integrations whose `name()` appears in `selected`.
+pub fn filter_tools_by_integrations(
+    integrations: &[Arc<dyn Integration>],
+    selected: &[String],
+) -> Vec<Arc<dyn Tool>> {
+    integrations
+        .iter()
+        .filter(|i| selected.iter().any(|s| s.eq_ignore_ascii_case(i.name())))
+        .flat_map(|i| i.tools())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +172,59 @@ mod tests {
             summary.is_empty(),
             "should be empty when no integrations configured"
         );
+    }
+
+    #[test]
+    fn filter_tools_by_integrations_keeps_matching() {
+        let mut config = crate::config::Config::default();
+        config.integrations.slack = Some(crate::config::SlackIntegrationConfig {
+            bot_token: "xoxb-test".into(),
+            app_token: "xapp-test".into(),
+            channel_id: None,
+            allowed_users: vec![],
+            mention_only: true,
+            mention_regex: None,
+            triage_model: None,
+        });
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+
+        let integrations = collect_integrations(&config);
+        let selected = vec!["linear".to_string()];
+        let filtered = filter_tools_by_integrations(&integrations, &selected);
+
+        // Should have linear tools (14) but not slack tools (9)
+        assert_eq!(filtered.len(), 14);
+        for tool in &filtered {
+            assert!(
+                tool.spec().name.starts_with("linear_"),
+                "Expected linear tool, got: {}",
+                tool.spec().name
+            );
+        }
+    }
+
+    #[test]
+    fn filter_tools_by_integrations_empty_selection_returns_empty() {
+        let mut config = crate::config::Config::default();
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        let integrations = collect_integrations(&config);
+        let filtered = filter_tools_by_integrations(&integrations, &[]);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_tools_by_integrations_case_insensitive() {
+        let mut config = crate::config::Config::default();
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        let integrations = collect_integrations(&config);
+        let selected = vec!["Linear".to_string()];
+        let filtered = filter_tools_by_integrations(&integrations, &selected);
+        assert_eq!(filtered.len(), 14);
     }
 }
