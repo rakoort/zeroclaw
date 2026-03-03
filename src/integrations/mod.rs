@@ -94,7 +94,9 @@ pub fn excluded_tool_names(
 }
 
 /// Build a mapping of integration name to its tool names from configured integrations.
-pub fn build_integration_tool_map(config: &Config) -> std::collections::HashMap<String, Vec<String>> {
+pub fn build_integration_tool_map(
+    config: &Config,
+) -> std::collections::HashMap<String, Vec<String>> {
     let integrations = collect_integrations(config);
     integrations
         .iter()
@@ -263,7 +265,10 @@ mod tests {
     #[test]
     fn excluded_tool_names_excludes_unselected() {
         let mut map = std::collections::HashMap::new();
-        map.insert("slack".to_string(), vec!["slack_post".into(), "slack_reply".into()]);
+        map.insert(
+            "slack".to_string(),
+            vec!["slack_post".into(), "slack_reply".into()],
+        );
         map.insert("linear".to_string(), vec!["linear_create".into()]);
 
         let selected = vec!["linear".to_string()];
