@@ -708,25 +708,26 @@ fn thinking_config_for_hint(hint: Option<&str>) -> Option<ThinkingConfig> {
     })
 }
 
-/// Build tool config based on whether tools are present and whether specific
-/// tool names are required (ANY mode) or optional (AUTO mode).
+/// Build tool config based on whether tools are present and whether a
+/// tool call is forced (ANY mode) or optional (AUTO mode).
 fn build_tool_config_for_request(
     has_tools: bool,
-    required_tool_names: Option<&[String]>,
+    force_tool_call: bool,
 ) -> Option<GeminiToolConfig> {
     if !has_tools {
         return None;
     }
     Some(GeminiToolConfig {
-        function_calling_config: match required_tool_names {
-            Some(names) => FunctionCallingConfigMode {
+        function_calling_config: if force_tool_call {
+            FunctionCallingConfigMode {
                 mode: "ANY".into(),
-                allowed_function_names: Some(names.to_vec()),
-            },
-            None => FunctionCallingConfigMode {
+                allowed_function_names: None,
+            }
+        } else {
+            FunctionCallingConfigMode {
                 mode: "AUTO".into(),
                 allowed_function_names: None,
-            },
+            }
         },
     })
 }
@@ -2273,7 +2274,7 @@ impl Provider for GeminiProvider {
         });
 
         let tool_config =
-            build_tool_config_for_request(gemini_tools.is_some(), request.required_tool_names);
+            build_tool_config_for_request(gemini_tools.is_some(), request.force_tool_call);
 
         let resp = self
             .send_generate_content(
@@ -2490,7 +2491,7 @@ impl Provider for GeminiProvider {
 
         // chat_with_tools has no access to ChatRequest, so always uses AUTO mode.
         // Callers needing ANY mode must route through chat() instead.
-        let tool_config = build_tool_config_for_request(gemini_tools.is_some(), None);
+        let tool_config = build_tool_config_for_request(gemini_tools.is_some(), false);
 
         let resp = self
             .send_generate_content(
@@ -4136,30 +4137,22 @@ mod tests {
     }
 
     #[test]
-    fn tool_config_uses_any_mode_when_required_tool_names_set() {
-        let required = vec!["slack_send".to_string(), "shell".to_string()];
-        let config = build_tool_config_for_request(true, Some(&required));
+    fn tool_config_uses_any_mode_when_force_tool_call() {
+        let config = build_tool_config_for_request(true, true);
         let tc = config.unwrap();
         assert_eq!(tc.function_calling_config.mode, "ANY");
-        let names = tc
-            .function_calling_config
-            .allowed_function_names
-            .as_ref()
-            .unwrap();
-        assert_eq!(names, &["slack_send", "shell"]);
     }
 
     #[test]
-    fn tool_config_uses_auto_mode_when_required_tool_names_none() {
-        let config = build_tool_config_for_request(true, None);
+    fn tool_config_uses_auto_mode_by_default() {
+        let config = build_tool_config_for_request(true, false);
         let tc = config.unwrap();
         assert_eq!(tc.function_calling_config.mode, "AUTO");
-        assert!(tc.function_calling_config.allowed_function_names.is_none());
     }
 
     #[test]
     fn tool_config_is_none_when_no_tools() {
-        let config = build_tool_config_for_request(false, None);
+        let config = build_tool_config_for_request(false, false);
         assert!(config.is_none());
     }
 

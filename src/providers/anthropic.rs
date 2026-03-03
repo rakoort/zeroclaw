@@ -559,7 +559,7 @@ impl Provider for AnthropicProvider {
                 Some(&tool_specs)
             },
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
         self.chat(request, model, temperature).await
     }

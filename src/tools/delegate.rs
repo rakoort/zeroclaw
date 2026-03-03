@@ -411,8 +411,8 @@ impl DelegateTool {
                 None,
                 None,
                 &[],
-                None, // route_hint: delegate uses resolved model directly
-                None, // required_tool_names: not used in delegate path
+                None,  // route_hint: delegate uses resolved model directly
+                false, // force_tool_call: not used in delegate path
             ),
         )
         .await;

@@ -115,10 +115,9 @@ pub struct ChatRequest<'a> {
     /// Semantic hint for the request context (e.g., "triage", "simple", "complex").
     /// Providers may use this to adjust behavior (e.g., thinking budget).
     pub route_hint: Option<&'a str>,
-    /// When set, forces providers to require a structured tool call using only
-    /// these function names (e.g., Gemini `mode: "ANY"` + `allowedFunctionNames`).
-    /// `None` means the provider decides (AUTO mode).
-    pub required_tool_names: Option<&'a [String]>,
+    /// When true, forces providers to require a structured tool call
+    /// (e.g., Gemini `mode: "ANY"`). When false, the provider decides (AUTO mode).
+    pub force_tool_call: bool,
 }
 
 /// A tool result to feed back to the LLM.
@@ -810,7 +809,7 @@ mod tests {
             messages: &[ChatMessage::user("Hello")],
             tools: Some(&tools),
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -829,7 +828,7 @@ mod tests {
             messages: &[ChatMessage::user("Hello")],
             tools: None,
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -931,7 +930,7 @@ mod tests {
             ],
             tools: Some(&tools),
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -955,7 +954,7 @@ mod tests {
             messages: &[ChatMessage::system("BASE"), ChatMessage::user("Hello")],
             tools: Some(&tools),
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
 
         let response = provider.chat(request, "model", 0.7).await.unwrap();
@@ -979,7 +978,7 @@ mod tests {
             messages: &[ChatMessage::user("Hello")],
             tools: Some(&tools),
             route_hint: None,
-            required_tool_names: None,
+            force_tool_call: false,
         };
 
         let err = provider.chat(request, "model", 0.7).await.unwrap_err();
