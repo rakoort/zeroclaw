@@ -134,6 +134,7 @@ pub(crate) struct ChannelRuntimeContext {
     pub(crate) temperature: f64,
     pub(crate) auto_save_memory: bool,
     pub(crate) max_tool_iterations: usize,
+    pub(crate) max_executor_action_iterations: usize,
     pub(crate) min_relevance_score: f64,
     pub(crate) conversation_histories: ConversationHistoryMap,
     pub(crate) provider_cache: ProviderCacheMap,

@@ -85,6 +85,9 @@ pub struct AgentConfig {
     /// Maximum conversation history messages retained per session. Default: `50`.
     #[serde(default = "default_agent_max_history_messages")]
     pub max_history_messages: usize,
+    /// Maximum tool-call iterations per executor action. Default: `15`.
+    #[serde(default = "default_agent_max_executor_action_iterations")]
+    pub max_executor_action_iterations: usize,
     /// Enable parallel tool execution within a single iteration. Default: `false`.
     #[serde(default)]
     pub parallel_tools: bool,
@@ -95,6 +98,10 @@ pub struct AgentConfig {
 
 fn default_agent_max_tool_iterations() -> usize {
     10
+}
+
+fn default_agent_max_executor_action_iterations() -> usize {
+    15
 }
 
 fn default_agent_max_history_messages() -> usize {
@@ -110,6 +117,7 @@ impl Default for AgentConfig {
         Self {
             compact_context: false,
             max_tool_iterations: default_agent_max_tool_iterations(),
+            max_executor_action_iterations: default_agent_max_executor_action_iterations(),
             max_history_messages: default_agent_max_history_messages(),
             parallel_tools: false,
             tool_dispatcher: default_agent_tool_dispatcher(),
@@ -957,6 +965,19 @@ api_key = "lin_api_test"
 "#;
         let config: LinearIntegrationConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.api_key, "lin_api_test");
+    }
+
+    #[test]
+    fn agent_config_has_max_executor_action_iterations() {
+        let config = AgentConfig::default();
+        assert_eq!(config.max_executor_action_iterations, 15);
+    }
+
+    #[test]
+    fn agent_config_max_executor_action_iterations_deserializes() {
+        let toml_str = r#"max_executor_action_iterations = 25"#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.max_executor_action_iterations, 25);
     }
 
     #[test]

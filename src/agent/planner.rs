@@ -8,13 +8,6 @@ use crate::observability::{Observer, ObserverEvent};
 use crate::providers::{ChatMessage, ChatRequest, Provider};
 use crate::tools::{Tool, ToolSpec};
 
-/// Per-action tool-call budget for planner executor actions.
-/// Generous enough for focused multi-step actions (read+parse, search+format),
-/// tight enough to prevent runaway loops.
-const MAX_EXECUTOR_ACTION_ITERATIONS: usize = 15;
-const _: () = assert!(MAX_EXECUTOR_ACTION_ITERATIONS > 5, "budget must exceed old hardcoded cap");
-const _: () = assert!(MAX_EXECUTOR_ACTION_ITERATIONS <= 50, "budget must stay bounded");
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Plan {
     #[serde(default)]
@@ -192,6 +185,7 @@ pub async fn plan_then_execute(
     provider_name: &str,
     temperature: f64,
     max_tool_iterations: usize,
+    max_executor_iterations: usize,
     // Channel context
     channel_name: &str,
     cancellation_token: Option<CancellationToken>,
@@ -309,7 +303,7 @@ pub async fn plan_then_execute(
                 let action_type = action.action_type.clone();
                 let action_group = action.group;
                 let action_desc = action.description.clone();
-                let budget = max_tool_iterations.min(MAX_EXECUTOR_ACTION_ITERATIONS);
+                let budget = max_tool_iterations.min(max_executor_iterations);
 
                 let ct = cancellation_token.clone();
 
@@ -326,7 +320,7 @@ pub async fn plan_then_execute(
                         None, // no approval manager
                         channel_name,
                         &crate::config::MultimodalConfig::default(),
-                        max_tool_iterations.min(MAX_EXECUTOR_ACTION_ITERATIONS),
+                        max_tool_iterations.min(max_executor_iterations),
                         ct,
                         None, // no delta sender
                         hooks,
@@ -608,6 +602,7 @@ mod tests {
             "router",
             0.7,
             5,
+            15,   // max_executor_iterations
             "",   // channel_name
             None, // cancellation_token
             None, // hooks
@@ -643,6 +638,7 @@ mod tests {
             "router",
             0.7,
             5,
+            15,   // max_executor_iterations
             "",   // channel_name
             None, // cancellation_token
             None, // hooks
@@ -678,6 +674,7 @@ mod tests {
             "router",
             0.7,
             5,
+            15,   // max_executor_iterations
             "",   // channel_name
             None, // cancellation_token
             None, // hooks
@@ -716,6 +713,7 @@ mod tests {
             "router",
             0.7,
             5,
+            15,   // max_executor_iterations
             "",   // channel_name
             None, // cancellation_token
             None, // hooks
@@ -786,6 +784,7 @@ mod tests {
             "router",
             0.7,
             5,
+            15,   // max_executor_iterations
             "",   // channel_name
             None, // cancellation_token
             None, // hooks
