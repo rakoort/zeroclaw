@@ -212,6 +212,11 @@ struct GeminiToolConfig {
 #[derive(Debug, Serialize, Clone)]
 struct FunctionCallingConfigMode {
     mode: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "allowedFunctionNames"
+    )]
+    allowed_function_names: Option<Vec<String>>,
 }
 
 /// Request envelope for the internal cloudcode-pa API.
@@ -2077,6 +2082,7 @@ impl Provider for GeminiProvider {
         let tool_config = gemini_tools.as_ref().map(|_| GeminiToolConfig {
             function_calling_config: FunctionCallingConfigMode {
                 mode: "AUTO".into(),
+                allowed_function_names: None,
             },
         });
 
@@ -2297,6 +2303,7 @@ impl Provider for GeminiProvider {
             Some(GeminiToolConfig {
                 function_calling_config: FunctionCallingConfigMode {
                     mode: "AUTO".into(),
+                    allowed_function_names: None,
                 },
             })
         } else {
@@ -3920,5 +3927,29 @@ mod tests {
         let c: Candidate = serde_json::from_value(json).unwrap();
         assert!(c.finish_reason.is_none());
         assert!(c.finish_message.is_none());
+    }
+
+    #[test]
+    fn function_calling_config_any_mode_serializes_allowed_names() {
+        let config = FunctionCallingConfigMode {
+            mode: "ANY".into(),
+            allowed_function_names: Some(vec!["slack_send".into(), "shell".into()]),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["mode"], "ANY");
+        let names = json["allowedFunctionNames"].as_array().unwrap();
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], "slack_send");
+    }
+
+    #[test]
+    fn function_calling_config_auto_mode_omits_allowed_names() {
+        let config = FunctionCallingConfigMode {
+            mode: "AUTO".into(),
+            allowed_function_names: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["mode"], "AUTO");
+        assert!(json.get("allowedFunctionNames").is_none());
     }
 }
