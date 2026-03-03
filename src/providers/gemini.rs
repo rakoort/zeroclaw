@@ -212,11 +212,6 @@ struct GeminiToolConfig {
 #[derive(Debug, Serialize, Clone)]
 struct FunctionCallingConfigMode {
     mode: String,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        rename = "allowedFunctionNames"
-    )]
-    allowed_function_names: Option<Vec<String>>,
 }
 
 /// Request envelope for the internal cloudcode-pa API.
@@ -713,22 +708,21 @@ fn thinking_config_for_hint(hint: Option<&str>) -> Option<ThinkingConfig> {
 fn build_tool_config_for_request(
     has_tools: bool,
     force_tool_call: bool,
+    tool_call_mode: Option<&str>,
 ) -> Option<GeminiToolConfig> {
     if !has_tools {
         return None;
     }
+    let mode = if force_tool_call {
+        "ANY"
+    } else {
+        match tool_call_mode {
+            Some("validated") => "VALIDATED",
+            _ => "AUTO",
+        }
+    };
     Some(GeminiToolConfig {
-        function_calling_config: if force_tool_call {
-            FunctionCallingConfigMode {
-                mode: "ANY".into(),
-                allowed_function_names: None,
-            }
-        } else {
-            FunctionCallingConfigMode {
-                mode: "AUTO".into(),
-                allowed_function_names: None,
-            }
-        },
+        function_calling_config: FunctionCallingConfigMode { mode: mode.into() },
     })
 }
 
@@ -2274,7 +2268,7 @@ impl Provider for GeminiProvider {
         });
 
         let tool_config =
-            build_tool_config_for_request(gemini_tools.is_some(), request.force_tool_call);
+            build_tool_config_for_request(gemini_tools.is_some(), request.force_tool_call, None);
 
         let resp = self
             .send_generate_content(
@@ -2491,7 +2485,7 @@ impl Provider for GeminiProvider {
 
         // chat_with_tools has no access to ChatRequest, so always uses AUTO mode.
         // Callers needing ANY mode must route through chat() instead.
-        let tool_config = build_tool_config_for_request(gemini_tools.is_some(), false);
+        let tool_config = build_tool_config_for_request(gemini_tools.is_some(), false, None);
 
         let resp = self
             .send_generate_content(
@@ -4113,46 +4107,36 @@ mod tests {
     }
 
     #[test]
-    fn function_calling_config_any_mode_serializes_allowed_names() {
-        let config = FunctionCallingConfigMode {
-            mode: "ANY".into(),
-            allowed_function_names: Some(vec!["slack_send".into(), "shell".into()]),
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        assert_eq!(json["mode"], "ANY");
-        let names = json["allowedFunctionNames"].as_array().unwrap();
-        assert_eq!(names.len(), 2);
-        assert_eq!(names[0], "slack_send");
-    }
-
-    #[test]
-    fn function_calling_config_auto_mode_omits_allowed_names() {
-        let config = FunctionCallingConfigMode {
-            mode: "AUTO".into(),
-            allowed_function_names: None,
-        };
-        let json = serde_json::to_value(&config).unwrap();
-        assert_eq!(json["mode"], "AUTO");
-        assert!(json.get("allowedFunctionNames").is_none());
-    }
-
-    #[test]
-    fn tool_config_uses_any_mode_when_force_tool_call() {
-        let config = build_tool_config_for_request(true, true);
+    fn tool_config_any_mode_when_force_tool_call() {
+        let config = build_tool_config_for_request(true, true, None);
         let tc = config.unwrap();
         assert_eq!(tc.function_calling_config.mode, "ANY");
     }
 
     #[test]
-    fn tool_config_uses_auto_mode_by_default() {
-        let config = build_tool_config_for_request(true, false);
+    fn tool_config_auto_mode_by_default() {
+        let config = build_tool_config_for_request(true, false, None);
         let tc = config.unwrap();
         assert_eq!(tc.function_calling_config.mode, "AUTO");
     }
 
     #[test]
-    fn tool_config_is_none_when_no_tools() {
-        let config = build_tool_config_for_request(false, false);
+    fn tool_config_validated_mode_when_configured() {
+        let config = build_tool_config_for_request(true, false, Some("validated"));
+        let tc = config.unwrap();
+        assert_eq!(tc.function_calling_config.mode, "VALIDATED");
+    }
+
+    #[test]
+    fn tool_config_force_overrides_validated() {
+        let config = build_tool_config_for_request(true, true, Some("validated"));
+        let tc = config.unwrap();
+        assert_eq!(tc.function_calling_config.mode, "ANY");
+    }
+
+    #[test]
+    fn tool_config_none_when_no_tools() {
+        let config = build_tool_config_for_request(false, false, None);
         assert!(config.is_none());
     }
 
