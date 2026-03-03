@@ -708,6 +708,165 @@ fn thinking_config_for_hint(hint: Option<&str>) -> Option<ThinkingConfig> {
     })
 }
 
+/// Build tool config based on whether tools are present and whether specific
+/// tool names are required (ANY mode) or optional (AUTO mode).
+fn build_tool_config_for_request(
+    has_tools: bool,
+    required_tool_names: Option<&[String]>,
+) -> Option<GeminiToolConfig> {
+    if !has_tools {
+        return None;
+    }
+    Some(GeminiToolConfig {
+        function_calling_config: match required_tool_names {
+            Some(names) => FunctionCallingConfigMode {
+                mode: "ANY".into(),
+                allowed_function_names: Some(names.to_vec()),
+            },
+            None => FunctionCallingConfigMode {
+                mode: "AUTO".into(),
+                allowed_function_names: None,
+            },
+        },
+    })
+}
+
+/// Attempt to recover a tool call from a Gemini `finishMessage` string.
+///
+/// Gemini flash sometimes returns tool calls as text instead of structured
+/// `functionCall` parts. Two formats observed:
+/// - JSON-ish:   `call:tool_name{"key": "value", ...}`
+/// - Python-ish: `call:tool_name(key='value', ...)`
+fn parse_malformed_function_call(message: &str) -> Option<FunctionCallResponse> {
+    // Strip prefix if present
+    let body = message
+        .strip_prefix("Malformed function call: ")
+        .unwrap_or(message);
+
+    // Extract tool name after "call:"
+    let after_call = body.strip_prefix("call:")?;
+    let name_end = after_call.find(['{', '('])?;
+    let name = after_call[..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    let args_body = &after_call[name_end..];
+
+    // Try JSON variant: {...}
+    if args_body.starts_with('{') {
+        if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_body) {
+            return Some(FunctionCallResponse { name, args });
+        }
+        // JSON parse failed — try to find matching brace
+        if let Some(end) = find_matching_brace(args_body) {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&args_body[..=end]) {
+                return Some(FunctionCallResponse { name, args });
+            }
+        }
+    }
+
+    // Try Python kwargs variant: (key='value', key2="value2")
+    if args_body.starts_with('(') && args_body.ends_with(')') {
+        let inner = &args_body[1..args_body.len() - 1];
+        if let Some(obj) = parse_python_kwargs(inner) {
+            return Some(FunctionCallResponse { name, args: obj });
+        }
+    }
+
+    None
+}
+
+/// Find the index of the matching closing brace for an opening `{`.
+fn find_matching_brace(s: &str) -> Option<usize> {
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    for (i, ch) in s.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if !in_string {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    if depth == 0 {
+                        return None;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Parse Python-style keyword arguments into a JSON object.
+///
+/// Input: `channel_id='C0AG29ZDQUC', message='hello world'`
+/// Output: `{"channel_id": "C0AG29ZDQUC", "message": "hello world"}`
+fn parse_python_kwargs(input: &str) -> Option<serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    let pairs = split_kwargs(input);
+    for pair in pairs {
+        let eq_pos = pair.find('=')?;
+        let key = pair[..eq_pos].trim();
+        let val_raw = pair[eq_pos + 1..].trim();
+        // Strip surrounding quotes (single or double)
+        let val = val_raw
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .or_else(|| val_raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+            .unwrap_or(val_raw);
+        map.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+    }
+    Some(serde_json::Value::Object(map))
+}
+
+/// Split kwargs string on `,` while respecting quoted values.
+fn split_kwargs(input: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut in_quote = None;
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '\'' | '"' => {
+                if in_quote == Some(ch) {
+                    in_quote = None;
+                } else if in_quote.is_none() {
+                    in_quote = Some(ch);
+                }
+            }
+            ',' if in_quote.is_none() => {
+                let segment = input[start..i].trim();
+                if !segment.is_empty() {
+                    result.push(segment);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = input[start..].trim();
+    if !last.is_empty() {
+        result.push(last);
+    }
+    result
+}
+
 impl GeminiProvider {
     /// Create a new Gemini provider.
     ///
@@ -2079,12 +2238,8 @@ impl Provider for GeminiProvider {
             }])
         });
 
-        let tool_config = gemini_tools.as_ref().map(|_| GeminiToolConfig {
-            function_calling_config: FunctionCallingConfigMode {
-                mode: "AUTO".into(),
-                allowed_function_names: None,
-            },
-        });
+        let tool_config =
+            build_tool_config_for_request(gemini_tools.is_some(), request.required_tool_names);
 
         let resp = self
             .send_generate_content(
@@ -3951,5 +4106,74 @@ mod tests {
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["mode"], "AUTO");
         assert!(json.get("allowedFunctionNames").is_none());
+    }
+
+    #[test]
+    fn tool_config_uses_any_mode_when_required_tool_names_set() {
+        let required = vec!["slack_send".to_string(), "shell".to_string()];
+        let config = build_tool_config_for_request(true, Some(&required));
+        let tc = config.unwrap();
+        assert_eq!(tc.function_calling_config.mode, "ANY");
+        let names = tc
+            .function_calling_config
+            .allowed_function_names
+            .as_ref()
+            .unwrap();
+        assert_eq!(names, &["slack_send", "shell"]);
+    }
+
+    #[test]
+    fn tool_config_uses_auto_mode_when_required_tool_names_none() {
+        let config = build_tool_config_for_request(true, None);
+        let tc = config.unwrap();
+        assert_eq!(tc.function_calling_config.mode, "AUTO");
+        assert!(tc.function_calling_config.allowed_function_names.is_none());
+    }
+
+    #[test]
+    fn tool_config_is_none_when_no_tools() {
+        let config = build_tool_config_for_request(false, None);
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn parse_malformed_function_call_json_variant() {
+        let msg = r#"Malformed function call: call:slack_send{"channel_id": "C0AG29ZDQUC", "message": "hello world"}"#;
+        let result = parse_malformed_function_call(msg).unwrap();
+        assert_eq!(result.name, "slack_send");
+        assert_eq!(result.args["channel_id"], "C0AG29ZDQUC");
+        assert_eq!(result.args["message"], "hello world");
+    }
+
+    #[test]
+    fn parse_malformed_function_call_python_variant() {
+        let msg = "Malformed function call: call:slack_send(channel_id='C0AG29ZDQUC', message='hello world')";
+        let result = parse_malformed_function_call(msg).unwrap();
+        assert_eq!(result.name, "slack_send");
+        assert_eq!(result.args["channel_id"], "C0AG29ZDQUC");
+        assert_eq!(result.args["message"], "hello world");
+    }
+
+    #[test]
+    fn parse_malformed_function_call_python_double_quotes() {
+        let msg = r#"Malformed function call: call:slack_send(channel_id="C0AG29ZDQUC", message="hello")"#;
+        let result = parse_malformed_function_call(msg).unwrap();
+        assert_eq!(result.name, "slack_send");
+        assert_eq!(result.args["channel_id"], "C0AG29ZDQUC");
+    }
+
+    #[test]
+    fn parse_malformed_function_call_returns_none_on_garbage() {
+        assert!(parse_malformed_function_call("random text").is_none());
+        assert!(parse_malformed_function_call("").is_none());
+        assert!(parse_malformed_function_call("Malformed function call: no_call_prefix").is_none());
+    }
+
+    #[test]
+    fn parse_malformed_function_call_zero_arg_python() {
+        let msg = "Malformed function call: call:get_time()";
+        let result = parse_malformed_function_call(msg).unwrap();
+        assert_eq!(result.name, "get_time");
+        assert!(result.args.as_object().unwrap().is_empty());
     }
 }
