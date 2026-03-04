@@ -501,7 +501,13 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
             name: "GitHub",
             description: "Code, issues, PRs",
             category: IntegrationCategory::Productivity,
-            status_fn: |_| IntegrationStatus::ComingSoon,
+            status_fn: |c| {
+                if c.integrations.github.is_some() {
+                    IntegrationStatus::Active
+                } else {
+                    IntegrationStatus::Available
+                }
+            },
         },
         IntegrationEntry {
             name: "Notion",
@@ -1049,6 +1055,29 @@ mod tests {
         let linear = entries.iter().find(|e| e.name == "Linear").unwrap();
         assert!(matches!(
             (linear.status_fn)(&config),
+            IntegrationStatus::Available
+        ));
+    }
+
+    #[test]
+    fn github_active_when_integration_configured() {
+        let mut config = Config::default();
+        config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
+            token: "ghp_test".into(),
+            owner: None,
+        });
+        let entries = all_integrations();
+        let gh = entries.iter().find(|e| e.name == "GitHub").unwrap();
+        assert!(matches!((gh.status_fn)(&config), IntegrationStatus::Active));
+    }
+
+    #[test]
+    fn github_available_when_not_configured() {
+        let config = Config::default();
+        let entries = all_integrations();
+        let gh = entries.iter().find(|e| e.name == "GitHub").unwrap();
+        assert!(matches!(
+            (gh.status_fn)(&config),
             IntegrationStatus::Available
         ));
     }
