@@ -332,6 +332,7 @@ pub async fn plan_then_execute(
     let mut accumulated: Vec<String> = Vec::new();
     let mut last_output = String::new();
     let mut any_succeeded = false;
+    let mut succeeded_count: usize = 0;
     let mut failed_group_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
     let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
@@ -477,7 +478,9 @@ pub async fn plan_then_execute(
 
         for result in &results {
             accumulated.push(result.to_accumulated_line());
-            if !result.success {
+            if result.success {
+                succeeded_count += 1;
+            } else {
                 failed_group_ids.insert(result.group);
             }
         }
@@ -488,9 +491,8 @@ pub async fn plan_then_execute(
     }
 
     // Compute success/failure counts for plan_end tracing.
-    let total_actions = groups.iter().map(|g| g.len()).sum::<usize>();
-    let succeeded = accumulated.iter().filter(|l| !l.contains("FAILED")).count();
-    let failed = total_actions.saturating_sub(succeeded);
+    let total_actions: usize = groups.iter().map(|g| g.len()).sum();
+    let failed = total_actions.saturating_sub(succeeded_count);
 
     if !any_succeeded {
         let failed_groups: Vec<u32> = failed_group_ids.iter().copied().collect();
@@ -511,7 +513,7 @@ pub async fn plan_then_execute(
         None,
         serde_json::json!({
             "total_actions": total_actions,
-            "succeeded": succeeded,
+            "succeeded": succeeded_count,
             "failed": failed,
             "failed_groups": failed_group_ids.iter().collect::<Vec<_>>(),
             "duration_ms": plan_started.elapsed().as_millis(),
