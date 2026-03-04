@@ -1461,7 +1461,7 @@ pub(crate) async fn process_channel_message(
             &msg.reply_target,
         );
 
-        match crate::agent::planner::plan_then_execute(
+        match crate::planner::plan_then_execute(
             active_provider.as_ref(),
             planner_model,
             route.model.as_str(),
@@ -1479,10 +1479,11 @@ pub(crate) async fn process_channel_message(
             Some(cancellation_token.clone()),
             ctx.hooks.as_deref(),
             &channel_excluded_tools,
+            &ctx.model_routes,
         )
         .await
         {
-            Ok(crate::agent::planner::PlanExecutionResult::Passthrough) => {
+            Ok(crate::planner::PlanExecutionResult::Passthrough) => {
                 tracing::info!(
                     channel = %msg.channel,
                     sender = %msg.sender,
@@ -1490,9 +1491,10 @@ pub(crate) async fn process_channel_message(
                 );
                 // Fall through to run_tool_call_loop below
             }
-            Ok(crate::agent::planner::PlanExecutionResult::Executed {
+            Ok(crate::planner::PlanExecutionResult::Executed {
                 output,
                 action_results,
+                analysis: _,
             }) => {
                 tracing::info!(
                     channel = %msg.channel,
@@ -2817,6 +2819,11 @@ pub async fn start_channels(config: Config) -> Result<()> {
             .as_ref()
             .and_then(|sl| sl.triage_model.clone()),
         planner_model: resolve_planner_model(&config.model_routes),
+        model_routes: config
+            .model_routes
+            .iter()
+            .map(|route| (route.hint.clone(), route.model.clone()))
+            .collect(),
         classification_config: config.query_classification.clone(),
         integration_tool_names: crate::integrations::build_integration_tool_map(&config),
         integration_catalog: crate::integrations::active_integration_summary(&config),
@@ -3053,6 +3060,7 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3109,6 +3117,7 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3168,6 +3177,7 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3650,6 +3660,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3720,6 +3731,7 @@ BTC is currently around $65,000 based on latest tool output."#
             hooks: None,
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3804,6 +3816,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3874,6 +3887,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -3953,6 +3967,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4053,6 +4068,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4135,6 +4151,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4232,6 +4249,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4314,6 +4332,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4385,6 +4404,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4567,6 +4587,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4662,6 +4683,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4769,6 +4791,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4858,6 +4881,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -4928,6 +4952,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -5475,6 +5500,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -5575,6 +5601,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -5671,6 +5698,7 @@ BTC is currently around $65,000 based on latest tool output."#
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -6231,6 +6259,7 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -6308,6 +6337,7 @@ This is an example JSON object for profile settings."#;
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
@@ -6623,6 +6653,7 @@ mod watch_dispatch_tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             triage_model: None,
             planner_model: None,
+            model_routes: HashMap::new(),
             classification_config: crate::config::QueryClassificationConfig::default(),
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
