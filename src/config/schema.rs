@@ -4442,13 +4442,6 @@ require_otp_to_resume = true
     }
 
     #[test]
-    async fn planning_config_deserializes_with_defaults() {
-        let config: PlanningConfig = toml::from_str("").unwrap();
-        assert!((config.skip_threshold - 0.3).abs() < 0.001);
-        assert!((config.activate_threshold - 0.5).abs() < 0.001);
-    }
-
-    #[test]
     async fn tier_enum_serializes_lowercase() {
         let tier = Tier::Reasoning;
         let json = serde_json::to_string(&tier).unwrap();

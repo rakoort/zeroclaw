@@ -561,33 +561,6 @@ impl Default for ScoringConfig {
     }
 }
 
-/// Planning activation thresholds based on classification score.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PlanningConfig {
-    /// Score below which planning is skipped entirely. Default: `0.3`.
-    #[serde(default = "default_planning_skip_threshold")]
-    pub skip_threshold: f64,
-    /// Score at or above which planning activates. Default: `0.5`.
-    #[serde(default = "default_planning_activate_threshold")]
-    pub activate_threshold: f64,
-}
-
-fn default_planning_skip_threshold() -> f64 {
-    0.3
-}
-fn default_planning_activate_threshold() -> f64 {
-    0.5
-}
-
-impl Default for PlanningConfig {
-    fn default() -> Self {
-        Self {
-            skip_threshold: default_planning_skip_threshold(),
-            activate_threshold: default_planning_activate_threshold(),
-        }
-    }
-}
-
 /// Automatic query classification — classifies user messages by keyword/pattern
 /// and routes to the appropriate model hint. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -610,9 +583,6 @@ pub struct QueryClassificationConfig {
     /// 14-dimension scoring configuration.
     #[serde(default)]
     pub scoring: ScoringConfig,
-    /// Planning activation thresholds.
-    #[serde(default)]
-    pub planning: PlanningConfig,
 }
 
 /// A single classification rule mapping message patterns to a model hint.

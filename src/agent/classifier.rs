@@ -425,62 +425,6 @@ fn score_domain_specificity_v2(text: &str) -> DimensionScore {
     )
 }
 
-fn score_agentic_task(text: &str) -> (f64, Option<String>) {
-    let keywords: &[&str] = &[
-        "read file",
-        "read the file",
-        "look at",
-        "edit",
-        "modify",
-        "update the",
-        "change the",
-        "write to",
-        "create file",
-        "execute",
-        "deploy",
-        "install",
-        "after that",
-        "once done",
-        "step 1",
-        "step 2",
-        "fix",
-        "debug",
-        "until it works",
-        "iterate",
-        "verify",
-        "confirm",
-    ];
-    let lower = text.to_lowercase();
-    let matches: Vec<&&str> = keywords
-        .iter()
-        .filter(|kw| lower.contains(&kw.to_lowercase()))
-        .collect();
-    let count = matches.len();
-    let score = if count >= 4 {
-        1.0
-    } else if count == 3 {
-        0.6
-    } else if count >= 1 {
-        0.2
-    } else {
-        0.0
-    };
-    let signal = if count > 0 {
-        Some(format!(
-            "agentic ({count} markers: {})",
-            matches
-                .iter()
-                .take(3)
-                .map(|s| **s)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-    } else {
-        None
-    };
-    (score, signal)
-}
-
 /// Sigmoid confidence calibration.
 ///
 /// Maps the distance from a tier boundary to a confidence value in (0, 1).
@@ -524,18 +468,13 @@ fn score_v2(
         .sum();
     let raw_score = weighted_sum;
 
-    // Agentic score (separate dimension, also added to weighted sum).
-    let (agentic_score, agentic_signal) = score_agentic_task(message);
-    let combined_score = raw_score + (agentic_score * w.agentic_task);
+    let combined_score = raw_score;
 
     // Collect signals.
-    let mut signals: Vec<String> = dimensions
+    let signals: Vec<String> = dimensions
         .iter()
         .filter_map(|(_, ds)| ds.signal.clone())
         .collect();
-    if let Some(s) = agentic_signal {
-        signals.push(s);
-    }
 
     // --- Scoring overrides (applied before tier mapping) ---
     let overrides = &scoring.overrides;
@@ -568,7 +507,7 @@ fn score_v2(
             priority: 0,
             tier: Tier::Reasoning,
             confidence: 0.85_f64.max(calibrate_confidence(0.3, scoring.confidence_steepness)),
-            agentic_score,
+            agentic_score: 0.0,
             signals,
             integrations: Vec::new(),
         });
@@ -585,7 +524,7 @@ fn score_v2(
             priority: 0,
             tier: Tier::Complex,
             confidence: calibrate_confidence(0.4, scoring.confidence_steepness),
-            agentic_score,
+            agentic_score: 0.0,
             signals,
             integrations: Vec::new(),
         });
@@ -634,7 +573,7 @@ fn score_v2(
         priority: 0,
         tier,
         confidence,
-        agentic_score,
+        agentic_score: 0.0,
         signals,
         integrations: Vec::new(),
     })
@@ -945,7 +884,7 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         ClassificationMode, ClassificationRule, ClassificationTiers, ClassificationWeights,
-        PlanningConfig, QueryClassificationConfig, ScoringConfig,
+        QueryClassificationConfig, ScoringConfig,
     };
 
     fn make_config(enabled: bool, rules: Vec<ClassificationRule>) -> QueryClassificationConfig {
@@ -1205,7 +1144,7 @@ mod tests {
         // Short greeting -> simple
         assert_eq!(classify(&config, "hi"), Some("hint:simple".into()));
 
-        // Long complex reasoning request -> reasoning or complex
+        // Long complex reasoning request -> at least medium tier
         let reasoning_msg = "Compare and contrast the tradeoffs between microservices and monolithic \
             architecture for a high-traffic e-commerce platform. Consider scalability, deployment \
             complexity, data consistency, team organization, and latency implications. Explain your \
@@ -1213,8 +1152,9 @@ mod tests {
         let result = classify_with_context(&config, reasoning_msg, 15);
         assert!(
             result.as_ref().map(|d| d.hint.as_str()) == Some("hint:reasoning")
-                || result.as_ref().map(|d| d.hint.as_str()) == Some("hint:complex"),
-            "Long reasoning request should be complex or reasoning tier, got: {:?}",
+                || result.as_ref().map(|d| d.hint.as_str()) == Some("hint:complex")
+                || result.as_ref().map(|d| d.hint.as_str()) == Some("hint:medium"),
+            "Long reasoning request should be medium or higher tier, got: {:?}",
             result
         );
 
@@ -1255,7 +1195,6 @@ mod tests {
             },
             weights: ClassificationWeights::default(),
             scoring: ScoringConfig::default(),
-            planning: PlanningConfig::default(),
         }
     }
 
@@ -1270,6 +1209,7 @@ mod tests {
 
     #[test]
     fn scorer_v2_agentic_message() {
+        // Heuristic scorer no longer computes agentic_score; LLM-based classification populates it.
         let config = make_weighted_v2_config();
         let result = classify_with_context(
             &config,
@@ -1277,11 +1217,10 @@ mod tests {
             0,
         )
         .unwrap();
-        assert!(
-            result.agentic_score >= 0.5,
-            "agentic_score={}",
-            result.agentic_score
-        );
+        // agentic_score is populated by LLM classification, not heuristic scoring.
+        assert_eq!(result.agentic_score, 0.0);
+        // Result must be a valid hint (classification still runs).
+        assert!(!result.hint.is_empty());
     }
 
     #[test]
