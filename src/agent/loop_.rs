@@ -2620,8 +2620,10 @@ pub(crate) async fn run_tool_call_loop(
                 serde_json::json!({
                     "iteration": iteration + 1,
                     "tool": call.name.clone(),
-                    "duration_ms": outcome.duration.as_millis(),
+                    "arguments": scrub_credentials(&call.arguments.to_string()),
                     "output": scrub_credentials(&outcome.output),
+                    "duration_ms": outcome.duration.as_millis(),
+                    "tool_call_id": call.tool_call_id,
                 }),
             );
 

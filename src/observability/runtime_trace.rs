@@ -387,6 +387,79 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_result_payload_includes_arguments_and_tool_call_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trace.jsonl");
+        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone());
+
+        let payload = serde_json::json!({
+            "iteration": 1,
+            "tool": "shell",
+            "arguments": "{\"command\":\"ls\"}",
+            "output": "file.txt",
+            "duration_ms": 42,
+            "tool_call_id": "call_abc123",
+        });
+
+        let event = RuntimeTraceEvent {
+            id: "enrich-test".into(),
+            timestamp: Utc::now().to_rfc3339(),
+            event_type: "tool_call_result".into(),
+            channel: Some("test_channel".into()),
+            provider: Some("test_provider".into()),
+            model: Some("test_model".into()),
+            turn_id: Some("turn-1".into()),
+            success: Some(true),
+            message: None,
+            payload,
+        };
+        logger.append(&event).unwrap();
+
+        let found = find_event_by_id(&path, "enrich-test").unwrap().unwrap();
+        assert_eq!(found.payload["tool"], "shell");
+        assert_eq!(found.payload["arguments"], "{\"command\":\"ls\"}");
+        assert_eq!(found.payload["tool_call_id"], "call_abc123");
+        assert_eq!(found.payload["duration_ms"], 42);
+        assert_eq!(found.payload["output"], "file.txt");
+        assert_eq!(found.payload["iteration"], 1);
+    }
+
+    #[test]
+    fn tool_call_result_payload_handles_null_tool_call_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trace.jsonl");
+        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone());
+
+        let tool_call_id: Option<String> = None;
+        let payload = serde_json::json!({
+            "iteration": 2,
+            "tool": "file_read",
+            "arguments": "{\"path\":\"/tmp/test.txt\"}",
+            "output": "contents",
+            "duration_ms": 10,
+            "tool_call_id": tool_call_id,
+        });
+
+        let event = RuntimeTraceEvent {
+            id: "null-id-test".into(),
+            timestamp: Utc::now().to_rfc3339(),
+            event_type: "tool_call_result".into(),
+            channel: None,
+            provider: None,
+            model: None,
+            turn_id: None,
+            success: Some(true),
+            message: None,
+            payload,
+        };
+        logger.append(&event).unwrap();
+
+        let found = find_event_by_id(&path, "null-id-test").unwrap().unwrap();
+        assert_eq!(found.payload["arguments"], "{\"path\":\"/tmp/test.txt\"}");
+        assert!(found.payload["tool_call_id"].is_null());
+    }
+
+    #[test]
     fn find_event_by_id_returns_match() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trace.jsonl");
