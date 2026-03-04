@@ -210,53 +210,42 @@ async fn run_agent_job(
             },
         ),
         Ok(crate::planner::PlanExecutionResult::Passthrough) => {
-            // Passthrough: fall back to flat agent::loop_::run for simple tasks
-            match crate::agent::loop_::run(
-                config.clone(),
-                Some(prefixed_prompt),
-                None,
-                Some(executor_model),
-                runtime.temperature,
-                vec![],
-                false,
-            )
-            .await
-            {
-                Ok(response) => (
-                    true,
-                    if response.trim().is_empty() {
-                        "agent job executed".to_string()
-                    } else {
-                        response
-                    },
-                ),
-                Err(e) => (false, format!("agent job failed: {e}")),
-            }
+            // Simple task — fall back to flat agent loop
+            run_flat_fallback(config, prefixed_prompt, executor_model, runtime.temperature).await
         }
         Err(e) => {
             tracing::warn!("Planner failed for cron job: {e}, falling back to flat run");
-            match crate::agent::loop_::run(
-                config.clone(),
-                Some(prefixed_prompt),
-                None,
-                Some(executor_model),
-                runtime.temperature,
-                vec![],
-                false,
-            )
-            .await
-            {
-                Ok(response) => (
-                    true,
-                    if response.trim().is_empty() {
-                        "agent job executed".to_string()
-                    } else {
-                        response
-                    },
-                ),
-                Err(e2) => (false, format!("agent job failed: {e2}")),
-            }
+            run_flat_fallback(config, prefixed_prompt, executor_model, runtime.temperature).await
         }
+    }
+}
+
+async fn run_flat_fallback(
+    config: &Config,
+    prompt: String,
+    model: String,
+    temperature: f64,
+) -> (bool, String) {
+    match crate::agent::loop_::run(
+        config.clone(),
+        Some(prompt),
+        None,
+        Some(model),
+        temperature,
+        vec![],
+        false,
+    )
+    .await
+    {
+        Ok(response) => (
+            true,
+            if response.trim().is_empty() {
+                "agent job executed".to_string()
+            } else {
+                response
+            },
+        ),
+        Err(e) => (false, format!("agent job failed: {e}")),
     }
 }
 
@@ -781,6 +770,9 @@ mod tests {
         job.prompt = Some("Say hello".into());
         let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
 
+        // The Passthrough and Executed paths require a live provider/planner call
+        // and are not unit-testable here. Security boundary tests above are sufficient
+        // for unit coverage.
         let (success, output) = run_agent_job(&config, &security, &job).await;
         assert!(!success);
         assert!(
