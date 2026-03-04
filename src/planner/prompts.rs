@@ -61,6 +61,7 @@ pub fn build_executor_prompt(
 
     if !action.params.is_null()
         && action.params != serde_json::Value::Object(serde_json::Map::default())
+        && action.params != serde_json::Value::Array(vec![])
     {
         let _ = writeln!(prompt, "PARAMETERS: {}", action.params);
     }
@@ -201,6 +202,44 @@ mod tests {
         assert!(prompt.contains("Read 10 messages"));
         assert!(prompt.contains("Created 3 issues"));
         assert!(prompt.contains("Do not fabricate"));
+    }
+
+    #[test]
+    fn executor_prompt_includes_params_when_present() {
+        let action = PlanAction {
+            group: 1,
+            action_type: "fetch".into(),
+            description: "fetch data".into(),
+            tools: vec![],
+            params: serde_json::json!({"url": "https://example.com"}),
+            model_hint: None,
+        };
+        let prompt = build_executor_prompt(&action, &[], None);
+        assert!(prompt.contains("PARAMETERS:"));
+        assert!(prompt.contains("example.com"));
+    }
+
+    #[test]
+    fn executor_prompt_skips_params_when_empty_object_or_array() {
+        let action_empty_obj = PlanAction {
+            group: 1,
+            action_type: "read".into(),
+            description: "read data".into(),
+            tools: vec![],
+            params: serde_json::Value::Object(serde_json::Map::default()),
+            model_hint: None,
+        };
+        assert!(!build_executor_prompt(&action_empty_obj, &[], None).contains("PARAMETERS:"));
+
+        let action_empty_arr = PlanAction {
+            group: 1,
+            action_type: "read".into(),
+            description: "read data".into(),
+            tools: vec![],
+            params: serde_json::Value::Array(vec![]),
+            model_hint: None,
+        };
+        assert!(!build_executor_prompt(&action_empty_arr, &[], None).contains("PARAMETERS:"));
     }
 
     #[test]
