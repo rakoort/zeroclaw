@@ -50,6 +50,12 @@ pub fn collect_integrations(config: &Config) -> Vec<Arc<dyn Integration>> {
         )));
     }
 
+    if let Some(ref github_config) = config.integrations.github {
+        integrations.push(Arc::new(github::GitHubIntegration::new(
+            github_config.clone(),
+        )));
+    }
+
     integrations
 }
 
@@ -298,6 +304,20 @@ mod tests {
 
         let excluded = excluded_tool_names(&map, &[]);
         assert_eq!(excluded.len(), 2);
+    }
+
+    #[test]
+    fn collect_integrations_returns_github_when_configured() {
+        let mut config = crate::config::Config::default();
+        config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
+            token: "ghp_test".into(),
+            owner: None,
+        });
+        let integrations = collect_integrations(&config);
+        assert_eq!(integrations.len(), 1);
+        assert_eq!(integrations[0].name(), "github");
+        assert_eq!(integrations[0].tools().len(), 3);
+        assert!(integrations[0].as_channel().is_none());
     }
 
     #[test]
