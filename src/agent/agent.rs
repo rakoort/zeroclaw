@@ -37,10 +37,6 @@ pub struct Agent {
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
-    /// Agentic score from the last classification (0.0..1.0).
-    last_agentic_score: f64,
-    /// Confidence from the last classification (0.0..1.0).
-    last_confidence: f64,
     /// Integrations selected by the last classification.
     last_integrations: Vec<String>,
     /// Pre-computed integration catalog for classifier prompt.
@@ -247,8 +243,6 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
-            last_agentic_score: 0.0,
-            last_confidence: 0.0,
             last_integrations: Vec::new(),
             integration_catalog: self.integration_catalog.unwrap_or_default(),
             integration_tool_names: self.integration_tool_names.unwrap_or_default(),
@@ -502,10 +496,6 @@ impl Agent {
             user_message,
             turn_count,
         ) {
-            // Store scoring metadata for downstream planner activation.
-            self.last_agentic_score = decision.agentic_score;
-            self.last_confidence = decision.confidence;
-
             // Refine classification with LLM if classifier model route exists
             if let Some(classifier_model) = self.route_model_by_hint.get("classifier").cloned() {
                 super::classifier::refine_with_llm(
@@ -517,8 +507,6 @@ impl Agent {
                     &self.classification_config.tiers,
                 )
                 .await;
-                // Update stored scoring metadata with LLM results
-                self.last_agentic_score = decision.agentic_score;
             }
 
             // Store integrations for tool filtering
@@ -590,33 +578,10 @@ impl Agent {
         let effective_model = self.classify_model(user_message).await;
         let excluded_integration_tools = self.excluded_integration_tools();
 
-        // -- Planner activation gate (three-zone) --
-        // Zone 1: agentic_score < skip_threshold        → skip planner entirely
-        // Zone 2: skip_threshold <= score < activate     → ambiguous, let planner decide
-        // Zone 3: score >= activate_threshold            → always plan
-        let has_planner_route = self.available_hints.contains(&"planner".to_string());
-        if has_planner_route
-            && self.last_agentic_score >= self.classification_config.planning.skip_threshold
-        {
-            if self.last_agentic_score >= self.classification_config.planning.activate_threshold {
-                tracing::info!(
-                    agentic_score = self.last_agentic_score,
-                    "Planner activated (agentic_score >= activate_threshold)"
-                );
-            } else {
-                tracing::info!(
-                    agentic_score = self.last_agentic_score,
-                    "Planner activated in ambiguous zone (skip_threshold <= agentic_score < activate_threshold)"
-                );
-            }
-            let planner_model = self
-                .route_model_by_hint
-                .get("planner")
-                .cloned()
-                .unwrap_or_else(|| "hint:planner".to_string());
+        if let Some(planner_model) = self.route_model_by_hint.get("planner").cloned() {
             let system_prompt = self.build_system_prompt()?;
 
-            let plan_result = super::planner::plan_then_execute(
+            let plan_result = crate::planner::plan_then_execute(
                 self.provider.as_ref(),
                 &planner_model,
                 &effective_model,
@@ -630,27 +595,24 @@ impl Agent {
                 self.temperature,
                 self.config.max_tool_iterations,
                 self.config.max_executor_action_iterations,
-                // Channel context defaults for CLI
-                "cli", // channel_name
-                None,  // cancellation_token
-                None,  // hooks
+                "cli",
+                None,
+                None,
                 &excluded_integration_tools,
+                &self.route_model_by_hint,
             )
             .await;
 
             match plan_result {
-                Ok(super::planner::PlanExecutionResult::Passthrough) => {
+                Ok(crate::planner::PlanExecutionResult::Passthrough) => {
                     tracing::info!("Planner returned passthrough, using normal agent flow");
                     // Fall through to existing tool loop below
                 }
-                Ok(super::planner::PlanExecutionResult::Executed {
+                Ok(crate::planner::PlanExecutionResult::Executed {
                     output,
-                    action_results,
+                    action_results: _,
+                    analysis: _,
                 }) => {
-                    tracing::info!(
-                        actions_completed = action_results.len(),
-                        "Planner/executor completed"
-                    );
                     self.history
                         .push(ConversationMessage::Chat(ChatMessage::assistant(
                             output.clone(),
@@ -660,7 +622,7 @@ impl Agent {
                 }
                 Err(e) => {
                     tracing::warn!("Planner failed ({e}), falling back to normal agent flow");
-                    // Fall through to existing tool loop
+                    // Fall through to existing tool loop below
                 }
             }
         }
@@ -1203,90 +1165,6 @@ mod tests {
         );
     }
 
-    /// Verify that classify_model stores agentic_score and confidence on the
-    /// Agent struct after weighted classification, so the planner can read them.
-    #[tokio::test]
-    async fn classify_model_stores_agentic_score_and_confidence() {
-        use crate::config::schema::{ClassificationMode, ClassificationTiers};
-        use crate::config::QueryClassificationConfig;
-
-        let tiers = ClassificationTiers {
-            simple: Some("hint:simple".into()),
-            medium: Some("hint:medium".into()),
-            complex: Some("hint:complex".into()),
-            reasoning: Some("hint:reasoning".into()),
-        };
-
-        let config = QueryClassificationConfig {
-            enabled: true,
-            mode: ClassificationMode::Weighted,
-            rules: vec![],
-            tiers,
-            ..Default::default()
-        };
-
-        let provider = Box::new(MockProvider {
-            responses: Mutex::new(vec![crate::providers::ChatResponse {
-                text: Some("ok".into()),
-                tool_calls: vec![],
-                usage: None,
-                reasoning_content: None,
-                provider_parts: None,
-            }]),
-        });
-
-        let memory_cfg = crate::config::MemoryConfig {
-            backend: "none".into(),
-            ..crate::config::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed"),
-        );
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
-
-        let available = vec![
-            "hint:simple".into(),
-            "hint:medium".into(),
-            "hint:complex".into(),
-            "hint:reasoning".into(),
-        ];
-        let mut route_map = HashMap::new();
-        route_map.insert("hint:simple".into(), "model-simple".into());
-        route_map.insert("hint:medium".into(), "model-medium".into());
-        route_map.insert("hint:complex".into(), "model-complex".into());
-        route_map.insert("hint:reasoning".into(), "model-reasoning".into());
-
-        let mut agent = Agent::builder()
-            .provider(provider)
-            .tools(vec![Box::new(MockTool)])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(NativeToolDispatcher))
-            .workspace_dir(std::path::PathBuf::from("/tmp"))
-            .classification_config(config)
-            .available_hints(available)
-            .route_model_by_hint(route_map)
-            .build()
-            .expect("agent build should succeed");
-
-        // Send an agentic message to get a non-zero agentic score
-        let agentic_msg = "edit the config file, deploy to staging, then verify the endpoint works";
-        let _ = agent.turn(agentic_msg).await.unwrap();
-
-        // last_agentic_score and last_confidence should be set
-        assert!(
-            agent.last_agentic_score > 0.0,
-            "agentic message should produce non-zero agentic_score, got {}",
-            agent.last_agentic_score
-        );
-        assert!(
-            agent.last_confidence > 0.0,
-            "classification should produce non-zero confidence, got {}",
-            agent.last_confidence
-        );
-    }
-
     #[test]
     fn excluded_integration_tools_empty_without_classifier_route() {
         let memory_cfg = crate::config::MemoryConfig {
@@ -1452,249 +1330,6 @@ mod tests {
             excluded.len(),
             2,
             "All integration tools should be excluded when none are selected"
-        );
-    }
-}
-
-// TDD-RED: This test verifies new planner activation behavior that does not
-// exist yet in turn(). It MUST fail until the wiring is added.
-#[cfg(test)]
-mod planner_activation_tests {
-    use super::*;
-    use crate::agent::dispatcher::NativeToolDispatcher;
-    use parking_lot::Mutex;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    struct PlannerTestProvider {
-        responses: Mutex<Vec<crate::providers::ChatResponse>>,
-        seen_models: Arc<Mutex<Vec<String>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::providers::Provider for PlannerTestProvider {
-        async fn chat_with_system(
-            &self,
-            _: Option<&str>,
-            _: &str,
-            _: &str,
-            _: f64,
-        ) -> Result<String> {
-            Ok("ok".into())
-        }
-
-        async fn chat(
-            &self,
-            _: crate::providers::ChatRequest<'_>,
-            model: &str,
-            _: f64,
-        ) -> Result<crate::providers::ChatResponse> {
-            self.seen_models.lock().push(model.to_string());
-            let mut guard = self.responses.lock();
-            if guard.is_empty() {
-                return Ok(crate::providers::ChatResponse {
-                    text: Some("done".into()),
-                    tool_calls: vec![],
-                    usage: None,
-                    reasoning_content: None,
-                    provider_parts: None,
-                });
-            }
-            Ok(guard.remove(0))
-        }
-    }
-
-    struct PlannerMockTool;
-
-    #[async_trait::async_trait]
-    impl crate::tools::Tool for PlannerMockTool {
-        fn name(&self) -> &str {
-            "echo"
-        }
-        fn description(&self) -> &str {
-            "echo"
-        }
-        fn parameters_schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
-        }
-        async fn execute(&self, _: serde_json::Value) -> Result<crate::tools::ToolResult> {
-            Ok(crate::tools::ToolResult {
-                success: true,
-                output: "ok".into(),
-                error: None,
-            })
-        }
-    }
-
-    /// Helper: build an agent with the given planning thresholds and provider responses.
-    fn build_planner_test_agent(
-        skip_threshold: f64,
-        activate_threshold: f64,
-        responses: Vec<crate::providers::ChatResponse>,
-        seen_models: Arc<Mutex<Vec<String>>>,
-    ) -> Agent {
-        use crate::config::schema::{ClassificationMode, ClassificationTiers, PlanningConfig};
-        use crate::config::QueryClassificationConfig;
-
-        let provider = Box::new(PlannerTestProvider {
-            responses: Mutex::new(responses),
-            seen_models,
-        });
-
-        let memory_cfg = crate::config::MemoryConfig {
-            backend: "none".into(),
-            ..crate::config::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed"),
-        );
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
-
-        let tiers = ClassificationTiers {
-            simple: Some("hint:simple".into()),
-            medium: Some("hint:medium".into()),
-            complex: Some("hint:complex".into()),
-            reasoning: Some("hint:reasoning".into()),
-        };
-
-        let config = QueryClassificationConfig {
-            enabled: true,
-            mode: ClassificationMode::Weighted,
-            rules: vec![],
-            tiers,
-            planning: PlanningConfig {
-                skip_threshold,
-                activate_threshold,
-            },
-            ..Default::default()
-        };
-
-        let mut route_map = HashMap::new();
-        route_map.insert("hint:simple".into(), "model-simple".into());
-        route_map.insert("hint:medium".into(), "model-medium".into());
-        route_map.insert("hint:complex".into(), "model-complex".into());
-        route_map.insert("hint:reasoning".into(), "model-reasoning".into());
-        route_map.insert("planner".into(), "model-planner".into());
-
-        let available = vec![
-            "hint:simple".into(),
-            "hint:medium".into(),
-            "hint:complex".into(),
-            "hint:reasoning".into(),
-            "planner".into(),
-        ];
-
-        Agent::builder()
-            .provider(provider)
-            .tools(vec![Box::new(PlannerMockTool)])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(NativeToolDispatcher))
-            .workspace_dir(std::path::PathBuf::from("/tmp"))
-            .classification_config(config)
-            .available_hints(available)
-            .route_model_by_hint(route_map)
-            .build()
-            .expect("agent build should succeed")
-    }
-
-    /// Planner response pair: plan JSON + executor result.
-    fn planner_responses() -> Vec<crate::providers::ChatResponse> {
-        vec![
-            crate::providers::ChatResponse {
-                text: Some(
-                    r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up data"}]}"#.into(),
-                ),
-                tool_calls: vec![],
-                usage: None,
-                reasoning_content: None,
-                provider_parts: None,
-            },
-            crate::providers::ChatResponse {
-                text: Some("Planner-executed result.".into()),
-                tool_calls: vec![],
-                usage: None,
-                reasoning_content: None,
-                provider_parts: None,
-            },
-        ]
-    }
-
-    /// Score below skip_threshold: planner is NOT activated, normal flow is used.
-    /// "hi" has 0 agentic keywords → agentic_score = 0.0, which is < skip_threshold 0.3.
-    #[tokio::test]
-    async fn turn_skips_planner_below_skip_threshold() {
-        let seen_models = Arc::new(Mutex::new(Vec::new()));
-        // Normal flow needs one response with no tool_calls.
-        let responses = vec![crate::providers::ChatResponse {
-            text: Some("Normal flow result.".into()),
-            tool_calls: vec![],
-            usage: None,
-            reasoning_content: None,
-            provider_parts: None,
-        }];
-        let mut agent = build_planner_test_agent(0.3, 0.5, responses, seen_models.clone());
-
-        let result = agent.turn("hi").await.unwrap();
-        assert_eq!(
-            result, "Normal flow result.",
-            "Below skip_threshold, planner should be skipped and normal flow used"
-        );
-
-        // Verify no planner model was invoked — only the normal-flow model.
-        let models = seen_models.lock();
-        assert!(
-            !models.iter().any(|m| m == "model-planner"),
-            "Planner model should not have been called, but saw: {models:?}"
-        );
-    }
-
-    /// Score in ambiguous zone (skip_threshold <= score < activate_threshold):
-    /// planner IS activated but may return passthrough.
-    /// "please fix the issue" has 1 agentic keyword ("fix") → agentic_score = 0.2.
-    /// With skip_threshold=0.1, activate_threshold=0.5: 0.1 <= 0.2 < 0.5 → ambiguous zone.
-    #[tokio::test]
-    async fn turn_activates_planner_in_ambiguous_zone() {
-        let seen_models = Arc::new(Mutex::new(Vec::new()));
-        let mut agent =
-            build_planner_test_agent(0.1, 0.5, planner_responses(), seen_models.clone());
-
-        let result = agent.turn("please fix the issue").await.unwrap();
-        assert_eq!(
-            result, "Planner-executed result.",
-            "In ambiguous zone, planner should be activated"
-        );
-
-        // Verify the planner model was invoked.
-        let models = seen_models.lock();
-        assert!(
-            models.iter().any(|m| m == "model-planner"),
-            "Planner model should have been called in ambiguous zone, but saw: {models:?}"
-        );
-    }
-
-    /// Score at/above activate_threshold: planner IS always activated.
-    /// Highly agentic message → agentic_score = 1.0 >= activate_threshold 0.5.
-    #[tokio::test]
-    async fn turn_activates_planner_above_activate_threshold() {
-        let seen_models = Arc::new(Mutex::new(Vec::new()));
-        let mut agent =
-            build_planner_test_agent(0.3, 0.5, planner_responses(), seen_models.clone());
-
-        let agentic_msg =
-            "edit the config file, deploy to staging, then verify the endpoint works and report";
-        let result = agent.turn(agentic_msg).await.unwrap();
-        assert_eq!(
-            result, "Planner-executed result.",
-            "Above activate_threshold, planner should be activated"
-        );
-
-        // Verify the planner model was invoked.
-        let models = seen_models.lock();
-        assert!(
-            models.iter().any(|m| m == "model-planner"),
-            "Planner model should have been called above activate_threshold, but saw: {models:?}"
         );
     }
 }
