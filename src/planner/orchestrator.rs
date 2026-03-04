@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +18,7 @@ use super::types::{ActionResult, PlanExecutionResult};
 /// 1. Calls the planner model (no tools) to produce a JSON action plan.
 /// 2. Executes actions group-by-group via `run_tool_call_loop`.
 /// 3. Synthesizes all action results into a coherent summary.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::implicit_hasher)]
 pub async fn plan_then_execute(
     provider: &dyn Provider,
     planner_model: &str,
@@ -148,7 +147,6 @@ pub async fn plan_then_execute(
     let mut last_output = String::new();
     let mut any_succeeded = false;
     let mut succeeded_count: usize = 0;
-    let mut failed_group_ids: BTreeMap<u32, bool> = BTreeMap::new();
 
     let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
 
@@ -294,8 +292,6 @@ pub async fn plan_then_execute(
             accumulated.push(result.to_accumulated_line());
             if result.success {
                 succeeded_count += 1;
-            } else {
-                failed_group_ids.insert(result.group, true);
             }
         }
         if let Some(last_success) = results.iter().rev().find(|r| r.success) {
@@ -315,7 +311,10 @@ pub async fn plan_then_execute(
         // Multiple actions — synthesize results
         let synthesis_system = build_synthesis_prompt(user_message, plan_analysis, &accumulated);
 
-        let synthesis_messages = vec![ChatMessage::system(synthesis_system)];
+        let synthesis_messages = vec![
+            ChatMessage::system(synthesis_system),
+            ChatMessage::user("Synthesize the results.".to_string()),
+        ];
 
         match provider
             .chat(
