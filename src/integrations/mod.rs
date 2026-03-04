@@ -337,4 +337,33 @@ mod tests {
         assert!(map.contains_key("linear"));
         assert_eq!(map["linear"].len(), 14);
     }
+
+    #[test]
+    fn collect_integrations_returns_both_linear_and_github_when_configured() {
+        let mut config = crate::config::Config::default();
+        config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
+            api_key: "lin_api_test".into(),
+        });
+        config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
+            token: "ghp_test".into(),
+            owner: Some("zeroclaw_org".into()),
+        });
+        let integrations = collect_integrations(&config);
+        assert_eq!(integrations.len(), 2);
+        let names: Vec<&str> = integrations.iter().map(|i| i.name()).collect();
+        assert!(names.contains(&"linear"));
+        assert!(names.contains(&"github"));
+    }
+
+    #[test]
+    fn build_integration_tool_map_includes_github_when_configured() {
+        let mut config = crate::config::Config::default();
+        config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
+            token: "ghp_test".into(),
+            owner: None,
+        });
+        let map = build_integration_tool_map(&config);
+        assert!(map.contains_key("github"));
+        assert_eq!(map["github"].len(), 3);
+    }
 }
