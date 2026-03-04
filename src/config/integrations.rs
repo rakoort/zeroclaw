@@ -912,6 +912,7 @@ impl Default for CronConfig {
 pub struct IntegrationsConfig {
     pub slack: Option<SlackIntegrationConfig>,
     pub linear: Option<LinearIntegrationConfig>,
+    pub github: Option<GitHubIntegrationConfig>,
 }
 
 /// Slack integration configuration (`[integrations.slack]`).
@@ -937,6 +938,14 @@ fn default_mention_only_integration() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LinearIntegrationConfig {
     pub api_key: String,
+}
+
+/// GitHub integration configuration (`[integrations.github]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GitHubIntegrationConfig {
+    pub token: String,
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 #[cfg(test)]
@@ -992,5 +1001,32 @@ api_key = "lin_api_test"
         let config = crate::config::Config::default();
         assert!(config.integrations.slack.is_none());
         assert!(config.integrations.linear.is_none());
+    }
+
+    #[test]
+    fn github_integration_config_deserializes() {
+        let toml_str = r#"
+token = "ghp_test123"
+owner = "zeroclaw_org"
+"#;
+        let config: GitHubIntegrationConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.token, "ghp_test123");
+        assert_eq!(config.owner.as_deref(), Some("zeroclaw_org"));
+    }
+
+    #[test]
+    fn github_integration_config_owner_optional() {
+        let toml_str = r#"
+token = "ghp_test123"
+"#;
+        let config: GitHubIntegrationConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.token, "ghp_test123");
+        assert!(config.owner.is_none());
+    }
+
+    #[test]
+    fn integrations_config_has_github_field() {
+        let config = IntegrationsConfig::default();
+        assert!(config.github.is_none());
     }
 }
