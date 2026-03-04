@@ -2,9 +2,10 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::observability::{Observer, ObserverEvent};
+use crate::observability::{runtime_trace, Observer, ObserverEvent};
 use crate::providers::{ChatMessage, ChatRequest, Provider};
 use crate::tools::{Tool, ToolSpec};
 
@@ -250,17 +251,84 @@ pub async fn plan_then_execute(
         Ok(plan) => plan,
         Err(e) => {
             tracing::warn!("Plan parse failed ({e}), falling back to passthrough");
+            let error_string = e.to_string();
+            runtime_trace::record_event(
+                "plan_end",
+                Some(channel_name),
+                Some(provider_name),
+                Some(planner_model),
+                None,
+                None,
+                Some(&error_string),
+                serde_json::json!({
+                    "passthrough": true,
+                    "reason": "parse_error",
+                }),
+            );
             return Ok(PlanExecutionResult::Passthrough);
         }
     };
 
     // Step 3: Check passthrough
-    if plan.is_passthrough() {
+    if plan.passthrough {
+        runtime_trace::record_event(
+            "plan_end",
+            Some(channel_name),
+            Some(provider_name),
+            Some(planner_model),
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "passthrough": true,
+                "reason": "passthrough_flag",
+            }),
+        );
+        return Ok(PlanExecutionResult::Passthrough);
+    }
+    if plan.actions.is_empty() {
+        runtime_trace::record_event(
+            "plan_end",
+            Some(channel_name),
+            Some(provider_name),
+            Some(planner_model),
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "passthrough": true,
+                "reason": "empty_actions",
+            }),
+        );
         return Ok(PlanExecutionResult::Passthrough);
     }
 
     // Step 4: Execute action-by-action, group-by-group
     let groups = plan.grouped_actions();
+    let plan_started = Instant::now();
+
+    runtime_trace::record_event(
+        "plan_start",
+        Some(channel_name),
+        Some(provider_name),
+        Some(executor_model),
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "action_count": plan.actions.len(),
+            "group_count": groups.len(),
+            "actions": plan.actions.iter().map(|a| serde_json::json!({
+                "action_type": &a.action_type,
+                "group": a.group,
+                "description": &a.description,
+            })).collect::<Vec<_>>(),
+            "planner_model": planner_model,
+            "executor_model": executor_model,
+            "max_executor_iterations": max_executor_iterations,
+        }),
+    );
+
     let mut accumulated: Vec<String> = Vec::new();
     let mut last_output = String::new();
     let mut any_succeeded = false;
@@ -275,7 +343,8 @@ pub async fn plan_then_execute(
 
         let futures: Vec<_> = group
             .iter()
-            .map(|action| {
+            .enumerate()
+            .map(|(action_index, action)| {
                 let executor_system = build_executor_prompt(action, &group_accumulated);
                 let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
 
@@ -308,6 +377,25 @@ pub async fn plan_then_execute(
                 let ct = cancellation_token.clone();
 
                 async move {
+                    runtime_trace::record_event(
+                        "action_start",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(executor_model),
+                        None,
+                        None,
+                        None,
+                        serde_json::json!({
+                            "action_index": action_index,
+                            "action_type": &action_type,
+                            "group": action_group,
+                            "description": &action_desc,
+                            "iteration_budget": budget,
+                        }),
+                    );
+
+                    let action_started = Instant::now();
+
                     let result = crate::agent::loop_::run_tool_call_loop(
                         provider,
                         &mut action_messages,
@@ -329,7 +417,7 @@ pub async fn plan_then_execute(
                     )
                     .await;
 
-                    match result {
+                    let action_result = match result {
                         Ok(output) => ActionResult {
                             action_type,
                             group: action_group,
@@ -353,7 +441,34 @@ pub async fn plan_then_execute(
                                 raw_output: String::new(),
                             }
                         }
-                    }
+                    };
+
+                    runtime_trace::record_event(
+                        "action_end",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(executor_model),
+                        None,
+                        Some(action_result.success),
+                        if action_result.success {
+                            None
+                        } else {
+                            Some(&action_result.summary)
+                        },
+                        serde_json::json!({
+                            "action_index": action_index,
+                            "action_type": &action_result.action_type,
+                            "group": action_result.group,
+                            "duration_ms": action_started.elapsed().as_millis(),
+                            "output_excerpt": if action_result.success {
+                                action_result.summary.chars().take(200).collect::<String>()
+                            } else {
+                                String::new()
+                            },
+                        }),
+                    );
+
+                    action_result
                 }
             })
             .collect();
@@ -372,15 +487,37 @@ pub async fn plan_then_execute(
         }
     }
 
+    // Compute success/failure counts for plan_end tracing.
+    let total_actions = groups.iter().map(|g| g.len()).sum::<usize>();
+    let succeeded = accumulated.iter().filter(|l| !l.contains("FAILED")).count();
+    let failed = total_actions.saturating_sub(succeeded);
+
     if !any_succeeded {
-        let total_actions = groups.iter().map(|g| g.len()).sum::<usize>();
-        let failed_groups: Vec<u32> = failed_group_ids.into_iter().collect();
+        let failed_groups: Vec<u32> = failed_group_ids.iter().copied().collect();
         tracing::warn!(
             total_actions = total_actions,
             failed_groups = ?failed_groups,
             "All plan actions failed; consider whether this request should passthrough"
         );
     }
+
+    runtime_trace::record_event(
+        "plan_end",
+        Some(channel_name),
+        Some(provider_name),
+        Some(executor_model),
+        None,
+        Some(any_succeeded),
+        None,
+        serde_json::json!({
+            "total_actions": total_actions,
+            "succeeded": succeeded,
+            "failed": failed,
+            "failed_groups": failed_group_ids.iter().collect::<Vec<_>>(),
+            "duration_ms": plan_started.elapsed().as_millis(),
+            "passthrough": false,
+        }),
+    );
 
     Ok(PlanExecutionResult::Executed {
         output: last_output,
@@ -795,5 +932,278 @@ mod tests {
         let events = observer.events.lock().clone();
         assert!(events.contains(&"PlannerRequest".to_string()));
         assert!(events.contains(&"PlannerResponse".to_string()));
+    }
+
+    /// Mutex to serialize tests that depend on the global runtime trace logger.
+    /// The global `TRACE_LOGGER` is a process-wide singleton, so trace-dependent
+    /// tests must not run in parallel.
+    static TRACE_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    /// Helper: initialize runtime trace logger pointed at a temp dir, returning the trace path.
+    fn init_trace_logger(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        let trace_path = tmp.path().join("trace.jsonl");
+        let config = crate::config::ObservabilityConfig {
+            backend: "none".into(),
+            otel_endpoint: None,
+            otel_service_name: None,
+            runtime_trace_mode: "full".into(),
+            runtime_trace_path: trace_path.to_string_lossy().into_owned(),
+            runtime_trace_max_entries: 1000,
+        };
+        runtime_trace::init_from_config(&config, tmp.path());
+        trace_path
+    }
+
+    /// Helper: disable runtime trace logger (cleanup after tests that enable it).
+    fn disable_trace_logger() {
+        let config = crate::config::ObservabilityConfig::default();
+        let tmp = tempfile::tempdir().unwrap();
+        runtime_trace::init_from_config(&config, tmp.path());
+    }
+
+    #[tokio::test]
+    async fn plan_lifecycle_parse_error_emits_plan_end_passthrough() {
+        let _guard = TRACE_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = init_trace_logger(&tmp);
+
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some("Not valid JSON at all.".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+            15,
+            "test_channel",
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("should not error on invalid JSON");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+
+        // Verify plan_end event was recorded with passthrough + parse_error
+        let events = runtime_trace::load_events(&trace_path, 100, Some("plan_end"), None)
+            .expect("should load events");
+        assert!(!events.is_empty(), "expected at least one plan_end event");
+        let event = &events[0];
+        assert_eq!(event.payload["passthrough"], true);
+        assert_eq!(event.payload["reason"], "parse_error");
+
+        disable_trace_logger();
+    }
+
+    #[tokio::test]
+    async fn plan_lifecycle_passthrough_flag_emits_plan_end() {
+        let _guard = TRACE_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = init_trace_logger(&tmp);
+
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some(r#"{"passthrough": true}"#.into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+            15,
+            "test_channel",
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("should not error");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+
+        let events = runtime_trace::load_events(&trace_path, 100, Some("plan_end"), None)
+            .expect("should load events");
+        assert!(!events.is_empty(), "expected at least one plan_end event");
+        let event = &events[0];
+        assert_eq!(event.payload["passthrough"], true);
+        assert_eq!(event.payload["reason"], "passthrough_flag");
+
+        disable_trace_logger();
+    }
+
+    #[tokio::test]
+    async fn plan_lifecycle_empty_actions_emits_plan_end() {
+        let _guard = TRACE_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = init_trace_logger(&tmp);
+
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![crate::providers::ChatResponse {
+                text: Some(r#"{"passthrough": false, "actions": []}"#.into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            }]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Hello",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+            15,
+            "test_channel",
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("should not error");
+        assert!(matches!(result, super::PlanExecutionResult::Passthrough));
+
+        let events = runtime_trace::load_events(&trace_path, 100, Some("plan_end"), None)
+            .expect("should load events");
+        assert!(!events.is_empty(), "expected at least one plan_end event");
+        let event = &events[0];
+        assert_eq!(event.payload["passthrough"], true);
+        assert_eq!(event.payload["reason"], "empty_actions");
+
+        disable_trace_logger();
+    }
+
+    #[tokio::test]
+    async fn plan_lifecycle_executed_emits_plan_start_action_events_and_plan_end() {
+        let _guard = TRACE_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = init_trace_logger(&tmp);
+
+        let provider = MockPlannerProvider {
+            responses: Mutex::new(vec![
+                crate::providers::ChatResponse {
+                    text: Some(r#"{"actions": [{"group": 1, "type": "lookup", "description": "Look up the answer"}]}"#.into()),
+                    tool_calls: vec![], usage: None, reasoning_content: None, provider_parts: None,
+                },
+                crate::providers::ChatResponse {
+                    text: Some("The answer is 42.".into()),
+                    tool_calls: vec![], usage: None, reasoning_content: None, provider_parts: None,
+                },
+            ]),
+        };
+        let observer = crate::observability::NoopObserver;
+        let result = super::plan_then_execute(
+            &provider,
+            "hint:planner",
+            "hint:complex",
+            "System.",
+            "Meaning of life?",
+            "",
+            &[],
+            &[],
+            &observer,
+            "router",
+            0.7,
+            5,
+            15,
+            "test_channel",
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("should succeed");
+
+        // Verify it returned Executed
+        assert!(matches!(
+            result,
+            super::PlanExecutionResult::Executed { .. }
+        ));
+
+        // Verify plan_start event
+        let plan_start_events =
+            runtime_trace::load_events(&trace_path, 100, Some("plan_start"), None)
+                .expect("should load events");
+        assert!(!plan_start_events.is_empty(), "expected plan_start event");
+        let ps = &plan_start_events[0];
+        assert_eq!(ps.payload["action_count"], 1);
+        assert_eq!(ps.payload["group_count"], 1);
+        assert_eq!(ps.payload["planner_model"], "hint:planner");
+        assert_eq!(ps.payload["executor_model"], "hint:complex");
+
+        // Verify action_start event
+        let action_start_events =
+            runtime_trace::load_events(&trace_path, 100, Some("action_start"), None)
+                .expect("should load events");
+        assert!(
+            !action_start_events.is_empty(),
+            "expected action_start event"
+        );
+        let as_ev = &action_start_events[0];
+        assert_eq!(as_ev.payload["action_index"], 0);
+        assert_eq!(as_ev.payload["action_type"], "lookup");
+        assert_eq!(as_ev.payload["group"], 1);
+
+        // Verify action_end event
+        let action_end_events =
+            runtime_trace::load_events(&trace_path, 100, Some("action_end"), None)
+                .expect("should load events");
+        assert!(!action_end_events.is_empty(), "expected action_end event");
+        let ae = &action_end_events[0];
+        assert_eq!(ae.payload["action_index"], 0);
+        assert_eq!(ae.payload["action_type"], "lookup");
+        assert_eq!(ae.success, Some(true));
+
+        // Verify plan_end event (completed, not passthrough)
+        let plan_end_events = runtime_trace::load_events(&trace_path, 100, Some("plan_end"), None)
+            .expect("should load events");
+        assert!(!plan_end_events.is_empty(), "expected plan_end event");
+        let pe = &plan_end_events[0];
+        assert_eq!(pe.payload["passthrough"], false);
+        assert_eq!(pe.payload["total_actions"], 1);
+        assert_eq!(pe.payload["succeeded"], 1);
+        assert_eq!(pe.payload["failed"], 0);
+        assert_eq!(pe.success, Some(true));
+        // duration_ms should be present and non-negative
+        assert!(pe.payload["duration_ms"].as_u64().is_some());
+
+        disable_trace_logger();
     }
 }
