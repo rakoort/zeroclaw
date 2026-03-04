@@ -4464,8 +4464,7 @@ require_otp_to_resume = true
             + w.output_format
             + w.reference_complexity
             + w.negation_complexity
-            + w.domain_specificity
-            + w.agentic_task;
+            + w.domain_specificity;
         assert!(
             (sum - 1.0).abs() < 0.001,
             "Weights sum to {sum}, expected 1.0"

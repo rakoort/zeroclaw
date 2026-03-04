@@ -453,8 +453,6 @@ pub struct DimensionWeights {
     pub negation_complexity: f64,
     #[serde(default = "default_dw_domain_specificity")]
     pub domain_specificity: f64,
-    #[serde(default = "default_dw_agentic_task")]
-    pub agentic_task: f64,
 }
 
 fn default_dw_token_count() -> f64 {
@@ -464,7 +462,7 @@ fn default_dw_code_presence() -> f64 {
     0.15
 }
 fn default_dw_reasoning_markers() -> f64 {
-    0.18
+    0.22
 }
 fn default_dw_technical_terms() -> f64 {
     0.10
@@ -476,7 +474,7 @@ fn default_dw_simple_indicators() -> f64 {
     0.02
 }
 fn default_dw_multi_step_patterns() -> f64 {
-    0.12
+    0.18
 }
 fn default_dw_question_complexity() -> f64 {
     0.05
@@ -499,9 +497,6 @@ fn default_dw_negation_complexity() -> f64 {
 fn default_dw_domain_specificity() -> f64 {
     0.02
 }
-fn default_dw_agentic_task() -> f64 {
-    0.10
-}
 
 impl Default for DimensionWeights {
     fn default() -> Self {
@@ -520,7 +515,6 @@ impl Default for DimensionWeights {
             reference_complexity: default_dw_reference_complexity(),
             negation_complexity: default_dw_negation_complexity(),
             domain_specificity: default_dw_domain_specificity(),
-            agentic_task: default_dw_agentic_task(),
         }
     }
 }

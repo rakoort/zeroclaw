@@ -507,6 +507,7 @@ fn score_v2(
             priority: 0,
             tier: Tier::Reasoning,
             confidence: 0.85_f64.max(calibrate_confidence(0.3, scoring.confidence_steepness)),
+            weighted_score: combined_score,
             agentic_score: 0.0,
             signals,
             integrations: Vec::new(),
@@ -524,6 +525,7 @@ fn score_v2(
             priority: 0,
             tier: Tier::Complex,
             confidence: calibrate_confidence(0.4, scoring.confidence_steepness),
+            weighted_score: combined_score,
             agentic_score: 0.0,
             signals,
             integrations: Vec::new(),
@@ -573,6 +575,7 @@ fn score_v2(
         priority: 0,
         tier,
         confidence,
+        weighted_score: combined_score,
         agentic_score: 0.0,
         signals,
         integrations: Vec::new(),
@@ -625,6 +628,9 @@ pub struct ClassificationDecision {
     pub tier: Tier,
     /// Sigmoid-calibrated confidence in the tier assignment (0.0..1.0).
     pub confidence: f64,
+    /// Combined 14-dimension weighted score from the heuristic scorer (0.0..1.0+).
+    /// Used as the preliminary score passed to the LLM classifier.
+    pub weighted_score: f64,
     /// Agentic-task score (0.0..1.0) -- how much the message looks like
     /// a multi-step agent task.
     pub agentic_score: f64,
@@ -642,6 +648,7 @@ impl Default for ClassificationDecision {
             priority: 0,
             tier: Tier::default(),
             confidence: 0.5,
+            weighted_score: 0.0,
             agentic_score: 0.0,
             signals: Vec::new(),
             integrations: Vec::new(),
@@ -733,7 +740,7 @@ pub async fn refine_with_llm(
     tiers: &ClassificationTiers,
 ) {
     let prompt = build_classifier_prompt(
-        decision.agentic_score,
+        decision.weighted_score,
         &decision.signals,
         user_message.len() / 4,
         integration_catalog,
@@ -1203,7 +1210,7 @@ mod tests {
         let config = make_weighted_v2_config();
         let result = classify_with_context(&config, "hi", 0).unwrap();
         assert_eq!(result.hint, "hint:simple");
-        assert!(result.agentic_score < 0.3);
+        assert_eq!(result.agentic_score, 0.0);
         assert!(result.confidence >= 0.5);
     }
 
