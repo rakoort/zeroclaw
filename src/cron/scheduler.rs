@@ -4,7 +4,7 @@ use crate::channels::{
 use crate::config::Config;
 use crate::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
-    update_job, CronJob, CronJobPatch, DeliveryConfig, JobType, Schedule, SessionTarget,
+    update_job, CronJob, CronJobPatch, DeliveryConfig, JobType, Schedule,
 };
 use crate::security::SecurityPolicy;
 use anyhow::Result;
@@ -160,36 +160,103 @@ async fn run_agent_job(
             "blocked by security policy: action budget exhausted".to_string(),
         );
     }
+
     let name = job.name.clone().unwrap_or_else(|| "cron-job".to_string());
     let prompt = job.prompt.clone().unwrap_or_default();
     let prefixed_prompt = format!("[cron:{} {name}] {prompt}", job.id);
-    let model_override = job.model.clone().or_else(|| config.cron.model.clone());
 
-    let run_result = match job.session_target {
-        SessionTarget::Main | SessionTarget::Isolated => {
-            crate::agent::run(
+    let runtime = match crate::planner::PlannerRuntime::from_config(config) {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("failed to build planner runtime: {e}")),
+    };
+
+    let executor_model = job
+        .model
+        .clone()
+        .or_else(|| config.cron.model.clone())
+        .unwrap_or_else(|| runtime.executor_model.clone());
+
+    let planner_model = runtime.planner_model.as_deref().unwrap_or(&executor_model);
+
+    let result = crate::planner::plan_then_execute(
+        runtime.provider.as_ref(),
+        planner_model,
+        &executor_model,
+        "", // system prompt — the ritual prompt IS the user message
+        &prefixed_prompt,
+        "", // memory context
+        &runtime.tools,
+        &runtime.tool_specs,
+        runtime.observer.as_ref(),
+        "cron",
+        runtime.temperature,
+        runtime.max_tool_iterations,
+        runtime.max_executor_iterations,
+        "cron",
+        None, // no cancellation token
+        None, // no hooks
+        &[],  // no excluded tools
+        &runtime.model_routes,
+    )
+    .await;
+
+    match result {
+        Ok(crate::planner::PlanExecutionResult::Executed { output, .. }) => (
+            true,
+            if output.trim().is_empty() {
+                "agent job executed".to_string()
+            } else {
+                output
+            },
+        ),
+        Ok(crate::planner::PlanExecutionResult::Passthrough) => {
+            // Passthrough: fall back to flat agent::loop_::run for simple tasks
+            match crate::agent::loop_::run(
                 config.clone(),
                 Some(prefixed_prompt),
                 None,
-                model_override,
-                config.default_temperature,
+                Some(executor_model),
+                runtime.temperature,
                 vec![],
                 false,
             )
             .await
+            {
+                Ok(response) => (
+                    true,
+                    if response.trim().is_empty() {
+                        "agent job executed".to_string()
+                    } else {
+                        response
+                    },
+                ),
+                Err(e) => (false, format!("agent job failed: {e}")),
+            }
         }
-    };
-
-    match run_result {
-        Ok(response) => (
-            true,
-            if response.trim().is_empty() {
-                "agent job executed".to_string()
-            } else {
-                response
-            },
-        ),
-        Err(e) => (false, format!("agent job failed: {e}")),
+        Err(e) => {
+            tracing::warn!("Planner failed for cron job: {e}, falling back to flat run");
+            match crate::agent::loop_::run(
+                config.clone(),
+                Some(prefixed_prompt),
+                None,
+                Some(executor_model),
+                runtime.temperature,
+                vec![],
+                false,
+            )
+            .await
+            {
+                Ok(response) => (
+                    true,
+                    if response.trim().is_empty() {
+                        "agent job executed".to_string()
+                    } else {
+                        response
+                    },
+                ),
+                Err(e2) => (false, format!("agent job failed: {e2}")),
+            }
+        }
     }
 }
 
@@ -466,7 +533,7 @@ async fn run_job_command_with_timeout(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::cron::{self, DeliveryConfig};
+    use crate::cron::{self, DeliveryConfig, SessionTarget};
     use crate::security::SecurityPolicy;
     use chrono::{Duration as ChronoDuration, Utc};
     use tempfile::TempDir;
@@ -716,7 +783,10 @@ mod tests {
 
         let (success, output) = run_agent_job(&config, &security, &job).await;
         assert!(!success);
-        assert!(output.contains("agent job failed:"));
+        assert!(
+            output.contains("failed to build planner runtime:")
+                || output.contains("agent job failed:")
+        );
     }
 
     #[tokio::test]
