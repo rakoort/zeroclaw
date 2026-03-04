@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
 use super::types::Plan;
+use anyhow::{bail, Result};
 
 /// Parse a JSON string into a Plan.
 pub fn parse_plan(json: &str) -> Result<Plan> {
