@@ -85,7 +85,7 @@ impl Tool for LinearIssuesTool {
             r#"query($teamId: String!) {{
                 team(id: $teamId) {{
                     issues(first: {limit}{filter}) {{
-                        nodes {{ id identifier title state {{ name }} assignee {{ name }} priority }}
+                        nodes {{ id identifier title state {{ name }} assignee {{ name }} priority attachments {{ nodes {{ url title subtitle sourceType }} }} }}
                     }}
                 }}
             }}"#
@@ -869,6 +869,46 @@ mod tests {
                 tool.name()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn linear_issues_query_includes_attachments() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "team": {
+                        "issues": {
+                            "nodes": [{
+                                "id": "issue_1",
+                                "identifier": "SPO-45",
+                                "title": "Test issue",
+                                "state": { "name": "In Progress" },
+                                "assignee": { "name": "zeroclaw_user" },
+                                "priority": 1,
+                                "attachments": {
+                                    "nodes": [{
+                                        "url": "https://github.com/zeroclaw_org/zeroclaw/pull/42",
+                                        "title": "PR #42",
+                                        "subtitle": "feat: github integration",
+                                        "sourceType": "github"
+                                    }]
+                                }
+                            }]
+                        }
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server);
+        let tool = LinearIssuesTool { client };
+        let result = tool.execute(json!({"team_id": "team_1"})).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("attachments"));
+        assert!(result.output.contains("github"));
     }
 
     #[test]
