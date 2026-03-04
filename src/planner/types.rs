@@ -142,7 +142,10 @@ mod tests {
             summary: "Read 10 messages".into(),
             raw_output: String::new(),
         };
-        assert_eq!(result.to_accumulated_line(), r#"Action "read" (group 1): Read 10 messages"#);
+        assert_eq!(
+            result.to_accumulated_line(),
+            r#"Action "read" (group 1): Read 10 messages"#
+        );
     }
 
     #[test]
