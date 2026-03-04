@@ -1,5 +1,6 @@
 pub mod catalog;
 pub(crate) mod catalog_registry;
+pub mod github;
 pub mod linear;
 pub mod slack;
 
