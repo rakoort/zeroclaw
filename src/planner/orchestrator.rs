@@ -31,8 +31,13 @@ fn compress_accumulated_lines(lines: &[String], max_chars: usize) -> Vec<String>
     let truncated: Vec<String> = lines
         .iter()
         .map(|line| {
-            if line.len() > COMPRESS_LINE_MAX {
-                format!("{}...", &line[..COMPRESS_LINE_MAX])
+            if line.chars().count() > COMPRESS_LINE_MAX {
+                let byte_idx = line
+                    .char_indices()
+                    .nth(COMPRESS_LINE_MAX)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line.len());
+                format!("{}...", &line[..byte_idx])
             } else {
                 line.clone()
             }
