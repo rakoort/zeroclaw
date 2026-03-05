@@ -575,4 +575,12 @@ mod tests {
         let budget = resolve_action_budget(None, 30, 50);
         assert_eq!(budget, 30);
     }
+
+    #[test]
+    fn per_action_budget_zero_treated_as_none_falls_back_to_global() {
+        // Some(0) is treated as "unset" by the zero-boundary guard and falls
+        // back to global_max rather than capping at 0.
+        let budget = resolve_action_budget(Some(0), 30, 50);
+        assert_eq!(budget, 30);
+    }
 }
