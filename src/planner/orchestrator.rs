@@ -92,6 +92,15 @@ fn resolve_action_budget(
     max_tool_iterations.min(action_max)
 }
 
+/// Determine whether synthesis should run based on plan policy and execution results.
+fn should_run_synthesis(require_synthesis: Option<bool>, succeeded_count: usize) -> bool {
+    match require_synthesis {
+        Some(true) => true,
+        Some(false) => false,
+        None => succeeded_count >= 2,
+    }
+}
+
 /// Three-phase planner/executor/synthesizer orchestration.
 ///
 /// 1. Calls the planner model (no tools) to produce a JSON action plan.
@@ -377,6 +386,23 @@ pub async fn plan_then_execute(
                 succeeded_count += 1;
             }
             if action.critical && !result.success {
+                runtime_trace::record_event(
+                    "plan_end",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(executor_model),
+                    None,
+                    Some(false),
+                    Some(&result.summary),
+                    serde_json::json!({
+                        "critical_abort": true,
+                        "action_type": &action.action_type,
+                        "group": action.group,
+                        "succeeded": succeeded_count,
+                        "failed": accumulated.len().saturating_sub(succeeded_count),
+                        "duration_ms": plan_started.elapsed().as_millis(),
+                    }),
+                );
                 return Err(anyhow::anyhow!(
                     "Critical action '{}' (group {}) failed: {}",
                     action.action_type,
@@ -395,11 +421,7 @@ pub async fn plan_then_execute(
 
     // ── Phase 3: Synthesize ──────────────────────────────────────────
 
-    let should_synthesize = match plan.require_synthesis {
-        Some(true) => true,
-        Some(false) => false,
-        None => succeeded_count >= 2,
-    };
+    let should_synthesize = should_run_synthesis(plan.require_synthesis, succeeded_count);
 
     let output = if should_synthesize {
         // Multiple actions or forced — synthesize results
@@ -517,62 +539,27 @@ mod tests {
 
     #[test]
     fn adaptive_synthesis_none_with_zero_successes_skips() {
-        let require_synthesis: Option<bool> = None;
-        let succeeded_count: usize = 0;
-        let should_synthesize = match require_synthesis {
-            Some(true) => true,
-            Some(false) => false,
-            None => succeeded_count >= 2,
-        };
-        assert!(!should_synthesize);
+        assert!(!should_run_synthesis(None, 0));
     }
 
     #[test]
     fn adaptive_synthesis_none_with_one_success_skips() {
-        let require_synthesis: Option<bool> = None;
-        let succeeded_count: usize = 1;
-        let should_synthesize = match require_synthesis {
-            Some(true) => true,
-            Some(false) => false,
-            None => succeeded_count >= 2,
-        };
-        assert!(!should_synthesize);
+        assert!(!should_run_synthesis(None, 1));
     }
 
     #[test]
     fn adaptive_synthesis_none_with_two_successes_synthesizes() {
-        let require_synthesis: Option<bool> = None;
-        let succeeded_count: usize = 2;
-        let should_synthesize = match require_synthesis {
-            Some(true) => true,
-            Some(false) => false,
-            None => succeeded_count >= 2,
-        };
-        assert!(should_synthesize);
+        assert!(should_run_synthesis(None, 2));
     }
 
     #[test]
     fn adaptive_synthesis_force_true_synthesizes_regardless() {
-        let require_synthesis: Option<bool> = Some(true);
-        let succeeded_count: usize = 0;
-        let should_synthesize = match require_synthesis {
-            Some(true) => true,
-            Some(false) => false,
-            None => succeeded_count >= 2,
-        };
-        assert!(should_synthesize);
+        assert!(should_run_synthesis(Some(true), 0));
     }
 
     #[test]
     fn adaptive_synthesis_force_false_skips_regardless() {
-        let require_synthesis: Option<bool> = Some(false);
-        let succeeded_count: usize = 5;
-        let should_synthesize = match require_synthesis {
-            Some(true) => true,
-            Some(false) => false,
-            None => succeeded_count >= 2,
-        };
-        assert!(!should_synthesize);
+        assert!(!should_run_synthesis(Some(false), 5));
     }
 
     // per-action budget
