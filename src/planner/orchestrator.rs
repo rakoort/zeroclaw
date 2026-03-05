@@ -13,6 +13,59 @@ use super::prompts::{
 };
 use super::types::{ActionResult, PlanExecutionResult};
 
+const COMPRESS_LINE_MAX: usize = 500;
+
+/// Compress accumulated action result lines for inter-group executor context.
+///
+/// Two-stage:
+/// 1. Truncate individual lines to COMPRESS_LINE_MAX characters.
+/// 2. If total length exceeds `max_chars`, keep the most recent lines that
+///    fit and prepend a count placeholder. The synthesis phase always receives
+///    the full uncompressed results — this only controls inter-group context.
+fn compress_accumulated_lines(lines: &[String], max_chars: usize) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    // Stage 1: truncate individual lines
+    let truncated: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            if line.len() > COMPRESS_LINE_MAX {
+                format!("{}...", &line[..COMPRESS_LINE_MAX])
+            } else {
+                line.clone()
+            }
+        })
+        .collect();
+
+    // Stage 2: rolling window if still over budget
+    let total: usize = truncated.iter().map(|l| l.len()).sum();
+    if total <= max_chars {
+        return truncated;
+    }
+
+    // Keep as many recent lines as fit, from the end
+    let mut kept: Vec<&String> = Vec::new();
+    let mut used = 0usize;
+    for line in truncated.iter().rev() {
+        if used + line.len() + 1 > max_chars {
+            break;
+        }
+        kept.push(line);
+        used += line.len() + 1;
+    }
+    kept.reverse();
+
+    let dropped = truncated.len() - kept.len();
+    let mut result = Vec::with_capacity(kept.len() + 1);
+    result.push(format!(
+        "[{dropped} earlier actions completed — see synthesis for details]"
+    ));
+    result.extend(kept.into_iter().cloned());
+    result
+}
+
 /// Three-phase planner/executor/synthesizer orchestration.
 ///
 /// 1. Calls the planner model (no tools) to produce a JSON action plan.
@@ -362,4 +415,51 @@ pub async fn plan_then_execute(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    // RED: compress_accumulated_lines does not exist yet — this test must fail to compile.
+    #[test]
+    fn compress_empty_returns_empty_vec() {
+        let result = compress_accumulated_lines(&[], 3000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn compress_under_budget_returns_lines_unchanged() {
+        let lines = vec![
+            "Action \"read\" (group 1): Found 5 messages".to_string(),
+            "Action \"create\" (group 2): Created 3 issues".to_string(),
+        ];
+        let result = compress_accumulated_lines(&lines, 3000);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn compress_truncates_long_lines() {
+        let long_summary = "x".repeat(600);
+        let line = format!("Action \"read\" (group 1): {long_summary}");
+        let result = compress_accumulated_lines(&[line], 3000);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].len() <= 503); // 500 chars + "..."
+        assert!(result[0].ends_with("..."));
+    }
+
+    #[test]
+    fn compress_applies_rolling_window_over_budget() {
+        // 20 lines × ~147 chars each ≈ 2940 chars total; budget of 1000 forces rolling window
+        let lines: Vec<String> = (0..20)
+            .map(|i| format!("Action \"step{}\" (group {}): {}", i, i, "result data ".repeat(10)))
+            .collect();
+        let result = compress_accumulated_lines(&lines, 1000);
+        assert!(result.len() < lines.len());
+        assert!(result[0].contains("earlier actions completed"));
+    }
+
+    #[test]
+    fn compress_single_line_under_budget_unchanged() {
+        let lines = vec!["Action \"read\" (group 1): short result".to_string()];
+        let result = compress_accumulated_lines(&lines, 3000);
+        assert_eq!(result, lines);
+    }
+}
