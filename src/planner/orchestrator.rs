@@ -71,6 +71,27 @@ fn compress_accumulated_lines(lines: &[String], max_chars: usize) -> Vec<String>
     result
 }
 
+/// Resolve the iteration budget for a single action.
+///
+/// Precedence (highest to lowest):
+/// 1. `action_max_iterations` — per-action override from the plan (if `> 0`).
+/// 2. `global_max` — the caller's `max_executor_iterations`.
+///
+/// The result is then capped by `max_tool_iterations` so it never exceeds the
+/// hard tool-loop ceiling.  A value of `0` in `action_max_iterations` is
+/// treated as "unset" (zero-boundary guard).
+fn resolve_action_budget(
+    action_max_iterations: Option<u32>,
+    global_max: usize,
+    max_tool_iterations: usize,
+) -> usize {
+    let action_max = action_max_iterations
+        .map(|n| n as usize)
+        .filter(|&n| n > 0)
+        .unwrap_or(global_max);
+    max_tool_iterations.min(action_max)
+}
+
 /// Three-phase planner/executor/synthesizer orchestration.
 ///
 /// 1. Calls the planner model (no tools) to produce a JSON action plan.
@@ -209,7 +230,7 @@ pub async fn plan_then_execute(
     let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
 
     for group in &groups {
-        let group_accumulated = accumulated.clone();
+        let group_accumulated = compress_accumulated_lines(&accumulated, 3000);
 
         let futures: Vec<_> = group
             .iter()
@@ -250,7 +271,11 @@ pub async fn plan_then_execute(
                 let action_type = action.action_type.clone();
                 let action_group = action.group;
                 let action_desc = action.description.clone();
-                let budget = max_tool_iterations.min(max_executor_iterations);
+                let budget = resolve_action_budget(
+                    action.max_iterations,
+                    max_executor_iterations,
+                    max_tool_iterations,
+                );
                 let ct = cancellation_token.clone();
 
                 async move {
@@ -466,5 +491,18 @@ mod tests {
         let lines = vec!["Action \"read\" (group 1): short result".to_string()];
         let result = compress_accumulated_lines(&lines, 3000);
         assert_eq!(result, lines);
+    }
+
+    // RED: resolve_action_budget does not exist yet — these tests must fail to compile.
+    #[test]
+    fn per_action_budget_uses_action_max_iterations_when_set() {
+        let budget = resolve_action_budget(Some(10), 30, 50);
+        assert_eq!(budget, 10);
+    }
+
+    #[test]
+    fn per_action_budget_falls_back_to_global_when_none() {
+        let budget = resolve_action_budget(None, 30, 50);
+        assert_eq!(budget, 30);
     }
 }
