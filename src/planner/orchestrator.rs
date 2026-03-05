@@ -371,10 +371,18 @@ pub async fn plan_then_execute(
 
         let results = futures_util::future::join_all(futures).await;
 
-        for result in &results {
+        for (action, result) in group.iter().zip(results.iter()) {
             accumulated.push(result.to_accumulated_line());
             if result.success {
                 succeeded_count += 1;
+            }
+            if action.critical && !result.success {
+                return Err(anyhow::anyhow!(
+                    "Critical action '{}' (group {}) failed: {}",
+                    action.action_type,
+                    action.group,
+                    result.summary
+                ));
             }
         }
         if let Some(last_success) = results.iter().rev().find(|r| r.success) {
@@ -387,11 +395,14 @@ pub async fn plan_then_execute(
 
     // ── Phase 3: Synthesize ──────────────────────────────────────────
 
-    let output = if succeeded_count <= 1 {
-        // Single action or all failed — skip synthesis, use raw output
-        last_output
-    } else {
-        // Multiple actions — synthesize results
+    let should_synthesize = match plan.require_synthesis {
+        Some(true) => true,
+        Some(false) => false,
+        None => succeeded_count >= 2,
+    };
+
+    let output = if should_synthesize {
+        // Multiple actions or forced — synthesize results
         let synthesis_system = build_synthesis_prompt(user_message, plan_analysis, &accumulated);
 
         let synthesis_messages = vec![
@@ -417,6 +428,9 @@ pub async fn plan_then_execute(
                 last_output
             }
         }
+    } else {
+        // Skip synthesis — use raw last output
+        last_output
     };
 
     runtime_trace::record_event(
@@ -433,7 +447,7 @@ pub async fn plan_then_execute(
             "failed": total_actions.saturating_sub(succeeded_count),
             "duration_ms": plan_started.elapsed().as_millis(),
             "passthrough": false,
-            "synthesized": succeeded_count > 1,
+            "synthesized": should_synthesize,
         }),
     );
 
@@ -476,9 +490,16 @@ mod tests {
 
     #[test]
     fn compress_applies_rolling_window_over_budget() {
-        // 20 lines × ~147 chars each ≈ 2940 chars total; budget of 1000 forces rolling window
+        // 20 lines x ~147 chars each approx 2940 chars total; budget of 1000 forces rolling window
         let lines: Vec<String> = (0..20)
-            .map(|i| format!("Action \"step{}\" (group {}): {}", i, i, "result data ".repeat(10)))
+            .map(|i| {
+                format!(
+                    "Action \"step{}\" (group {}): {}",
+                    i,
+                    i,
+                    "result data ".repeat(10)
+                )
+            })
             .collect();
         let result = compress_accumulated_lines(&lines, 1000);
         assert!(result.len() < lines.len());
@@ -491,6 +512,70 @@ mod tests {
         let result = compress_accumulated_lines(&lines, 3000);
         assert_eq!(result, lines);
     }
+
+    // adaptive synthesis logic
+
+    #[test]
+    fn adaptive_synthesis_none_with_zero_successes_skips() {
+        let require_synthesis: Option<bool> = None;
+        let succeeded_count: usize = 0;
+        let should_synthesize = match require_synthesis {
+            Some(true) => true,
+            Some(false) => false,
+            None => succeeded_count >= 2,
+        };
+        assert!(!should_synthesize);
+    }
+
+    #[test]
+    fn adaptive_synthesis_none_with_one_success_skips() {
+        let require_synthesis: Option<bool> = None;
+        let succeeded_count: usize = 1;
+        let should_synthesize = match require_synthesis {
+            Some(true) => true,
+            Some(false) => false,
+            None => succeeded_count >= 2,
+        };
+        assert!(!should_synthesize);
+    }
+
+    #[test]
+    fn adaptive_synthesis_none_with_two_successes_synthesizes() {
+        let require_synthesis: Option<bool> = None;
+        let succeeded_count: usize = 2;
+        let should_synthesize = match require_synthesis {
+            Some(true) => true,
+            Some(false) => false,
+            None => succeeded_count >= 2,
+        };
+        assert!(should_synthesize);
+    }
+
+    #[test]
+    fn adaptive_synthesis_force_true_synthesizes_regardless() {
+        let require_synthesis: Option<bool> = Some(true);
+        let succeeded_count: usize = 0;
+        let should_synthesize = match require_synthesis {
+            Some(true) => true,
+            Some(false) => false,
+            None => succeeded_count >= 2,
+        };
+        assert!(should_synthesize);
+    }
+
+    #[test]
+    fn adaptive_synthesis_force_false_skips_regardless() {
+        let require_synthesis: Option<bool> = Some(false);
+        let succeeded_count: usize = 5;
+        let should_synthesize = match require_synthesis {
+            Some(true) => true,
+            Some(false) => false,
+            None => succeeded_count >= 2,
+        };
+        assert!(!should_synthesize);
+    }
+
+    // per-action budget
 
     #[test]
     fn per_action_budget_uses_action_max_iterations_when_set() {
