@@ -9,6 +9,8 @@ pub struct Plan {
     pub passthrough: bool,
     #[serde(default)]
     pub actions: Vec<PlanAction>,
+    #[serde(default)]
+    pub require_synthesis: Option<bool>,
 }
 
 impl Plan {
@@ -39,6 +41,10 @@ pub struct PlanAction {
     pub params: serde_json::Value,
     #[serde(default)]
     pub model_hint: Option<String>,
+    #[serde(default)]
+    pub critical: bool,
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
 }
 
 fn default_group() -> u32 {
@@ -158,5 +164,54 @@ mod tests {
             raw_output: String::new(),
         };
         assert!(result.to_accumulated_line().contains("FAILED"));
+    }
+
+    #[test]
+    fn plan_action_critical_defaults_to_false() {
+        let json = r#"{"type": "read", "description": "read data"}"#;
+        let action: PlanAction = serde_json::from_str(json).unwrap();
+        assert!(!action.critical);
+    }
+
+    #[test]
+    fn plan_action_critical_true_deserializes() {
+        let json = r#"{"type": "read", "description": "read data", "critical": true}"#;
+        let action: PlanAction = serde_json::from_str(json).unwrap();
+        assert!(action.critical);
+    }
+
+    #[test]
+    fn plan_action_max_iterations_defaults_to_none() {
+        let json = r#"{"type": "read", "description": "read data"}"#;
+        let action: PlanAction = serde_json::from_str(json).unwrap();
+        assert!(action.max_iterations.is_none());
+    }
+
+    #[test]
+    fn plan_action_max_iterations_deserializes() {
+        let json = r#"{"type": "write", "description": "write data", "max_iterations": 40}"#;
+        let action: PlanAction = serde_json::from_str(json).unwrap();
+        assert_eq!(action.max_iterations, Some(40));
+    }
+
+    #[test]
+    fn plan_require_synthesis_defaults_to_none() {
+        let json = r#"{"passthrough": false, "actions": [{"type": "a", "description": "b"}]}"#;
+        let plan: Plan = serde_json::from_str(json).unwrap();
+        assert!(plan.require_synthesis.is_none());
+    }
+
+    #[test]
+    fn plan_require_synthesis_false_deserializes() {
+        let json = r#"{"require_synthesis": false, "actions": [{"type": "a", "description": "b"}]}"#;
+        let plan: Plan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.require_synthesis, Some(false));
+    }
+
+    #[test]
+    fn plan_require_synthesis_true_deserializes() {
+        let json = r#"{"require_synthesis": true, "actions": [{"type": "a", "description": "b"}]}"#;
+        let plan: Plan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.require_synthesis, Some(true));
     }
 }

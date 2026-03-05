@@ -154,6 +154,8 @@ mod tests {
             tools: vec![],
             params: serde_json::Value::Null,
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         let prompt = build_executor_prompt(&action, &[], Some("multi-step sweep"));
         assert!(prompt.contains("PLAN CONTEXT: multi-step sweep"));
@@ -168,6 +170,8 @@ mod tests {
             tools: vec!["slack".into()],
             params: serde_json::Value::Null,
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         let prompt = build_executor_prompt(&action, &[], None);
         assert!(!prompt.contains("PLAN CONTEXT"));
@@ -183,6 +187,8 @@ mod tests {
             tools: vec![],
             params: serde_json::Value::Null,
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         let prior = vec!["Action \"read\" (group 1): Found 5 messages".into()];
         let prompt = build_executor_prompt(&action, &prior, None);
@@ -213,6 +219,8 @@ mod tests {
             tools: vec![],
             params: serde_json::json!({"url": "https://example.com"}),
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         let prompt = build_executor_prompt(&action, &[], None);
         assert!(prompt.contains("PARAMETERS:"));
@@ -228,6 +236,8 @@ mod tests {
             tools: vec![],
             params: serde_json::Value::Object(serde_json::Map::default()),
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         assert!(!build_executor_prompt(&action_empty_obj, &[], None).contains("PARAMETERS:"));
 
@@ -238,6 +248,8 @@ mod tests {
             tools: vec![],
             params: serde_json::Value::Array(vec![]),
             model_hint: None,
+            critical: false,
+            max_iterations: None,
         };
         assert!(!build_executor_prompt(&action_empty_arr, &[], None).contains("PARAMETERS:"));
     }
