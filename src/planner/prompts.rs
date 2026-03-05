@@ -34,13 +34,13 @@ pub fn build_planner_system_prompt(base_system_prompt: &str) -> String {
         - Never fabricate data (URLs, IDs). Add a lookup action before any action that needs them\n\
         - Include all judgment calls in the plan. The executor follows instructions literally\n\
         - Include an \"analysis\" field explaining your reasoning about dependencies and ordering\n\n\
-        \nParallelism rule:\n\
+        Parallelism rule:\n\
         - Assign all independent actions to the same group number\n\
         - Only use a higher group number when an action genuinely requires output from a prior action\n\
         - Prefer 1-2 groups over 3-5 for most tasks; more groups means more latency\n\n\
         Policy fields (all optional):\n\
         - critical: true — mark actions whose output is essential; if this action fails, the plan aborts immediately rather than continuing with missing data\n\
-        - require_synthesis: false — set for pure lookup or single-action tasks where the executor output is already the final answer (skips one LLM call)\n\
+        - require_synthesis: true — always synthesize even for single-action output; false — skip synthesis and return raw executor output directly; omit to let the orchestrator decide (synthesizes when 2+ actions succeed)\n\
         - max_iterations: integer — give complex write actions a larger budget (e.g. 40) and simple lookups a tighter one (e.g. 8); omit to use the default\n\n\
         Output ONLY valid JSON, no markdown fences, no commentary.",
     );
@@ -279,14 +279,14 @@ mod tests {
     fn planner_prompt_guides_parallelism() {
         let prompt = build_planner_system_prompt("");
         assert!(prompt.contains("independent actions to the same group"));
-        assert!(prompt.contains("Prefer 1"));
+        assert!(prompt.contains("Prefer 1-2 groups"));
     }
 
     #[test]
     fn planner_prompt_explains_critical_field() {
         let prompt = build_planner_system_prompt("");
         assert!(prompt.contains("critical"));
-        assert!(prompt.contains("aborts"));
+        assert!(prompt.contains("plan aborts immediately"));
     }
 
     #[test]
