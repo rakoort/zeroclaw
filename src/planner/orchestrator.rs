@@ -448,7 +448,6 @@ pub async fn plan_then_execute(
 mod tests {
     use super::*;
 
-    // RED: compress_accumulated_lines does not exist yet — this test must fail to compile.
     #[test]
     fn compress_empty_returns_empty_vec() {
         let result = compress_accumulated_lines(&[], 3000);
