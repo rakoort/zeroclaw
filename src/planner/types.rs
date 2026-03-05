@@ -43,6 +43,9 @@ pub struct PlanAction {
     pub model_hint: Option<String>,
     #[serde(default)]
     pub critical: bool,
+    /// Per-action override for the tool iteration budget.
+    /// `None` (default) uses the global `max_executor_iterations`.
+    /// `0` is treated the same as `None` — use the global default.
     #[serde(default)]
     pub max_iterations: Option<u32>,
 }

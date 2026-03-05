@@ -493,7 +493,6 @@ mod tests {
         assert_eq!(result, lines);
     }
 
-    // RED: resolve_action_budget does not exist yet — these tests must fail to compile.
     #[test]
     fn per_action_budget_uses_action_max_iterations_when_set() {
         let budget = resolve_action_budget(Some(10), 30, 50);
