@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 use crate::channels::traits::{Channel, ChannelMessage, SendMessage};
 use crate::config::SlackIntegrationConfig;
 use crate::integrations::Integration;
+use crate::observability::traits::Observer;
 use crate::tools::traits::Tool;
 
 use self::client::SlackClient;
@@ -37,10 +38,11 @@ pub struct SlackIntegration {
 }
 
 impl SlackIntegration {
-    pub fn new(config: SlackIntegrationConfig) -> Self {
+    pub fn new(config: SlackIntegrationConfig, observer: Arc<dyn Observer>) -> Self {
         let client = Arc::new(SlackClient::new(
             config.bot_token.clone(),
             config.app_token.clone(),
+            observer,
         ));
         Self::new_with_client(config, client)
     }
@@ -619,18 +621,27 @@ mod tests {
     use super::SlackIntegration;
     use crate::config::SlackIntegrationConfig;
     use crate::integrations::Integration;
+    use crate::observability::noop::NoopObserver;
     use std::sync::Arc;
 
     #[test]
     fn all_slack_tools_returns_9_tools() {
-        let client = Arc::new(SlackClient::new("xoxb-test".into(), "xapp-test".into()));
+        let client = Arc::new(SlackClient::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_slack_tools(client);
         assert_eq!(tools.len(), 9);
     }
 
     #[test]
     fn all_slack_tools_have_valid_json_schemas() {
-        let client = Arc::new(SlackClient::new("xoxb-test".into(), "xapp-test".into()));
+        let client = Arc::new(SlackClient::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_slack_tools(client);
         for tool in &tools {
             let schema = tool.parameters_schema();
@@ -686,19 +697,19 @@ mod tests {
 
     #[test]
     fn slack_integration_name() {
-        let integration = SlackIntegration::new(test_config());
+        let integration = SlackIntegration::new(test_config(), Arc::new(NoopObserver));
         assert_eq!(integration.name(), "slack");
     }
 
     #[test]
     fn slack_integration_returns_9_tools() {
-        let integration = SlackIntegration::new(test_config());
+        let integration = SlackIntegration::new(test_config(), Arc::new(NoopObserver));
         assert_eq!(integration.tools().len(), 9);
     }
 
     #[test]
     fn slack_integration_as_channel_returns_some() {
-        let integration = Arc::new(SlackIntegration::new(test_config()));
+        let integration = Arc::new(SlackIntegration::new(test_config(), Arc::new(NoopObserver)));
         assert!(integration.as_channel().is_some());
     }
 
@@ -715,7 +726,7 @@ mod tests {
         };
         // With default base_url (https://slack.com) and a fake token, health_check
         // should fail (network error or auth error).
-        let integration = SlackIntegration::new(config);
+        let integration = SlackIntegration::new(config, Arc::new(NoopObserver));
         let healthy = integration.health_check().await;
         assert!(!healthy);
     }

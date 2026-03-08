@@ -1,6 +1,9 @@
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
+
+use crate::observability::traits::{Observer, ObserverEvent};
 
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_RETRY_SECS: u64 = 5;
@@ -47,30 +50,40 @@ pub struct SlackClient {
     #[allow(dead_code)]
     app_token: String,
     base_url: String,
+    observer: Arc<dyn Observer>,
 }
 
 impl SlackClient {
     /// Production constructor — base URL defaults to `https://slack.com`.
-    pub fn new(bot_token: String, app_token: String) -> Self {
-        Self::new_with_base_url(bot_token, app_token, "https://slack.com".into())
+    pub fn new(bot_token: String, app_token: String, observer: Arc<dyn Observer>) -> Self {
+        Self::new_with_base_url(bot_token, app_token, "https://slack.com".into(), observer)
     }
 
     /// Test constructor — caller supplies a wiremock base URL.
-    pub fn new_with_base_url(bot_token: String, app_token: String, base_url: String) -> Self {
+    pub fn new_with_base_url(
+        bot_token: String,
+        app_token: String,
+        base_url: String,
+        observer: Arc<dyn Observer>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             bot_token,
             app_token,
             base_url,
+            observer,
         }
     }
 
     /// POST `{base_url}/api/{method}` with JSON body and bearer auth.
-    pub async fn api_post(&self, method: &str, body: &Value) -> Result<Value, SlackApiError> {
-        let url = format!("{}/api/{}", self.base_url, method);
+    pub async fn api_post(&self, method_name: &str, body: &Value) -> Result<Value, SlackApiError> {
+        let url = format!("{}/api/{}", self.base_url, method_name);
         let mut retries = 0u32;
+        let call_start = std::time::Instant::now();
+        let mut total_rate_limit_wait_ms: u64 = 0;
+        let mut last_status: Option<u16> = None;
 
-        loop {
+        let result: Result<Value, SlackApiError> = loop {
             let resp = self
                 .http
                 .post(&url)
@@ -80,33 +93,66 @@ impl SlackClient {
                 .await
                 .map_err(SlackApiError::Network)?;
 
+            last_status = Some(resp.status().as_u16());
+
             if resp.status() == 429 {
                 if retries >= MAX_RETRIES {
                     let retry_after = parse_retry_after(&resp);
-                    return Err(SlackApiError::RateLimited { retry_after });
+                    break Err(SlackApiError::RateLimited { retry_after });
                 }
                 let wait = parse_retry_after(&resp);
-                debug!(method, ?wait, retries, "slack rate limited, retrying");
+                total_rate_limit_wait_ms += wait.as_millis() as u64;
+                debug!(method_name, ?wait, retries, "slack rate limited, retrying");
                 tokio::time::sleep(wait).await;
                 retries += 1;
                 continue;
             }
 
             let json: Value = resp.json().await.map_err(SlackApiError::Network)?;
-            return parse_envelope(method, json);
-        }
+            break parse_envelope(method_name, json);
+        };
+
+        let duration_ms = call_start.elapsed().as_millis() as u64;
+        let success = result.is_ok();
+        let error = result.as_ref().err().map(|e| e.to_string());
+        let response_size_bytes = result
+            .as_ref()
+            .ok()
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| s.len() as u64);
+
+        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "slack".into(),
+            method: method_name.to_string(),
+            success,
+            duration_ms,
+            error,
+            retries,
+            status_code: last_status,
+            response_size_bytes,
+            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                Some(total_rate_limit_wait_ms)
+            } else {
+                None
+            },
+        });
+
+        result
     }
 
     /// GET `{base_url}/api/{method}` with query params and bearer auth.
     pub async fn api_get(
         &self,
-        method: &str,
+        method_name: &str,
         params: &[(&str, &str)],
     ) -> Result<Value, SlackApiError> {
-        let url = format!("{}/api/{}", self.base_url, method);
+        let url = format!("{}/api/{}", self.base_url, method_name);
         let mut retries = 0u32;
+        let call_start = std::time::Instant::now();
+        let mut total_rate_limit_wait_ms: u64 = 0;
+        let mut last_status: Option<u16> = None;
 
-        loop {
+        let result: Result<Value, SlackApiError> = loop {
             let resp = self
                 .http
                 .get(&url)
@@ -116,21 +162,51 @@ impl SlackClient {
                 .await
                 .map_err(SlackApiError::Network)?;
 
+            last_status = Some(resp.status().as_u16());
+
             if resp.status() == 429 {
                 if retries >= MAX_RETRIES {
                     let retry_after = parse_retry_after(&resp);
-                    return Err(SlackApiError::RateLimited { retry_after });
+                    break Err(SlackApiError::RateLimited { retry_after });
                 }
                 let wait = parse_retry_after(&resp);
-                debug!(method, ?wait, retries, "slack rate limited, retrying");
+                total_rate_limit_wait_ms += wait.as_millis() as u64;
+                debug!(method_name, ?wait, retries, "slack rate limited, retrying");
                 tokio::time::sleep(wait).await;
                 retries += 1;
                 continue;
             }
 
             let json: Value = resp.json().await.map_err(SlackApiError::Network)?;
-            return parse_envelope(method, json);
-        }
+            break parse_envelope(method_name, json);
+        };
+
+        let duration_ms = call_start.elapsed().as_millis() as u64;
+        let success = result.is_ok();
+        let error = result.as_ref().err().map(|e| e.to_string());
+        let response_size_bytes = result
+            .as_ref()
+            .ok()
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| s.len() as u64);
+
+        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "slack".into(),
+            method: method_name.to_string(),
+            success,
+            duration_ms,
+            error,
+            retries,
+            status_code: last_status,
+            response_size_bytes,
+            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                Some(total_rate_limit_wait_ms)
+            } else {
+                None
+            },
+        });
+
+        result
     }
 }
 
@@ -171,8 +247,18 @@ fn parse_envelope(method: &str, json: Value) -> Result<Value, SlackApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observability::noop::NoopObserver;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_client(server: &MockServer) -> SlackClient {
+        SlackClient::new_with_base_url(
+            "xoxb-test".into(),
+            String::new(),
+            server.uri(),
+            Arc::new(NoopObserver),
+        )
+    }
 
     #[tokio::test]
     async fn api_post_success_returns_parsed_json() {
@@ -186,8 +272,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-test".into(), String::new(), server.uri());
+        let client = test_client(&server);
         let result = client
             .api_post("chat.postMessage", &serde_json::json!({}))
             .await;
@@ -207,7 +292,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = SlackClient::new_with_base_url("xoxb-bad".into(), String::new(), server.uri());
+        let client = SlackClient::new_with_base_url(
+            "xoxb-bad".into(),
+            String::new(),
+            server.uri(),
+            Arc::new(NoopObserver),
+        );
         let result = client.api_post("auth.test", &serde_json::json!({})).await;
         assert!(matches!(result, Err(SlackApiError::AuthError { .. })));
     }
@@ -227,8 +317,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-test".into(), String::new(), server.uri());
+        let client = test_client(&server);
         let result = client
             .api_post("chat.postMessage", &serde_json::json!({}))
             .await;
@@ -245,8 +334,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-my-token".into(), String::new(), server.uri());
+        let client = SlackClient::new_with_base_url(
+            "xoxb-my-token".into(),
+            String::new(),
+            server.uri(),
+            Arc::new(NoopObserver),
+        );
         let result = client.api_post("auth.test", &serde_json::json!({})).await;
         assert!(result.is_ok());
     }
@@ -263,8 +356,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-test".into(), String::new(), server.uri());
+        let client = test_client(&server);
         let result = client
             .api_get("users.getPresence", &[("user", "U123")])
             .await;
@@ -284,8 +376,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            SlackClient::new_with_base_url("xoxb-test".into(), String::new(), server.uri());
+        let client = test_client(&server);
         let result = client
             .api_post("chat.postMessage", &serde_json::json!({}))
             .await;
@@ -342,5 +433,126 @@ mod tests {
             retry_after: Duration::from_secs(30),
         };
         assert!(e.to_string().contains("30"));
+    }
+
+    #[tokio::test]
+    async fn api_post_emits_integration_api_call_event_on_success() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    method,
+                    success,
+                    status_code,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:{method}:success={success}:status={status_code:?}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "123"})),
+            )
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = SlackClient::new_with_base_url(
+            "xoxb-test".into(),
+            String::new(),
+            server.uri(),
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .api_post("chat.postMessage", &serde_json::json!({}))
+            .await;
+        assert!(result.is_ok());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("slack:chat.postMessage:success=true"));
+    }
+
+    #[tokio::test]
+    async fn api_get_emits_integration_api_call_event_on_success() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    method,
+                    success,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:{method}:success={success}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users.getPresence"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "presence": "active"})),
+            )
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = SlackClient::new_with_base_url(
+            "xoxb-test".into(),
+            String::new(),
+            server.uri(),
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .api_get("users.getPresence", &[("user", "U123")])
+            .await;
+        assert!(result.is_ok());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("slack:users.getPresence:success=true"));
     }
 }
