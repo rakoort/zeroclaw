@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::channels::traits::Channel;
 use crate::config::Config;
+use crate::observability::traits::Observer;
 use crate::tools::traits::Tool;
 
 /// A runtime integration that owns an authenticated API client and exposes
@@ -37,22 +38,24 @@ pub trait Integration: Send + Sync {
 }
 
 /// Build integrations from config. Returns empty vec when no integrations are configured.
-pub fn collect_integrations(config: &Config) -> Vec<Arc<dyn Integration>> {
+pub fn collect_integrations(config: &Config, observer: Arc<dyn Observer>) -> Vec<Arc<dyn Integration>> {
     let mut integrations: Vec<Arc<dyn Integration>> = Vec::new();
 
     if let Some(ref slack_config) = config.integrations.slack {
-        integrations.push(Arc::new(slack::SlackIntegration::new(slack_config.clone())));
+        integrations.push(Arc::new(slack::SlackIntegration::new(slack_config.clone(), Arc::clone(&observer))));
     }
 
     if let Some(ref linear_config) = config.integrations.linear {
         integrations.push(Arc::new(linear::LinearIntegration::new(
             linear_config.clone(),
+            Arc::clone(&observer),
         )));
     }
 
     if let Some(ref github_config) = config.integrations.github {
         integrations.push(Arc::new(github::GitHubIntegration::new(
             github_config.clone(),
+            Arc::clone(&observer),
         )));
     }
 
@@ -63,7 +66,7 @@ pub fn collect_integrations(config: &Config) -> Vec<Arc<dyn Integration>> {
 /// for use in the classifier prompt. Only includes integrations with runtime
 /// tools (i.e., those returned by `collect_integrations`).
 pub fn active_integration_summary(config: &Config) -> String {
-    let integrations = collect_integrations(config);
+    let integrations = collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
     if integrations.is_empty() {
         return String::new();
     }
@@ -104,7 +107,7 @@ pub fn excluded_tool_names(
 pub fn build_integration_tool_map(
     config: &Config,
 ) -> std::collections::HashMap<String, Vec<String>> {
-    let integrations = collect_integrations(config);
+    let integrations = collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
     integrations
         .iter()
         .map(|i| {
@@ -131,6 +134,7 @@ pub fn filter_tools_by_integrations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observability::noop::NoopObserver;
 
     struct DummyIntegration;
 
@@ -156,7 +160,7 @@ mod tests {
     #[test]
     fn collect_integrations_returns_empty_for_default_config() {
         let config = crate::config::Config::default();
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert!(integrations.is_empty());
     }
 
@@ -172,7 +176,7 @@ mod tests {
             mention_regex: None,
             triage_model: None,
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 1);
         assert_eq!(integrations[0].name(), "slack");
         assert_eq!(integrations[0].tools().len(), 9);
@@ -185,7 +189,7 @@ mod tests {
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 1);
         assert_eq!(integrations[0].name(), "linear");
         assert_eq!(integrations[0].tools().len(), 14);
@@ -231,7 +235,7 @@ mod tests {
             api_key: "lin_api_test".into(),
         });
 
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         let selected = vec!["linear".to_string()];
         let filtered = filter_tools_by_integrations(&integrations, &selected);
 
@@ -252,7 +256,7 @@ mod tests {
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         let filtered = filter_tools_by_integrations(&integrations, &[]);
         assert!(filtered.is_empty());
     }
@@ -263,7 +267,7 @@ mod tests {
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         let selected = vec!["Linear".to_string()];
         let filtered = filter_tools_by_integrations(&integrations, &selected);
         assert_eq!(filtered.len(), 14);
@@ -313,7 +317,7 @@ mod tests {
             token: "ghp_test".into(),
             owner: None,
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 1);
         assert_eq!(integrations[0].name(), "github");
         assert_eq!(integrations[0].tools().len(), 3);
@@ -348,7 +352,7 @@ mod tests {
             token: "ghp_test".into(),
             owner: Some("zeroclaw_org".into()),
         });
-        let integrations = collect_integrations(&config);
+        let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 2);
         let names: Vec<&str> = integrations.iter().map(|i| i.name()).collect();
         assert!(names.contains(&"linear"));

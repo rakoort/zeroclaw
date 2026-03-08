@@ -315,7 +315,7 @@ pub fn all_tools_with_runtime(
     }
 
     // Native integration tools (Slack, Linear, etc.)
-    for integration in crate::integrations::collect_integrations(root_config) {
+    for integration in crate::integrations::collect_integrations(root_config, std::sync::Arc::new(crate::observability::noop::NoopObserver)) {
         for tool in integration.tools() {
             tool_arcs.push(tool);
         }
