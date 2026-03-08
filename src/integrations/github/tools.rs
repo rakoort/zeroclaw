@@ -304,6 +304,7 @@ pub fn all_github_tools(client: Arc<GitHubClient>) -> Vec<Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observability::noop::NoopObserver;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -312,6 +313,7 @@ mod tests {
             "ghp_test123".into(),
             server.uri(),
             Some("zeroclaw_org".into()),
+            Arc::new(NoopObserver),
         ))
     }
 
@@ -320,6 +322,7 @@ mod tests {
             "ghp_test123".into(),
             server.uri(),
             None,
+            Arc::new(NoopObserver),
         ))
     }
 
@@ -327,14 +330,14 @@ mod tests {
 
     #[test]
     fn all_github_tools_returns_3_tools() {
-        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None));
+        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None, Arc::new(NoopObserver)));
         let tools = all_github_tools(client);
         assert_eq!(tools.len(), 3);
     }
 
     #[test]
     fn all_github_tools_have_valid_json_schemas() {
-        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None));
+        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None, Arc::new(NoopObserver)));
         let tools = all_github_tools(client);
         for tool in &tools {
             let schema = tool.parameters_schema();
@@ -349,7 +352,7 @@ mod tests {
 
     #[test]
     fn all_github_tools_have_unique_names() {
-        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None));
+        let client = Arc::new(GitHubClient::new("ghp_test123".into(), None, Arc::new(NoopObserver)));
         let tools = all_github_tools(client);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         names.sort_unstable();

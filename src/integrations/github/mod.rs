@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::config::GitHubIntegrationConfig;
 use crate::integrations::Integration;
+use crate::observability::traits::Observer;
 use crate::tools::traits::Tool;
 
 use self::client::GitHubClient;
@@ -19,9 +20,9 @@ pub struct GitHubIntegration {
 }
 
 impl GitHubIntegration {
-    pub fn new(config: GitHubIntegrationConfig) -> Self {
+    pub fn new(config: GitHubIntegrationConfig, observer: Arc<dyn Observer>) -> Self {
         Self {
-            client: Arc::new(GitHubClient::new(config.token, config.owner)),
+            client: Arc::new(GitHubClient::new(config.token, config.owner, observer)),
         }
     }
 }
@@ -48,18 +49,19 @@ impl Integration for GitHubIntegration {
 mod tests {
     use super::client::GitHubClient;
     use super::tools::all_github_tools;
+    use crate::observability::noop::NoopObserver;
     use std::sync::Arc;
 
     #[test]
     fn all_github_tools_returns_3_tools() {
-        let client = Arc::new(GitHubClient::new("ghp_test".into(), None));
+        let client = Arc::new(GitHubClient::new("ghp_test".into(), None, Arc::new(NoopObserver)));
         let tools = all_github_tools(client);
         assert_eq!(tools.len(), 3);
     }
 
     #[test]
     fn all_github_tools_have_valid_json_schemas() {
-        let client = Arc::new(GitHubClient::new("ghp_test".into(), None));
+        let client = Arc::new(GitHubClient::new("ghp_test".into(), None, Arc::new(NoopObserver)));
         let tools = all_github_tools(client);
         for tool in &tools {
             let schema = tool.parameters_schema();
@@ -82,7 +84,7 @@ mod tests {
             token: "ghp_test".into(),
             owner: None,
         };
-        let integration = GitHubIntegration::new(config);
+        let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.name(), "github");
     }
 
@@ -96,7 +98,7 @@ mod tests {
             token: "ghp_test".into(),
             owner: None,
         };
-        let integration = GitHubIntegration::new(config);
+        let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.tools().len(), 3);
     }
 
@@ -110,7 +112,7 @@ mod tests {
             token: "ghp_test".into(),
             owner: None,
         };
-        let integration = GitHubIntegration::new(config);
+        let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert!(integration.as_channel().is_none());
     }
 }
