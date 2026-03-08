@@ -76,11 +76,13 @@ impl SlackClient {
     }
 
     /// POST `{base_url}/api/{method}` with JSON body and bearer auth.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn api_post(&self, method_name: &str, body: &Value) -> Result<Value, SlackApiError> {
         let url = format!("{}/api/{}", self.base_url, method_name);
         let mut retries = 0u32;
         let call_start = std::time::Instant::now();
         let mut total_rate_limit_wait_ms: u64 = 0;
+        #[allow(unused_assignments)]
         let mut last_status: Option<u16> = None;
 
         let result: Result<Value, SlackApiError> = loop {
@@ -121,26 +123,28 @@ impl SlackClient {
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| s.len() as u64);
 
-        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
-            integration: "slack".into(),
-            method: method_name.to_string(),
-            success,
-            duration_ms,
-            error,
-            retries,
-            status_code: last_status,
-            response_size_bytes,
-            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
-                Some(total_rate_limit_wait_ms)
-            } else {
-                None
-            },
-        });
+        self.observer
+            .record_event(&ObserverEvent::IntegrationApiCall {
+                integration: "slack".into(),
+                method: method_name.to_string(),
+                success,
+                duration_ms,
+                error,
+                retries,
+                status_code: last_status,
+                response_size_bytes,
+                rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                    Some(total_rate_limit_wait_ms)
+                } else {
+                    None
+                },
+            });
 
         result
     }
 
     /// GET `{base_url}/api/{method}` with query params and bearer auth.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn api_get(
         &self,
         method_name: &str,
@@ -150,6 +154,7 @@ impl SlackClient {
         let mut retries = 0u32;
         let call_start = std::time::Instant::now();
         let mut total_rate_limit_wait_ms: u64 = 0;
+        #[allow(unused_assignments)]
         let mut last_status: Option<u16> = None;
 
         let result: Result<Value, SlackApiError> = loop {
@@ -190,21 +195,22 @@ impl SlackClient {
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| s.len() as u64);
 
-        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
-            integration: "slack".into(),
-            method: method_name.to_string(),
-            success,
-            duration_ms,
-            error,
-            retries,
-            status_code: last_status,
-            response_size_bytes,
-            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
-                Some(total_rate_limit_wait_ms)
-            } else {
-                None
-            },
-        });
+        self.observer
+            .record_event(&ObserverEvent::IntegrationApiCall {
+                integration: "slack".into(),
+                method: method_name.to_string(),
+                success,
+                duration_ms,
+                error,
+                retries,
+                status_code: last_status,
+                response_size_bytes,
+                rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                    Some(total_rate_limit_wait_ms)
+                } else {
+                    None
+                },
+            });
 
         result
     }
@@ -514,9 +520,9 @@ mod tests {
                     ..
                 } = event
                 {
-                    self.events.lock().push(format!(
-                        "{integration}:{method}:success={success}"
-                    ));
+                    self.events
+                        .lock()
+                        .push(format!("{integration}:{method}:success={success}"));
                 }
             }
             fn record_metric(&self, _: &ObserverMetric) {}
@@ -554,5 +560,64 @@ mod tests {
         let events = observer.events.lock();
         assert_eq!(events.len(), 1);
         assert!(events[0].contains("slack:users.getPresence:success=true"));
+    }
+
+    #[tokio::test]
+    async fn api_post_emits_integration_api_call_event_on_auth_error() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    method,
+                    success,
+                    status_code,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:{method}:success={success}:status={status_code:?}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth.test"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": false, "error": "invalid_auth"})),
+            )
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = SlackClient::new_with_base_url(
+            "xoxb-bad".into(),
+            String::new(),
+            server.uri(),
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client.api_post("auth.test", &serde_json::json!({})).await;
+        assert!(result.is_err());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("slack:auth.test:success=false:status=Some(200)"));
     }
 }

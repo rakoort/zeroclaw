@@ -56,7 +56,12 @@ pub struct GitHubClient {
 impl GitHubClient {
     /// Production constructor — base URL defaults to `https://api.github.com`.
     pub fn new(token: String, default_owner: Option<String>, observer: Arc<dyn Observer>) -> Self {
-        Self::new_with_base_url(token, "https://api.github.com".into(), default_owner, observer)
+        Self::new_with_base_url(
+            token,
+            "https://api.github.com".into(),
+            default_owner,
+            observer,
+        )
     }
 
     /// Test constructor — caller supplies a wiremock base URL.
@@ -86,12 +91,14 @@ impl GitHubClient {
     /// `User-Agent` header. Rate limits are signalled via HTTP 429 or HTTP 403
     /// with `X-RateLimit-Remaining: 0`. The reset time is in `X-RateLimit-Reset`
     /// as unix epoch seconds.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn graphql(&self, query: &str, variables: &Value) -> Result<Value, GitHubApiError> {
         let url = format!("{}/graphql", self.base_url);
         let body = json!({ "query": query, "variables": variables });
         let mut retries = 0u32;
         let call_start = std::time::Instant::now();
         let mut total_rate_limit_wait_ms: u64 = 0;
+        #[allow(unused_assignments)]
         let mut last_status: Option<u16> = None;
 
         let result: Result<Value, GitHubApiError> = loop {
@@ -174,21 +181,22 @@ impl GitHubClient {
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| s.len() as u64);
 
-        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
-            integration: "github".into(),
-            method: "graphql".into(),
-            success,
-            duration_ms,
-            error,
-            retries,
-            status_code: last_status,
-            response_size_bytes,
-            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
-                Some(total_rate_limit_wait_ms)
-            } else {
-                None
-            },
-        });
+        self.observer
+            .record_event(&ObserverEvent::IntegrationApiCall {
+                integration: "github".into(),
+                method: "graphql".into(),
+                success,
+                duration_ms,
+                error,
+                retries,
+                status_code: last_status,
+                response_size_bytes,
+                rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                    Some(total_rate_limit_wait_ms)
+                } else {
+                    None
+                },
+            });
 
         result
     }
@@ -468,5 +476,130 @@ mod tests {
         let events = observer.events.lock();
         assert_eq!(events.len(), 1);
         assert!(events[0].contains("github:graphql:success=true:status=Some(200)"));
+    }
+
+    #[tokio::test]
+    async fn graphql_emits_integration_api_call_event_on_auth_error() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    success,
+                    status_code,
+                    error,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:success={success}:status={status_code:?}:error={error:?}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = GitHubClient::new_with_base_url(
+            "ghp_test123".into(),
+            server.uri(),
+            None,
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .graphql("query { viewer { login } }", &json!({}))
+            .await;
+        assert!(result.is_err());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("github:success=false:status=Some(401)"));
+    }
+
+    #[tokio::test]
+    async fn graphql_emits_integration_api_call_event_with_rate_limit_wait() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<(bool, u32, Option<u64>)>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    success,
+                    retries,
+                    rate_limit_wait_ms,
+                    ..
+                } = event
+                {
+                    self.events
+                        .lock()
+                        .push((*success, *retries, *rate_limit_wait_ms));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        // First request returns 429 with reset in the past (immediate retry).
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(429).append_header("X-RateLimit-Reset", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Second request succeeds.
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = GitHubClient::new_with_base_url(
+            "ghp_test123".into(),
+            server.uri(),
+            None,
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .graphql("query { viewer { login } }", &json!({}))
+            .await;
+        assert!(result.is_ok());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        let (success, retries, _rate_limit_wait_ms) = &events[0];
+        assert!(success);
+        assert_eq!(*retries, 1);
     }
 }

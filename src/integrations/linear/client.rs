@@ -59,7 +59,11 @@ impl LinearClient {
     }
 
     /// Test constructor — caller supplies a wiremock base URL.
-    pub fn new_with_base_url(api_key: String, base_url: String, observer: Arc<dyn Observer>) -> Self {
+    pub fn new_with_base_url(
+        api_key: String,
+        base_url: String,
+        observer: Arc<dyn Observer>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             api_key,
@@ -71,12 +75,14 @@ impl LinearClient {
     /// Execute a GraphQL query or mutation.
     ///
     /// Linear uses a raw API key in the Authorization header (no `Bearer` prefix).
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn graphql(&self, query: &str, variables: &Value) -> Result<Value, LinearApiError> {
         let url = format!("{}/graphql", self.base_url);
         let body = json!({ "query": query, "variables": variables });
         let mut retries = 0u32;
         let call_start = std::time::Instant::now();
         let mut total_rate_limit_wait_ms: u64 = 0;
+        #[allow(unused_assignments)]
         let mut last_status: Option<u16> = None;
 
         let result: Result<Value, LinearApiError> = loop {
@@ -150,21 +156,22 @@ impl LinearClient {
             .and_then(|v| serde_json::to_string(v).ok())
             .map(|s| s.len() as u64);
 
-        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
-            integration: "linear".into(),
-            method: "graphql".into(),
-            success,
-            duration_ms,
-            error,
-            retries,
-            status_code: last_status,
-            response_size_bytes,
-            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
-                Some(total_rate_limit_wait_ms)
-            } else {
-                None
-            },
-        });
+        self.observer
+            .record_event(&ObserverEvent::IntegrationApiCall {
+                integration: "linear".into(),
+                method: "graphql".into(),
+                success,
+                duration_ms,
+                error,
+                retries,
+                status_code: last_status,
+                response_size_bytes,
+                rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                    Some(total_rate_limit_wait_ms)
+                } else {
+                    None
+                },
+            });
 
         result
     }
@@ -296,7 +303,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("bad_key".into(), server.uri(), Arc::new(NoopObserver));
+        let client =
+            LinearClient::new_with_base_url("bad_key".into(), server.uri(), Arc::new(NoopObserver));
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -398,5 +406,61 @@ mod tests {
         let events = observer.events.lock();
         assert_eq!(events.len(), 1);
         assert!(events[0].contains("linear:graphql:success=true:status=Some(200)"));
+    }
+
+    #[tokio::test]
+    async fn graphql_emits_integration_api_call_event_on_auth_error() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    success,
+                    status_code,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:success={success}:status={status_code:?}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = LinearClient::new_with_base_url(
+            "bad_key".into(),
+            server.uri(),
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .graphql("query { viewer { id } }", &serde_json::json!({}))
+            .await;
+        assert!(result.is_err());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("linear:success=false:status=Some(401)"));
     }
 }
