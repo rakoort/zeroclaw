@@ -128,6 +128,9 @@ impl Observer for LogObserver {
                 duration_ms,
                 error,
                 retries,
+                status_code,
+                response_size_bytes,
+                rate_limit_wait_ms,
             } => {
                 if *success {
                     info!(
@@ -135,6 +138,9 @@ impl Observer for LogObserver {
                         method = %method,
                         duration_ms = duration_ms,
                         retries = retries,
+                        status_code = status_code.unwrap_or(0),
+                        response_size_bytes = response_size_bytes.unwrap_or(0),
+                        rate_limit_wait_ms = rate_limit_wait_ms.unwrap_or(0),
                         "integration.api_call"
                     );
                 } else {
@@ -143,6 +149,9 @@ impl Observer for LogObserver {
                         method = %method,
                         duration_ms = duration_ms,
                         retries = retries,
+                        status_code = status_code.unwrap_or(0),
+                        response_size_bytes = response_size_bytes.unwrap_or(0),
+                        rate_limit_wait_ms = rate_limit_wait_ms.unwrap_or(0),
                         error = error.as_deref().unwrap_or("unknown"),
                         "integration.api_call.error"
                     );
@@ -240,6 +249,38 @@ mod tests {
         obs.record_event(&ObserverEvent::Error {
             component: "provider".into(),
             message: "timeout".into(),
+        });
+    }
+
+    #[test]
+    fn log_observer_integration_api_call_success_no_panic() {
+        let obs = LogObserver::new();
+        obs.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "github".into(),
+            method: "graphql".into(),
+            success: true,
+            duration_ms: 200,
+            error: None,
+            retries: 0,
+            status_code: Some(200),
+            response_size_bytes: Some(4096),
+            rate_limit_wait_ms: None,
+        });
+    }
+
+    #[test]
+    fn log_observer_integration_api_call_failure_no_panic() {
+        let obs = LogObserver::new();
+        obs.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "slack".into(),
+            method: "chat.postMessage".into(),
+            success: false,
+            duration_ms: 5000,
+            error: Some("rate limited".into()),
+            retries: 3,
+            status_code: Some(429),
+            response_size_bytes: None,
+            rate_limit_wait_ms: Some(30000),
         });
     }
 
