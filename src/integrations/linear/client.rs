@@ -1,7 +1,10 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::debug;
+
+use crate::observability::traits::{Observer, ObserverEvent};
 
 const MAX_RETRIES: u32 = 3;
 
@@ -46,20 +49,22 @@ pub struct LinearClient {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    observer: Arc<dyn Observer>,
 }
 
 impl LinearClient {
     /// Production constructor — base URL defaults to `https://api.linear.app`.
-    pub fn new(api_key: String) -> Self {
-        Self::new_with_base_url(api_key, "https://api.linear.app".into())
+    pub fn new(api_key: String, observer: Arc<dyn Observer>) -> Self {
+        Self::new_with_base_url(api_key, "https://api.linear.app".into(), observer)
     }
 
     /// Test constructor — caller supplies a wiremock base URL.
-    pub fn new_with_base_url(api_key: String, base_url: String) -> Self {
+    pub fn new_with_base_url(api_key: String, base_url: String, observer: Arc<dyn Observer>) -> Self {
         Self {
             http: reqwest::Client::new(),
             api_key,
             base_url,
+            observer,
         }
     }
 
@@ -70,8 +75,11 @@ impl LinearClient {
         let url = format!("{}/graphql", self.base_url);
         let body = json!({ "query": query, "variables": variables });
         let mut retries = 0u32;
+        let call_start = std::time::Instant::now();
+        let mut total_rate_limit_wait_ms: u64 = 0;
+        let mut last_status: Option<u16> = None;
 
-        loop {
+        let result: Result<Value, LinearApiError> = loop {
             let resp = self
                 .http
                 .post(&url)
@@ -83,6 +91,7 @@ impl LinearClient {
                 .map_err(LinearApiError::Network)?;
 
             let status = resp.status().as_u16();
+            last_status = Some(status);
 
             // Rate limiting — Linear returns 429 with X-RateLimit-Requests-Reset (ms epoch).
             if status == 429 {
@@ -94,12 +103,13 @@ impl LinearClient {
                     .unwrap_or(0);
 
                 if retries >= MAX_RETRIES {
-                    return Err(LinearApiError::RateLimited {
+                    break Err(LinearApiError::RateLimited {
                         reset_at_ms: reset_ms,
                     });
                 }
 
                 let wait = compute_wait_from_reset(reset_ms);
+                total_rate_limit_wait_ms += wait.as_millis() as u64;
                 debug!(reset_ms, ?wait, retries, "linear rate limited, retrying");
                 tokio::time::sleep(wait).await;
                 retries += 1;
@@ -109,7 +119,7 @@ impl LinearClient {
             // Auth errors.
             if status == 401 || status == 403 {
                 let text = resp.text().await.unwrap_or_default();
-                return Err(LinearApiError::AuthError { message: text });
+                break Err(LinearApiError::AuthError { message: text });
             }
 
             let json: Value = resp.json().await.map_err(LinearApiError::Network)?;
@@ -119,17 +129,44 @@ impl LinearClient {
                 if let Ok(errs) = serde_json::from_value::<Vec<LinearGraphqlError>>(errors.clone())
                 {
                     if !errs.is_empty() {
-                        return Err(LinearApiError::GraphqlErrors { errors: errs });
+                        break Err(LinearApiError::GraphqlErrors { errors: errs });
                     }
                 }
             }
 
             // Return `data` directly (not the wrapper).
             match json.get("data").cloned() {
-                Some(data) => return Ok(data),
-                None => return Ok(json),
+                Some(data) => break Ok(data),
+                None => break Ok(json),
             }
-        }
+        };
+
+        let duration_ms = call_start.elapsed().as_millis() as u64;
+        let success = result.is_ok();
+        let error = result.as_ref().err().map(|e| e.to_string());
+        let response_size_bytes = result
+            .as_ref()
+            .ok()
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| s.len() as u64);
+
+        self.observer.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "linear".into(),
+            method: "graphql".into(),
+            success,
+            duration_ms,
+            error,
+            retries,
+            status_code: last_status,
+            response_size_bytes,
+            rate_limit_wait_ms: if total_rate_limit_wait_ms > 0 {
+                Some(total_rate_limit_wait_ms)
+            } else {
+                None
+            },
+        });
+
+        result
     }
 }
 
@@ -152,8 +189,13 @@ fn compute_wait_from_reset(reset_ms: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observability::noop::NoopObserver;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_client(server: &MockServer) -> LinearClient {
+        LinearClient::new_with_base_url("lin_api_test".into(), server.uri(), Arc::new(NoopObserver))
+    }
 
     #[tokio::test]
     async fn graphql_success_returns_data() {
@@ -167,7 +209,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("lin_api_test".into(), server.uri());
+        let client = test_client(&server);
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -185,7 +227,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("lin_api_key_123".into(), server.uri());
+        let client = LinearClient::new_with_base_url(
+            "lin_api_key_123".into(),
+            server.uri(),
+            Arc::new(NoopObserver),
+        );
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -203,7 +249,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("lin_api_test".into(), server.uri());
+        let client = test_client(&server);
         let result = client
             .graphql("query { issue { id } }", &serde_json::json!({}))
             .await;
@@ -234,7 +280,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("lin_api_test".into(), server.uri());
+        let client = test_client(&server);
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -250,7 +296,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LinearClient::new_with_base_url("bad_key".into(), server.uri());
+        let client = LinearClient::new_with_base_url("bad_key".into(), server.uri(), Arc::new(NoopObserver));
         let result = client
             .graphql("query { viewer { id } }", &serde_json::json!({}))
             .await;
@@ -292,5 +338,65 @@ mod tests {
     fn compute_wait_from_reset_past() {
         let wait = compute_wait_from_reset(0);
         assert_eq!(wait, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn graphql_emits_integration_api_call_event_on_success() {
+        use crate::observability::traits::ObserverMetric;
+        use parking_lot::Mutex;
+
+        #[derive(Default)]
+        struct CapturingObserver {
+            events: Mutex<Vec<String>>,
+        }
+        impl Observer for CapturingObserver {
+            fn record_event(&self, event: &ObserverEvent) {
+                if let ObserverEvent::IntegrationApiCall {
+                    integration,
+                    method,
+                    success,
+                    status_code,
+                    ..
+                } = event
+                {
+                    self.events.lock().push(format!(
+                        "{integration}:{method}:success={success}:status={status_code:?}"
+                    ));
+                }
+            }
+            fn record_metric(&self, _: &ObserverMetric) {}
+            fn name(&self) -> &str {
+                "capturing"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data": {"viewer": {"id": "user_123"}}})),
+            )
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(CapturingObserver::default());
+        let client = LinearClient::new_with_base_url(
+            "lin_api_test".into(),
+            server.uri(),
+            observer.clone() as Arc<dyn Observer>,
+        );
+
+        let result = client
+            .graphql("query { viewer { id } }", &serde_json::json!({}))
+            .await;
+        assert!(result.is_ok());
+
+        let events = observer.events.lock();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("linear:graphql:success=true:status=Some(200)"));
     }
 }
