@@ -91,6 +91,9 @@ pub enum ObserverEvent {
         duration_ms: u64,
         error: Option<String>,
         retries: u32,
+        status_code: Option<u16>,
+        response_size_bytes: Option<u64>,
+        rate_limit_wait_ms: Option<u64>,
     },
 }
 
@@ -277,6 +280,26 @@ mod tests {
             duration_ms: 150,
             error: None,
             retries: 0,
+            status_code: None,
+            response_size_bytes: None,
+            rate_limit_wait_ms: None,
+        };
+        let cloned = event.clone();
+        assert!(matches!(cloned, ObserverEvent::IntegrationApiCall { .. }));
+    }
+
+    #[test]
+    fn integration_api_call_event_with_extended_fields_is_cloneable() {
+        let event = ObserverEvent::IntegrationApiCall {
+            integration: "github".into(),
+            method: "graphql".into(),
+            success: true,
+            duration_ms: 150,
+            error: None,
+            retries: 0,
+            status_code: Some(200),
+            response_size_bytes: Some(1024),
+            rate_limit_wait_ms: None,
         };
         let cloned = event.clone();
         assert!(matches!(cloned, ObserverEvent::IntegrationApiCall { .. }));
