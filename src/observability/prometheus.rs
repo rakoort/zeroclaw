@@ -339,6 +339,17 @@ mod tests {
             component: "provider".into(),
             message: "timeout".into(),
         });
+        obs.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "slack".into(),
+            method: "chat.postMessage".into(),
+            success: true,
+            duration_ms: 150,
+            error: None,
+            retries: 0,
+            status_code: Some(200),
+            response_size_bytes: Some(256),
+            rate_limit_wait_ms: None,
+        });
     }
 
     #[test]

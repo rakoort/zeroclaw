@@ -460,6 +460,17 @@ mod tests {
             component: "provider".into(),
             message: "timeout".into(),
         });
+        obs.record_event(&ObserverEvent::IntegrationApiCall {
+            integration: "github".into(),
+            method: "graphql".into(),
+            success: true,
+            duration_ms: 100,
+            error: None,
+            retries: 0,
+            status_code: Some(200),
+            response_size_bytes: Some(512),
+            rate_limit_wait_ms: None,
+        });
     }
 
     #[test]
