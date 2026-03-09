@@ -178,7 +178,7 @@ mod tests {
     async fn updates_enabled_flag() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -206,7 +206,7 @@ mod tests {
             .await
             .unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -231,7 +231,7 @@ mod tests {
         config.autonomy.level = AutonomyLevel::ReadOnly;
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -257,7 +257,7 @@ mod tests {
         config.autonomy.allowed_commands = vec!["echo".into(), "touch".into()];
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let denied = tool
@@ -296,7 +296,7 @@ mod tests {
         config.autonomy.max_actions_per_hour = 0;
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool

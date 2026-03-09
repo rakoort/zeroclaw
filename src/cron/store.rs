@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::cron::{
     next_run_for_schedule, schedule_cron_expression, validate_schedule, CronJob, CronJobPatch,
-    CronRun, DeliveryConfig, JobType, Schedule, SessionTarget,
+    CronRun, DeliveryConfig, JobType, Schedule, SessionTarget, UpsertResult,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -19,7 +19,11 @@ impl rusqlite::types::FromSql for JobType {
     }
 }
 
-pub fn add_job(config: &Config, expression: &str, command: &str) -> Result<CronJob> {
+pub fn add_job(
+    config: &Config,
+    expression: &str,
+    command: &str,
+) -> Result<(CronJob, UpsertResult)> {
     let schedule = Schedule::Cron {
         expr: expression.to_string(),
         tz: None,
@@ -32,9 +36,42 @@ pub fn add_shell_job(
     name: Option<String>,
     schedule: Schedule,
     command: &str,
-) -> Result<CronJob> {
+) -> Result<(CronJob, UpsertResult)> {
     let now = Utc::now();
     validate_schedule(&schedule, now)?;
+
+    // Upsert: if a named job already exists, update it instead of inserting.
+    if let Some(ref name_val) = name {
+        if let Some(existing) = find_by_name(config, name_val)? {
+            let next_run = next_run_for_schedule(&schedule, now)?;
+            let expression = schedule_cron_expression(&schedule).unwrap_or_default();
+            let schedule_json = serde_json::to_string(&schedule)?;
+            let delete_after_run = matches!(schedule, Schedule::At { .. });
+
+            with_connection(config, |conn| {
+                conn.execute(
+                    "UPDATE cron_jobs
+                     SET expression = ?1, command = ?2, schedule = ?3,
+                         delete_after_run = ?4, next_run = ?5
+                     WHERE id = ?6",
+                    params![
+                        expression,
+                        command,
+                        schedule_json,
+                        if delete_after_run { 1 } else { 0 },
+                        next_run.to_rfc3339(),
+                        existing.id,
+                    ],
+                )
+                .context("Failed to update cron shell job")?;
+                Ok(())
+            })?;
+
+            let job = get_job(config, &existing.id)?;
+            return Ok((job, UpsertResult::Updated));
+        }
+    }
+
     let next_run = next_run_for_schedule(&schedule, now)?;
     let id = Uuid::new_v4().to_string();
     let expression = schedule_cron_expression(&schedule).unwrap_or_default();
@@ -64,7 +101,8 @@ pub fn add_shell_job(
         Ok(())
     })?;
 
-    get_job(config, &id)
+    let job = get_job(config, &id)?;
+    Ok((job, UpsertResult::Created))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -77,14 +115,50 @@ pub fn add_agent_job(
     model: Option<String>,
     delivery: Option<DeliveryConfig>,
     delete_after_run: bool,
-) -> Result<CronJob> {
+) -> Result<(CronJob, UpsertResult)> {
     let now = Utc::now();
     validate_schedule(&schedule, now)?;
+    let delivery = delivery.unwrap_or_default();
+
+    // Upsert: if a named job already exists, update it instead of inserting.
+    if let Some(ref name_val) = name {
+        if let Some(existing) = find_by_name(config, name_val)? {
+            let next_run = next_run_for_schedule(&schedule, now)?;
+            let expression = schedule_cron_expression(&schedule).unwrap_or_default();
+            let schedule_json = serde_json::to_string(&schedule)?;
+
+            with_connection(config, |conn| {
+                conn.execute(
+                    "UPDATE cron_jobs
+                     SET expression = ?1, schedule = ?2, prompt = ?3,
+                         session_target = ?4, model = ?5, delivery = ?6,
+                         delete_after_run = ?7, next_run = ?8
+                     WHERE id = ?9",
+                    params![
+                        expression,
+                        schedule_json,
+                        prompt,
+                        session_target.as_str(),
+                        model,
+                        serde_json::to_string(&delivery)?,
+                        if delete_after_run { 1 } else { 0 },
+                        next_run.to_rfc3339(),
+                        existing.id,
+                    ],
+                )
+                .context("Failed to update cron agent job")?;
+                Ok(())
+            })?;
+
+            let job = get_job(config, &existing.id)?;
+            return Ok((job, UpsertResult::Updated));
+        }
+    }
+
     let next_run = next_run_for_schedule(&schedule, now)?;
     let id = Uuid::new_v4().to_string();
     let expression = schedule_cron_expression(&schedule).unwrap_or_default();
     let schedule_json = serde_json::to_string(&schedule)?;
-    let delivery = delivery.unwrap_or_default();
 
     with_connection(config, |conn| {
         conn.execute(
@@ -110,7 +184,8 @@ pub fn add_agent_job(
         Ok(())
     })?;
 
-    get_job(config, &id)
+    let job = get_job(config, &id)?;
+    Ok((job, UpsertResult::Created))
 }
 
 pub fn list_jobs(config: &Config) -> Result<Vec<CronJob>> {
@@ -144,6 +219,23 @@ pub fn get_job(config: &Config, job_id: &str) -> Result<CronJob> {
             map_cron_job_row(row).map_err(Into::into)
         } else {
             anyhow::bail!("Cron job '{job_id}' not found")
+        }
+    })
+}
+
+pub fn find_by_name(config: &Config, name: &str) -> Result<Option<CronJob>> {
+    with_connection(config, |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
+                    enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output
+             FROM cron_jobs WHERE name = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![name])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_cron_job_row(row)?))
+        } else {
+            Ok(None)
         }
     })
 }
@@ -597,7 +689,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let job = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         assert_eq!(job.expression, "*/5 * * * *");
         assert_eq!(job.command, "echo ok");
         assert!(matches!(job.schedule, Schedule::Cron { .. }));
@@ -608,7 +700,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let one_shot = add_shell_job(
+        let (one_shot, _) = add_shell_job(
             &config,
             None,
             Schedule::At {
@@ -619,7 +711,7 @@ mod tests {
         .unwrap();
         assert!(one_shot.delete_after_run);
 
-        let recurring = add_shell_job(
+        let (recurring, _) = add_shell_job(
             &config,
             None,
             Schedule::Every { every_ms: 60_000 },
@@ -634,7 +726,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let job = add_job(&config, "*/10 * * * *", "echo roundtrip").unwrap();
+        let (job, _) = add_job(&config, "*/10 * * * *", "echo roundtrip").unwrap();
         let listed = list_jobs(&config).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, job.id);
@@ -648,7 +740,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let job = add_job(&config, "* * * * *", "echo due").unwrap();
+        let (job, _) = add_job(&config, "* * * * *", "echo due").unwrap();
 
         let due_now = due_jobs(&config, Utc::now()).unwrap();
         assert!(due_now.is_empty(), "new job should not be due immediately");
@@ -676,9 +768,9 @@ mod tests {
         let mut config = test_config(&tmp);
         config.scheduler.max_tasks = 2;
 
-        let _ = add_job(&config, "* * * * *", "echo due-1").unwrap();
-        let _ = add_job(&config, "* * * * *", "echo due-2").unwrap();
-        let _ = add_job(&config, "* * * * *", "echo due-3").unwrap();
+        let _ = add_job(&config, "* * * * *", "echo due-1");
+        let _ = add_job(&config, "* * * * *", "echo due-2");
+        let _ = add_job(&config, "* * * * *", "echo due-3");
 
         let far_future = Utc::now() + ChronoDuration::days(365);
         let due = due_jobs(&config, far_future).unwrap();
@@ -690,7 +782,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let job = add_job(&config, "*/15 * * * *", "echo run").unwrap();
+        let (job, _) = add_job(&config, "*/15 * * * *", "echo run").unwrap();
         reschedule_after_run(&config, &job, false, "failed output").unwrap();
 
         let listed = list_jobs(&config).unwrap();
@@ -789,7 +881,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.cron.max_run_history = 2;
-        let job = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         let base = Utc::now();
 
         for idx in 0..3 {
@@ -806,7 +898,7 @@ mod tests {
     fn remove_job_cascades_run_history() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
-        let job = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         let start = Utc::now();
         record_run(
             &config,
@@ -828,7 +920,7 @@ mod tests {
     fn record_run_truncates_large_output() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
-        let job = add_job(&config, "*/5 * * * *", "echo trunc").unwrap();
+        let (job, _) = add_job(&config, "*/5 * * * *", "echo trunc").unwrap();
         let output = "x".repeat(MAX_CRON_OUTPUT_BYTES + 512);
 
         record_run(
@@ -852,7 +944,7 @@ mod tests {
     fn reschedule_after_run_truncates_last_output() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
-        let job = add_job(&config, "*/5 * * * *", "echo trunc").unwrap();
+        let (job, _) = add_job(&config, "*/5 * * * *", "echo trunc").unwrap();
         let output = "y".repeat(MAX_CRON_OUTPUT_BYTES + 1024);
 
         reschedule_after_run(&config, &job, false, &output).unwrap();
@@ -861,5 +953,210 @@ mod tests {
         let last_output = stored.last_output.as_deref().unwrap_or_default();
         assert!(last_output.ends_with(TRUNCATED_OUTPUT_MARKER));
         assert!(last_output.len() <= MAX_CRON_OUTPUT_BYTES);
+    }
+
+    // --- find_by_name tests ---
+
+    #[test]
+    fn find_by_name_returns_none_when_no_match() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let found = find_by_name(&config, "nonexistent").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_by_name_returns_matching_job() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let job = add_shell_job(
+            &config,
+            Some("my-shell-job".into()),
+            Schedule::Every { every_ms: 60_000 },
+            "echo find-me",
+        )
+        .unwrap();
+
+        let found = find_by_name(&config, "my-shell-job").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, job.0.id);
+    }
+
+    #[test]
+    fn find_by_name_ignores_unnamed_jobs() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let _ = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo unnamed",
+        )
+        .unwrap();
+
+        let found = find_by_name(&config, "echo unnamed").unwrap();
+        assert!(found.is_none());
+    }
+
+    // --- upsert tests ---
+
+    #[test]
+    fn add_agent_job_upserts_when_name_exists() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (first, first_result) = add_agent_job(
+            &config,
+            Some("standup".into()),
+            Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "Run morning standup",
+            SessionTarget::Isolated,
+            Some("gemini-pro".into()),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(first_result, UpsertResult::Created));
+
+        let (second, second_result) = add_agent_job(
+            &config,
+            Some("standup".into()),
+            Schedule::Cron {
+                expr: "0 10 * * *".into(),
+                tz: None,
+            },
+            "Run updated standup",
+            SessionTarget::Main,
+            Some("gpt-4o".into()),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(second_result, UpsertResult::Updated));
+
+        // Same row
+        assert_eq!(first.id, second.id);
+        // Fields updated
+        assert_eq!(second.expression, "0 10 * * *");
+        assert_eq!(second.prompt.as_deref(), Some("Run updated standup"));
+        assert_eq!(second.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(second.session_target, SessionTarget::Main);
+
+        // Only one job total
+        let all = list_jobs(&config).unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn add_agent_job_creates_new_row_for_different_name() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (first, first_result) = add_agent_job(
+            &config,
+            Some("standup".into()),
+            Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "Run morning standup",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(first_result, UpsertResult::Created));
+
+        let (second, second_result) = add_agent_job(
+            &config,
+            Some("planning".into()),
+            Schedule::Cron {
+                expr: "0 14 * * 1".into(),
+                tz: None,
+            },
+            "Run sprint planning",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(second_result, UpsertResult::Created));
+
+        assert_ne!(first.id, second.id);
+        let all = list_jobs(&config).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn add_shell_job_upserts_when_name_exists() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (first, first_result) = add_shell_job(
+            &config,
+            Some("backup".into()),
+            Schedule::Cron {
+                expr: "0 2 * * *".into(),
+                tz: None,
+            },
+            "echo backup-v1",
+        )
+        .unwrap();
+        assert!(matches!(first_result, UpsertResult::Created));
+
+        let (second, second_result) = add_shell_job(
+            &config,
+            Some("backup".into()),
+            Schedule::Cron {
+                expr: "0 3 * * *".into(),
+                tz: None,
+            },
+            "echo backup-v2",
+        )
+        .unwrap();
+        assert!(matches!(second_result, UpsertResult::Updated));
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.expression, "0 3 * * *");
+        assert_eq!(second.command, "echo backup-v2");
+
+        let all = list_jobs(&config).unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn add_shell_job_without_name_always_creates() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (first, first_result) = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo unnamed",
+        )
+        .unwrap();
+        assert!(matches!(first_result, UpsertResult::Created));
+
+        let (second, second_result) = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo unnamed",
+        )
+        .unwrap();
+        assert!(matches!(second_result, UpsertResult::Created));
+
+        assert_ne!(first.id, second.id);
+        let all = list_jobs(&config).unwrap();
+        assert_eq!(all.len(), 2);
     }
 }

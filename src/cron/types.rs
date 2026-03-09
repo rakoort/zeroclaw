@@ -133,6 +133,13 @@ pub struct CronRun {
     pub duration_ms: Option<i64>,
 }
 
+/// Indicates whether a cron add operation created a new job or updated an existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpsertResult {
+    Created,
+    Updated,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CronJobPatch {
     pub schedule: Option<Schedule>,

@@ -16,16 +16,32 @@ pub use schedule::{
 };
 #[allow(unused_imports)]
 pub use store::{
-    add_agent_job, add_job, add_shell_job, due_jobs, get_job, list_jobs, list_runs,
+    add_agent_job, add_job, add_shell_job, due_jobs, find_by_name, get_job, list_jobs, list_runs,
     record_last_run, record_run, remove_job, reschedule_after_run, update_job,
 };
-pub use types::{CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType, Schedule, SessionTarget};
+pub use types::{
+    CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType, Schedule, SessionTarget, UpsertResult,
+};
+
+fn upsert_verb(result: UpsertResult) -> &'static str {
+    match result {
+        UpsertResult::Created => "\u{2705} Added",
+        UpsertResult::Updated => "\u{2705} Updated",
+    }
+}
 
 fn validate_job_type(job_type: &str) -> Result<()> {
     match job_type {
         "shell" | "agent" => Ok(()),
         other => bail!("Invalid --type '{other}'. Expected 'shell' or 'agent'."),
     }
+}
+
+fn require_name_for_agent(job_type: &str, name: Option<&String>) -> Result<()> {
+    if job_type == "agent" && name.is_none() {
+        bail!("--name is required for agent jobs (used as unique key for idempotent registration)");
+    }
+    Ok(())
 }
 
 fn build_delivery_config(
@@ -97,21 +113,24 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                 tz,
             };
             validate_job_type(&job_type)?;
+            require_name_for_agent(&job_type, name.as_ref())?;
             match job_type.as_str() {
                 "agent" => {
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
-                    let job = add_agent_job(
+                    let (job, upsert) = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, false,
                     )?;
-                    println!("✅ Added agent cron job {}", job.id);
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} agent cron job {}", job.id);
                     println!("  Expr  : {}", job.expression);
                     println!("  Next  : {}", job.next_run.to_rfc3339());
                     println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
                 }
                 _ => {
-                    let job = add_shell_job(config, name, schedule, &command)?;
-                    println!("✅ Added cron job {}", job.id);
+                    let (job, upsert) = add_shell_job(config, name, schedule, &command)?;
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} cron job {}", job.id);
                     println!("  Expr: {}", job.expression);
                     println!("  Next: {}", job.next_run.to_rfc3339());
                     println!("  Cmd : {}", job.command);
@@ -134,20 +153,23 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                 .with_timezone(&chrono::Utc);
             let schedule = Schedule::At { at };
             validate_job_type(&job_type)?;
+            require_name_for_agent(&job_type, name.as_ref())?;
             match job_type.as_str() {
                 "agent" => {
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
-                    let job = add_agent_job(
+                    let (job, upsert) = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, true,
                     )?;
-                    println!("✅ Added one-shot agent cron job {}", job.id);
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} one-shot agent cron job {}", job.id);
                     println!("  At    : {}", job.next_run.to_rfc3339());
                     println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
                 }
                 _ => {
-                    let job = add_shell_job(config, name, schedule, &command)?;
-                    println!("✅ Added one-shot cron job {}", job.id);
+                    let (job, upsert) = add_shell_job(config, name, schedule, &command)?;
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} one-shot cron job {}", job.id);
                     println!("  At  : {}", job.next_run.to_rfc3339());
                     println!("  Cmd : {}", job.command);
                 }
@@ -166,21 +188,24 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
         } => {
             let schedule = Schedule::Every { every_ms };
             validate_job_type(&job_type)?;
+            require_name_for_agent(&job_type, name.as_ref())?;
             match job_type.as_str() {
                 "agent" => {
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
-                    let job = add_agent_job(
+                    let (job, upsert) = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, false,
                     )?;
-                    println!("✅ Added interval agent cron job {}", job.id);
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} interval agent cron job {}", job.id);
                     println!("  Every(ms): {every_ms}");
                     println!("  Next     : {}", job.next_run.to_rfc3339());
                     println!("  Prompt   : {}", job.prompt.as_deref().unwrap_or(""));
                 }
                 _ => {
-                    let job = add_shell_job(config, name, schedule, &command)?;
-                    println!("✅ Added interval cron job {}", job.id);
+                    let (job, upsert) = add_shell_job(config, name, schedule, &command)?;
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} interval cron job {}", job.id);
                     println!("  Every(ms): {every_ms}");
                     println!("  Next     : {}", job.next_run.to_rfc3339());
                     println!("  Cmd      : {}", job.command);
@@ -199,6 +224,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             name,
         } => {
             validate_job_type(&job_type)?;
+            require_name_for_agent(&job_type, name.as_ref())?;
             match job_type.as_str() {
                 "agent" => {
                     let duration = parse_delay(&delay)?;
@@ -206,16 +232,17 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     let schedule = Schedule::At { at };
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
-                    let job = add_agent_job(
+                    let (job, upsert) = add_agent_job(
                         config, name, schedule, &command, target, model, delivery, true,
                     )?;
-                    println!("✅ Added one-shot agent cron job {}", job.id);
+                    let verb = upsert_verb(upsert);
+                    println!("{verb} one-shot agent cron job {}", job.id);
                     println!("  At    : {}", job.next_run.to_rfc3339());
                     println!("  Prompt: {}", job.prompt.as_deref().unwrap_or(""));
                 }
                 _ => {
-                    let job = add_once(config, &delay, &command)?;
-                    println!("✅ Added one-shot cron job {}", job.id);
+                    let (job, _) = add_once(config, &delay, &command)?;
+                    println!("\u{2705} Added one-shot cron job {}", job.id);
                     println!("  At  : {}", job.next_run.to_rfc3339());
                     println!("  Cmd : {}", job.command);
                 }
@@ -288,7 +315,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
     }
 }
 
-pub fn add_once(config: &Config, delay: &str, command: &str) -> Result<CronJob> {
+pub fn add_once(config: &Config, delay: &str, command: &str) -> Result<(CronJob, UpsertResult)> {
     let duration = parse_delay(delay)?;
     let at = chrono::Utc::now() + duration;
     add_once_at(config, at, command)
@@ -298,7 +325,7 @@ pub fn add_once_at(
     config: &Config,
     at: chrono::DateTime<chrono::Utc>,
     command: &str,
-) -> Result<CronJob> {
+) -> Result<(CronJob, UpsertResult)> {
     let schedule = Schedule::At { at };
     add_shell_job(config, None, schedule, command)
 }
@@ -362,7 +389,7 @@ mod tests {
     }
 
     fn make_job(config: &Config, expr: &str, tz: Option<&str>, cmd: &str) -> CronJob {
-        add_shell_job(
+        let (job, _) = add_shell_job(
             config,
             None,
             Schedule::Cron {
@@ -371,7 +398,8 @@ mod tests {
             },
             cmd,
         )
-        .unwrap()
+        .unwrap();
+        job
     }
 
     fn run_update(
@@ -484,7 +512,7 @@ mod tests {
     fn update_preserves_unchanged_fields() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
-        let job = add_shell_job(
+        let (job, _) = add_shell_job(
             &config,
             Some("original-name".into()),
             Schedule::Cron {
@@ -572,8 +600,7 @@ mod tests {
 
     #[test]
     fn build_delivery_config_rejects_to_without_channel() {
-        let err =
-            super::build_delivery_config(None, Some("123".into())).unwrap_err();
+        let err = super::build_delivery_config(None, Some("123".into())).unwrap_err();
         assert!(err.to_string().contains("--delivery-to requires"));
     }
 
@@ -622,7 +649,7 @@ mod tests {
                 session_target: "isolated".into(),
                 delivery_channel: Some("discord".into()),
                 delivery_to: Some("999".into()),
-                name: None,
+                name: Some("at-reminder".into()),
             },
             &config,
         )
@@ -649,7 +676,7 @@ mod tests {
                 session_target: "main".into(),
                 delivery_channel: None,
                 delivery_to: None,
-                name: None,
+                name: Some("health-check".into()),
             },
             &config,
         )
@@ -688,5 +715,105 @@ mod tests {
         assert_eq!(jobs[0].prompt.as_deref(), Some("Remind me"));
         assert_eq!(jobs[0].name.as_deref(), Some("reminder"));
         assert!(jobs[0].delete_after_run);
+    }
+
+    #[test]
+    fn agent_job_requires_name_at_cli_level() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let result = handle_command(
+            crate::CronCommands::Add {
+                expression: "*/5 * * * *".into(),
+                tz: None,
+                command: "Run standup".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: None,
+            },
+            &config,
+        );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("--name is required for agent jobs"));
+    }
+
+    #[test]
+    fn shell_job_allows_omitting_name() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        handle_command(
+            crate::CronCommands::Add {
+                expression: "*/5 * * * *".into(),
+                tz: None,
+                command: "echo hello".into(),
+                job_type: "shell".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: None,
+            },
+            &config,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].name.is_none());
+    }
+
+    #[test]
+    fn add_agent_job_upserts_via_handler() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        // First add
+        handle_command(
+            crate::CronCommands::Add {
+                expression: "0 9 * * *".into(),
+                tz: None,
+                command: "Run standup v1".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: Some("standup".into()),
+            },
+            &config,
+        )
+        .unwrap();
+
+        assert_eq!(list_jobs(&config).unwrap().len(), 1);
+
+        // Same name, different schedule -> should upsert
+        handle_command(
+            crate::CronCommands::Add {
+                expression: "0 10 * * *".into(),
+                tz: None,
+                command: "Run standup v2".into(),
+                job_type: "agent".into(),
+                model: None,
+                session_target: "isolated".into(),
+                delivery_channel: None,
+                delivery_to: None,
+                name: Some("standup".into()),
+            },
+            &config,
+        )
+        .unwrap();
+
+        // Still only one job
+        let jobs = list_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].prompt.as_deref(), Some("Run standup v2"));
+        assert_eq!(jobs[0].expression, "0 10 * * *");
     }
 }

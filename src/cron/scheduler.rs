@@ -900,7 +900,7 @@ mod tests {
     async fn persist_job_result_records_run_and_reschedules_shell_job() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
@@ -918,7 +918,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let (job, _) = cron::add_agent_job(
             &config,
             Some("one-shot".into()),
             crate::cron::Schedule::At { at },
@@ -943,9 +943,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let (job, _) = cron::add_agent_job(
             &config,
-            Some("one-shot".into()),
+            Some("one-shot-fail".into()),
             crate::cron::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
@@ -969,7 +969,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
+        let (job, _) = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
         assert!(job.delete_after_run);
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
@@ -985,7 +985,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
+        let (job, _) = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
         assert!(job.delete_after_run);
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
@@ -1001,7 +1001,7 @@ mod tests {
     async fn persist_job_result_delivery_failure_non_best_effort_marks_error() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_agent_job(
+        let (job, _) = cron::add_agent_job(
             &config,
             Some("announce-job".into()),
             crate::cron::Schedule::Cron {
@@ -1039,7 +1039,7 @@ mod tests {
     async fn persist_job_result_delivery_failure_best_effort_keeps_success() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_agent_job(
+        let (job, _) = cron::add_agent_job(
             &config,
             Some("announce-job-best-effort".into()),
             crate::cron::Schedule::Cron {
@@ -1078,7 +1078,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let (job, _) = cron::add_agent_job(
             &config,
             Some("at-no-autodelete".into()),
             crate::cron::Schedule::At { at },

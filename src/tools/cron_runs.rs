@@ -137,7 +137,7 @@ mod tests {
     async fn lists_runs_with_truncation() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let (job, _) = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
 
         let long_output = "x".repeat(1000);
         let now = Utc::now();

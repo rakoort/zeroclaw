@@ -184,7 +184,7 @@ impl Tool for CronAddTool {
                     return Ok(blocked);
                 }
 
-                cron::add_shell_job(&self.config, name, schedule, command)
+                cron::add_shell_job(&self.config, name, schedule, command).map(|(job, _)| job)
             }
             JobType::Agent => {
                 let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
@@ -245,6 +245,7 @@ impl Tool for CronAddTool {
                     delivery,
                     delete_after_run,
                 )
+                .map(|(job, _)| job)
             }
         };
 
