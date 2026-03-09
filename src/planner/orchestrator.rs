@@ -277,7 +277,7 @@ pub async fn plan_then_execute(
 
                 let mut action_messages = vec![
                     ChatMessage::system(executor_system),
-                    ChatMessage::user(action.description.clone()),
+                    ChatMessage::user(action.executor_instruction().to_string()),
                 ];
 
                 let action_type = action.action_type.clone();
@@ -474,6 +474,310 @@ pub async fn plan_then_execute(
             "duration_ms": plan_started.elapsed().as_millis(),
             "passthrough": false,
             "synthesized": should_synthesize,
+        }),
+    );
+
+    Ok(PlanExecutionResult::Executed {
+        output,
+        action_results: accumulated,
+        analysis: plan.analysis,
+    })
+}
+
+/// Execute a pre-built plan (phases 2+3 only, skipping the planner LLM).
+///
+/// Used by the scheduler when a `.plan.toml` file provides the plan
+/// directly, bypassing the planner model.
+#[allow(clippy::too_many_arguments, clippy::implicit_hasher)]
+pub async fn execute_plan(
+    plan: super::types::Plan,
+    provider: &dyn Provider,
+    executor_model: &str,
+    planner_model: &str,
+    user_message: &str,
+    tools_registry: &[Box<dyn Tool>],
+    tool_specs: &[ToolSpec],
+    observer: &dyn Observer,
+    provider_name: &str,
+    temperature: f64,
+    max_tool_iterations: usize,
+    max_executor_iterations: usize,
+    channel_name: &str,
+    cancellation_token: Option<CancellationToken>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
+    model_routes: &HashMap<String, String>,
+    tool_result_ttl: u32,
+) -> Result<PlanExecutionResult> {
+    if plan.is_passthrough() {
+        return Ok(PlanExecutionResult::Passthrough);
+    }
+
+    // ── Phase 2: Execute ─────────────────────────────────────────────
+
+    let groups = plan.grouped_actions();
+    let plan_started = Instant::now();
+    let plan_analysis = plan.analysis.as_deref();
+
+    runtime_trace::record_event(
+        "plan_start",
+        Some(channel_name),
+        Some(provider_name),
+        Some(executor_model),
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "action_count": plan.actions.len(),
+            "group_count": groups.len(),
+            "actions": plan.actions.iter().map(|a| serde_json::json!({
+                "action_type": &a.action_type,
+                "group": a.group,
+                "description": &a.description,
+                "model_hint": &a.model_hint,
+            })).collect::<Vec<_>>(),
+            "source": "plan_file",
+            "executor_model": executor_model,
+            "analysis": plan_analysis,
+        }),
+    );
+
+    let mut accumulated: Vec<String> = Vec::new();
+    let mut last_output = String::new();
+    let mut any_succeeded = false;
+    let mut succeeded_count: usize = 0;
+
+    let all_tool_names: Vec<String> = tool_specs.iter().map(|s| s.name.clone()).collect();
+
+    for group in &groups {
+        let group_accumulated = compress_accumulated_lines(&accumulated, 3000);
+
+        let futures: Vec<_> = group
+            .iter()
+            .enumerate()
+            .map(|(action_index, action)| {
+                let executor_system =
+                    build_executor_prompt(action, &group_accumulated, plan_analysis);
+                let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
+
+                let action_model_hint = action.model_hint.clone();
+                let action_model = action_model_hint
+                    .as_ref()
+                    .and_then(|hint| model_routes.get(hint))
+                    .map(String::as_str)
+                    .unwrap_or(executor_model)
+                    .to_string();
+
+                let mut combined_excluded = excluded_tools.to_vec();
+                if !action.tools.is_empty() {
+                    combined_excluded.extend(
+                        all_tool_names
+                            .iter()
+                            .filter(|name| !wanted_tools.contains(name))
+                            .cloned(),
+                    );
+                }
+                combined_excluded.sort();
+                combined_excluded.dedup();
+
+                let mut action_messages = vec![
+                    ChatMessage::system(executor_system),
+                    ChatMessage::user(action.executor_instruction().to_string()),
+                ];
+
+                let action_type = action.action_type.clone();
+                let action_group = action.group;
+                let action_desc = action.description.clone();
+                let budget = resolve_action_budget(
+                    action.max_iterations,
+                    max_executor_iterations,
+                    max_tool_iterations,
+                );
+                let ct = cancellation_token.clone();
+
+                async move {
+                    runtime_trace::record_event(
+                        "action_start",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(&action_model),
+                        None,
+                        None,
+                        None,
+                        serde_json::json!({
+                            "action_index": action_index,
+                            "action_type": &action_type,
+                            "group": action_group,
+                            "description": &action_desc,
+                            "model_hint": &action_model_hint,
+                            "iteration_budget": budget,
+                        }),
+                    );
+
+                    let action_started = Instant::now();
+
+                    let result = crate::agent::loop_::run_tool_call_loop(
+                        provider,
+                        &mut action_messages,
+                        tools_registry,
+                        observer,
+                        provider_name,
+                        &action_model,
+                        temperature,
+                        true, // silent
+                        None, // no approval manager
+                        channel_name,
+                        &crate::config::MultimodalConfig::default(),
+                        budget,
+                        ct,
+                        None, // no delta sender
+                        hooks,
+                        &combined_excluded,
+                        None, // route_hint
+                        tool_result_ttl,
+                    )
+                    .await;
+
+                    let action_result = match result {
+                        Ok(output) => ActionResult {
+                            action_type,
+                            group: action_group,
+                            success: true,
+                            summary: output.clone(),
+                            raw_output: output,
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                action_type = action_type.as_str(),
+                                group = action_group,
+                                "Action execution failed: {e}"
+                            );
+                            ActionResult {
+                                action_type,
+                                group: action_group,
+                                success: false,
+                                summary: e.to_string(),
+                                raw_output: String::new(),
+                            }
+                        }
+                    };
+
+                    runtime_trace::record_event(
+                        "action_end",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(&action_model),
+                        None,
+                        Some(action_result.success),
+                        if action_result.success {
+                            None
+                        } else {
+                            Some(&action_result.summary)
+                        },
+                        serde_json::json!({
+                            "action_index": action_index,
+                            "action_type": &action_result.action_type,
+                            "group": action_result.group,
+                            "duration_ms": action_started.elapsed().as_millis(),
+                        }),
+                    );
+
+                    action_result
+                }
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(futures).await;
+
+        for (action, result) in group.iter().zip(results.iter()) {
+            accumulated.push(result.to_accumulated_line());
+            if result.success {
+                succeeded_count += 1;
+            }
+            if action.critical && !result.success {
+                runtime_trace::record_event(
+                    "plan_end",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(executor_model),
+                    None,
+                    Some(false),
+                    Some(&result.summary),
+                    serde_json::json!({
+                        "critical_abort": true,
+                        "action_type": &action.action_type,
+                        "group": action.group,
+                        "succeeded": succeeded_count,
+                        "failed": accumulated.len().saturating_sub(succeeded_count),
+                        "duration_ms": plan_started.elapsed().as_millis(),
+                    }),
+                );
+                return Err(anyhow::anyhow!(
+                    "Critical action '{}' (group {}) failed: {}",
+                    action.action_type,
+                    action.group,
+                    result.summary
+                ));
+            }
+        }
+        if let Some(last_success) = results.iter().rev().find(|r| r.success) {
+            last_output = last_success.summary.clone();
+            any_succeeded = true;
+        }
+    }
+
+    let total_actions: usize = groups.iter().map(|g| g.len()).sum();
+
+    // ── Phase 3: Synthesize ──────────────────────────────────────────
+
+    let should_synthesize = should_run_synthesis(plan.require_synthesis, succeeded_count);
+
+    let output = if should_synthesize {
+        let synthesis_system = build_synthesis_prompt(user_message, plan_analysis, &accumulated);
+
+        let synthesis_messages = vec![
+            ChatMessage::system(synthesis_system),
+            ChatMessage::user("Synthesize the results.".to_string()),
+        ];
+
+        match provider
+            .chat(
+                ChatRequest {
+                    messages: &synthesis_messages,
+                    tools: None,
+                    route_hint: Some("planner"),
+                },
+                planner_model,
+                temperature,
+            )
+            .await
+        {
+            Ok(resp) => resp.text.unwrap_or(last_output),
+            Err(e) => {
+                tracing::warn!("Synthesis failed ({e}), using last action output");
+                last_output
+            }
+        }
+    } else {
+        last_output
+    };
+
+    runtime_trace::record_event(
+        "plan_end",
+        Some(channel_name),
+        Some(provider_name),
+        Some(executor_model),
+        None,
+        Some(any_succeeded),
+        None,
+        serde_json::json!({
+            "total_actions": total_actions,
+            "succeeded": succeeded_count,
+            "failed": total_actions.saturating_sub(succeeded_count),
+            "duration_ms": plan_started.elapsed().as_millis(),
+            "passthrough": false,
+            "synthesized": should_synthesize,
+            "source": "plan_file",
         }),
     );
 

@@ -189,6 +189,34 @@ async fn run_agent_job(
 
     let planner_model = runtime.planner_model.as_deref().unwrap_or(&executor_model);
 
+    // ── Plan file fast path ─────────────────────────────────────────
+    //
+    // If a .plan.toml file exists alongside a .md context file, load
+    // the plan directly and skip the planner LLM phase.
+    if let Some(plan_path) =
+        crate::planner::find_plan_file(&job.context_files, &config.workspace_dir)
+    {
+        match load_and_execute_plan_file(
+            &plan_path,
+            &name,
+            &prefixed_prompt,
+            &runtime,
+            &executor_model,
+            planner_model,
+        )
+        .await
+        {
+            Ok(output) => return (true, output),
+            Err(e) => {
+                tracing::warn!(
+                    "Plan file loading failed for cron job '{}': {e}, falling back to planner",
+                    job.id
+                );
+                // Fall through to the normal planner path below.
+            }
+        }
+    }
+
     let result = crate::planner::plan_then_execute(
         runtime.provider.as_ref(),
         planner_model,
@@ -237,6 +265,64 @@ async fn run_agent_job(
             // would reject.
             let fresh_prompt = build_fallback_prompt(&job.id, &name, &prompt, &context_prefix);
             run_flat_fallback(config, fresh_prompt, executor_model, runtime.temperature).await
+        }
+    }
+}
+
+/// Load a `.plan.toml` file, resolve template variables, and execute it
+/// directly (skipping the planner LLM phase).
+async fn load_and_execute_plan_file(
+    plan_path: &std::path::Path,
+    job_name: &str,
+    user_message: &str,
+    runtime: &crate::planner::PlannerRuntime,
+    executor_model: &str,
+    planner_model: &str,
+) -> Result<String> {
+    let raw_toml = std::fs::read_to_string(plan_path)
+        .map_err(|e| anyhow::anyhow!("failed to read plan file '{}': {e}", plan_path.display()))?;
+
+    let resolved = crate::planner::resolve_plan_template(&raw_toml, job_name);
+    let plan = crate::planner::parse_plan_toml(&resolved)?;
+
+    tracing::info!(
+        plan_file = %plan_path.display(),
+        action_count = plan.actions.len(),
+        "Loaded plan file, skipping planner LLM"
+    );
+
+    let result = crate::planner::execute_plan(
+        plan,
+        runtime.provider.as_ref(),
+        executor_model,
+        planner_model,
+        user_message,
+        &runtime.tools,
+        &runtime.tool_specs,
+        runtime.observer.as_ref(),
+        "cron",
+        runtime.temperature,
+        runtime.max_tool_iterations,
+        runtime.max_executor_iterations,
+        "cron",
+        None, // no cancellation token
+        None, // no hooks
+        &[],  // no excluded tools
+        &runtime.model_routes,
+        runtime.tool_result_ttl,
+    )
+    .await?;
+
+    match result {
+        crate::planner::PlanExecutionResult::Executed { output, .. } => {
+            Ok(if output.trim().is_empty() {
+                "agent job executed (plan file)".to_string()
+            } else {
+                output
+            })
+        }
+        crate::planner::PlanExecutionResult::Passthrough => {
+            anyhow::bail!("plan file produced passthrough (empty actions)")
         }
     }
 }
@@ -1566,6 +1652,65 @@ mod tests {
         assert!(
             !fresh_prompt.contains("tool_call"),
             "Fallback prompt must not contain tool call history"
+        );
+    }
+
+    // ── Plan file loading tests ──
+
+    #[test]
+    fn find_plan_file_returns_none_when_no_context_files() {
+        let tmp = TempDir::new().unwrap();
+        let result = crate::planner::find_plan_file(&[], tmp.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_plan_file_returns_none_when_no_plan_toml_exists() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("standup.md"), "instructions").unwrap();
+
+        let result = crate::planner::find_plan_file(&["standup.md".into()], tmp.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_plan_file_detects_sibling_plan_toml() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("standup.md"), "instructions").unwrap();
+        std::fs::write(
+            tmp.path().join("standup.plan.toml"),
+            "[plan]\n[[plan.actions]]\naction_type = \"read\"\ndescription = \"test\"\n",
+        )
+        .unwrap();
+
+        let result = crate::planner::find_plan_file(&["standup.md".into()], tmp.path());
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_agent_job_without_plan_file_falls_through_to_planner() {
+        // When context files exist but no .plan.toml sibling, the scheduler
+        // should fall through to the normal planner LLM path (which fails
+        // here due to no API key, demonstrating the fallthrough).
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+
+        // Create a .md context file WITHOUT a sibling .plan.toml
+        std::fs::write(config.workspace_dir.join("standup.md"), "instructions").unwrap();
+
+        let mut job = test_job("");
+        job.job_type = JobType::Agent;
+        job.prompt = Some("Run standup".into());
+        job.context_files = vec!["standup.md".into()];
+        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+
+        let (success, output) = run_agent_job(&config, &security, &job).await;
+        // Should fail at the planner stage (no API key), not at plan file loading
+        assert!(!success);
+        assert!(
+            output.contains("failed to build planner runtime")
+                || output.contains("agent job failed"),
+            "Expected planner fallthrough failure, got: {output}"
         );
     }
 }
