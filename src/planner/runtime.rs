@@ -24,6 +24,7 @@ pub struct PlannerRuntime {
     pub temperature: f64,
     pub max_tool_iterations: usize,
     pub max_executor_iterations: usize,
+    pub tool_result_ttl: u32,
 }
 
 impl PlannerRuntime {
@@ -112,6 +113,7 @@ impl PlannerRuntime {
             temperature: config.default_temperature,
             max_tool_iterations: config.agent.max_tool_iterations,
             max_executor_iterations: config.agent.max_executor_action_iterations,
+            tool_result_ttl: config.agent.tool_result_ttl,
         })
     }
 }

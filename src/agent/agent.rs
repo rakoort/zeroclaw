@@ -600,6 +600,7 @@ impl Agent {
                 None,
                 &excluded_integration_tools,
                 &self.route_model_by_hint,
+                self.config.tool_result_ttl,
             )
             .await;
 

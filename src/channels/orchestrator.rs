@@ -1480,6 +1480,7 @@ pub(crate) async fn process_channel_message(
             ctx.hooks.as_deref(),
             &channel_excluded_tools,
             &ctx.model_routes,
+            ctx.tool_result_ttl,
         )
         .await
         {

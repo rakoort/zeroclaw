@@ -149,7 +149,10 @@ pub(crate) fn clear_stale_tool_results(history: &mut [ChatMessage], ttl: u32) {
             continue;
         }
 
-        let byte_count = history[i].content.len();
+        let byte_count = serde_json::from_str::<serde_json::Value>(&history[i].content)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_str()).map(|s| s.len()))
+            .unwrap_or(history[i].content.len());
         let tool_name = extract_tool_name_for_clearing(history, i);
         history[i].content = format!("[Cleared: {tool_name} returned {byte_count} bytes]");
     }
@@ -6084,10 +6087,12 @@ Let me check the result."#;
     }
 
     #[test]
-    fn clear_stale_tool_results_byte_count_matches_original() {
+    fn clear_stale_tool_results_byte_count_measures_content_field() {
         let original_result = "x".repeat(1234);
         let tool_msg = make_tool_result("call_1", &original_result);
-        let original_byte_count = tool_msg.content.len();
+        // byte_count should reflect the inner content field (1234),
+        // NOT the full JSON wrapper length.
+        let expected_byte_count = original_result.len();
 
         let mut history = vec![
             make_assistant_with_tool_calls(&[("shell", "call_1")]),
@@ -6104,11 +6109,37 @@ Let me check the result."#;
 
         let cleared = &history[1].content;
         assert!(cleared.starts_with("[Cleared:"));
-        // The byte count in the summary should match the original content length.
-        let expected_fragment = format!("returned {original_byte_count} bytes]");
+        let expected_fragment = format!("returned {expected_byte_count} bytes]");
         assert!(
             cleared.contains(&expected_fragment),
-            "expected byte count {original_byte_count} in cleared message, got: {cleared}",
+            "expected byte count {expected_byte_count} in cleared message, got: {cleared}",
+        );
+    }
+
+    #[test]
+    fn clear_stale_tool_results_byte_count_fallback_for_non_json() {
+        // When the tool message is not valid JSON, byte_count falls back
+        // to the full content length.
+        let raw_content = "raw result without JSON structure";
+        let raw_len = raw_content.len();
+
+        let mut history = vec![
+            ChatMessage::assistant("called something"),
+            ChatMessage::tool(raw_content),
+            ChatMessage::assistant("done_1"),
+            ChatMessage::assistant("done_2"),
+            ChatMessage::assistant("done_3"),
+            // Most recent tool result
+            ChatMessage::tool("recent result"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+
+        let cleared = &history[1].content;
+        let expected_fragment = format!("returned {raw_len} bytes]");
+        assert!(
+            cleared.contains(&expected_fragment),
+            "non-JSON fallback should use full content length ({raw_len}), got: {cleared}",
         );
     }
 

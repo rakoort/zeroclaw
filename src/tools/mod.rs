@@ -352,7 +352,8 @@ pub fn all_tools_with_runtime(
             },
         )
         .with_parent_tools(parent_tools)
-        .with_multimodal_config(root_config.multimodal.clone());
+        .with_multimodal_config(root_config.multimodal.clone())
+        .with_tool_result_ttl(root_config.agent.tool_result_ttl);
         tool_arcs.push(Arc::new(delegate_tool));
     }
 

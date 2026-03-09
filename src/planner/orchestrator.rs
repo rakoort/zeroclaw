@@ -126,6 +126,7 @@ pub async fn plan_then_execute(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     model_routes: &HashMap<String, String>,
+    tool_result_ttl: u32,
 ) -> Result<PlanExecutionResult> {
     // ── Phase 1: Plan ────────────────────────────────────────────────
 
@@ -326,7 +327,7 @@ pub async fn plan_then_execute(
                         hooks,
                         &combined_excluded,
                         None, // route_hint: executor uses resolved model directly
-                        3,    // tool_result_ttl: default clearing for planner actions
+                        tool_result_ttl,
                     )
                     .await;
 

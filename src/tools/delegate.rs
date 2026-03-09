@@ -33,6 +33,8 @@ pub struct DelegateTool {
     parent_tools: Arc<Vec<Arc<dyn Tool>>>,
     /// Inherited multimodal handling config for sub-agent loops.
     multimodal_config: crate::config::MultimodalConfig,
+    /// Tool result TTL inherited from agent config.
+    tool_result_ttl: u32,
 }
 
 impl DelegateTool {
@@ -63,6 +65,7 @@ impl DelegateTool {
             depth: 0,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            tool_result_ttl: 0,
         }
     }
 
@@ -99,6 +102,7 @@ impl DelegateTool {
             depth,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            tool_result_ttl: 0,
         }
     }
 
@@ -111,6 +115,12 @@ impl DelegateTool {
     /// Attach multimodal configuration for sub-agent tool loops.
     pub fn with_multimodal_config(mut self, config: crate::config::MultimodalConfig) -> Self {
         self.multimodal_config = config;
+        self
+    }
+
+    /// Attach tool result TTL for sub-agent tool loops.
+    pub fn with_tool_result_ttl(mut self, ttl: u32) -> Self {
+        self.tool_result_ttl = ttl;
         self
     }
 }
@@ -412,7 +422,7 @@ impl DelegateTool {
                 None,
                 &[],
                 None, // route_hint: delegate uses resolved model directly
-                3,    // tool_result_ttl: default clearing for delegate sub-agents
+                self.tool_result_ttl,
             ),
         )
         .await;

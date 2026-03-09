@@ -208,6 +208,7 @@ async fn run_agent_job(
         None, // no hooks
         &[],  // no excluded tools
         &runtime.model_routes,
+        runtime.tool_result_ttl,
     )
     .await;
 
