@@ -1988,6 +1988,58 @@ impl GeminiProvider {
             ..Default::default()
         }
     }
+
+    /// Convert a tool-role message into a Gemini Content with a functionResponse Part.
+    ///
+    /// Returns `Some(Content)` on success (both valid-JSON and non-JSON inputs).
+    /// The previous behavior silently dropped non-JSON tool messages; this method
+    /// wraps them in a JSON envelope via `recover_non_json_tool_result` instead.
+    fn convert_tool_message(
+        raw_content: &str,
+        tool_id_to_name: &std::collections::HashMap<String, String>,
+    ) -> Option<Content> {
+        let part = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_content) {
+            let tool_call_id = parsed
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let fn_name = tool_id_to_name
+                .get(tool_call_id)
+                .cloned()
+                .unwrap_or_else(|| tool_call_id.to_string());
+            let response_value = match parsed.get("content") {
+                Some(v) if v.is_object() => v.clone(),
+                Some(v) => match v
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    Some(obj) if obj.is_object() => obj,
+                    _ => serde_json::json!({"output": v}),
+                },
+                None => serde_json::json!({"output": ""}),
+            };
+            Part {
+                function_response: Some(FunctionResponsePart {
+                    name: fn_name,
+                    response: response_value,
+                }),
+                ..Default::default()
+            }
+        } else {
+            let preview: String = raw_content.chars().take(200).collect();
+            tracing::warn!(
+                content_len = raw_content.len(),
+                content_preview = %preview,
+                "Non-JSON tool message — wrapping in JSON envelope"
+            );
+            Self::recover_non_json_tool_result(raw_content, tool_id_to_name)
+        };
+
+        Some(Content {
+            role: Some("tool".into()),
+            parts: vec![part],
+        })
+    }
 }
 
 #[async_trait]
@@ -2232,37 +2284,12 @@ impl Provider for GeminiProvider {
                     });
                 }
                 "tool" => {
-                    // Convert tool result to Gemini functionResponse
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
-                        let tool_call_id = parsed
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let fn_name = tool_id_to_name
-                            .get(tool_call_id)
-                            .cloned()
-                            .unwrap_or_else(|| tool_call_id.to_string());
-                        // Try to parse content as JSON; fall back to string wrapper
-                        let response_value = match parsed.get("content") {
-                            Some(v) if v.is_object() => v.clone(),
-                            Some(v) => match v
-                                .as_str()
-                                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                            {
-                                Some(obj) if obj.is_object() => obj,
-                                _ => serde_json::json!({"output": v}),
-                            },
-                            None => serde_json::json!({"output": ""}),
-                        };
-                        let part = Part {
-                            function_response: Some(FunctionResponsePart {
-                                name: fn_name,
-                                response: response_value,
-                            }),
-                            ..Default::default()
-                        };
+                    if let Some(tool_content) =
+                        Self::convert_tool_message(&msg.content, &tool_id_to_name)
+                    {
                         // Merge consecutive tool results into one Content because
                         // Gemini requires function response count == function call count per turn.
+                        let part = tool_content.parts.into_iter().next().unwrap();
                         if let Some(last) = contents.last_mut() {
                             if last.role.as_deref() == Some("tool")
                                 && last.parts.iter().all(|p| p.function_response.is_some())
@@ -2275,13 +2302,6 @@ impl Provider for GeminiProvider {
                             role: Some("tool".into()),
                             parts: vec![part],
                         });
-                    } else {
-                        let preview: String = msg.content.chars().take(200).collect();
-                        tracing::warn!(
-                            content_len = msg.content.len(),
-                            content_preview = %preview,
-                            "Failed to parse tool message as JSON -- tool result will be dropped"
-                        );
                     }
                 }
                 _ => {}
@@ -4044,6 +4064,68 @@ mod tests {
         let fr = part.function_response.as_ref().unwrap();
         assert_eq!(fr.name, "unknown");
         assert_eq!(fr.response, serde_json::json!({"output": garbage}));
+    }
+
+    /// Verify that convert_tool_message wraps a non-JSON tool message
+    /// into a Content with role="tool" and a function_response Part,
+    /// rather than silently dropping it.
+    #[test]
+    fn convert_tool_message_recovers_non_json_content() {
+        use std::collections::HashMap;
+
+        let tool_id_to_name: HashMap<String, String> = {
+            let mut m = HashMap::new();
+            m.insert("call_1".to_string(), "shell".to_string());
+            m
+        };
+
+        let non_json_content = "[Cleared: shell returned 199 bytes]";
+
+        let result = GeminiProvider::convert_tool_message(non_json_content, &tool_id_to_name);
+        assert!(
+            result.is_some(),
+            "non-JSON tool message must produce a Content, not be dropped"
+        );
+
+        let content = result.unwrap();
+        assert_eq!(content.role.as_deref(), Some("tool"));
+        assert_eq!(content.parts.len(), 1);
+        let fr = content.parts[0]
+            .function_response
+            .as_ref()
+            .expect("part must have a function_response");
+        assert_eq!(fr.name, "shell");
+        assert_eq!(fr.response, serde_json::json!({"output": non_json_content}));
+    }
+
+    /// Verify that convert_tool_message handles valid JSON tool messages
+    /// (the happy path) and returns a Content with the parsed result.
+    #[test]
+    fn convert_tool_message_handles_valid_json() {
+        use std::collections::HashMap;
+
+        let tool_id_to_name: HashMap<String, String> = {
+            let mut m = HashMap::new();
+            m.insert("call_1".to_string(), "shell".to_string());
+            m
+        };
+
+        let json_content =
+            r#"{"tool_call_id":"call_1","content":{"exit_code":0,"stdout":"hello"}}"#;
+
+        let result = GeminiProvider::convert_tool_message(json_content, &tool_id_to_name);
+        assert!(
+            result.is_some(),
+            "valid JSON tool message must produce a Content"
+        );
+
+        let content = result.unwrap();
+        assert_eq!(content.role.as_deref(), Some("tool"));
+        let fr = content.parts[0]
+            .function_response
+            .as_ref()
+            .expect("part must have a function_response");
+        assert_eq!(fr.name, "shell");
     }
 
     #[test]
