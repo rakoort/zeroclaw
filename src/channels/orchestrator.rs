@@ -1465,6 +1465,7 @@ pub(crate) async fn process_channel_message(
         ctx.planner_model.is_some(),
     );
     let mut used_fast_path = false;
+    let history_len_before_fast_path = history.len();
     if route_decision == crate::agent::routing::RouteDecision::FastPath {
         let decision_confidence = classification_decision
             .as_ref()
@@ -1602,9 +1603,22 @@ pub(crate) async fn process_channel_message(
                 &msg.reply_target,
             );
 
+            // Summarize what the fast path already attempted so the planner
+            // can build on prior work instead of re-doing tool calls.
+            let fast_path_summary = crate::agent::routing::summarize_fast_path_history(
+                &history,
+                history_len_before_fast_path,
+            );
+            let escalation_content = if fast_path_summary.is_empty() {
+                enriched_content.clone()
+            } else {
+                format!("{enriched_content}{fast_path_summary}")
+            };
+
             tracing::info!(
                 channel = %msg.channel,
                 sender = %msg.sender,
+                fast_path_context_chars = fast_path_summary.len(),
                 "Escalating from fast path to planner with accumulated context"
             );
 
@@ -1613,7 +1627,7 @@ pub(crate) async fn process_channel_message(
                 planner_model,
                 route.model.as_str(),
                 &system_prompt_str,
-                &enriched_content,
+                &escalation_content,
                 "", // memory context already injected into history
                 ctx.tools_registry.as_ref(),
                 &tool_specs,
