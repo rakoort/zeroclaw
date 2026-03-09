@@ -187,6 +187,17 @@ impl Tool for CronAddTool {
                 cron::add_shell_job(&self.config, name, schedule, command).map(|(job, _)| job)
             }
             JobType::Agent => {
+                if name.is_none() {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(
+                            "Missing 'name' for agent job (required as unique key for idempotent registration)"
+                                .to_string(),
+                        ),
+                    });
+                }
+
                 let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
                     Some(prompt) if !prompt.trim().is_empty() => prompt,
                     _ => {
@@ -465,6 +476,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_job_requires_name() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = test_config(&tmp).await;
+        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
+
+        let result = tool
+            .execute(json!({
+                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
+                "job_type": "agent",
+                "prompt": "Run daily standup"
+            }))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(
+            error.contains("Missing 'name'"),
+            "Expected name-required error, got: {error}"
+        );
+    }
+
+    #[tokio::test]
     async fn agent_job_requires_prompt() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
@@ -473,7 +506,8 @@ mod tests {
         let result = tool
             .execute(json!({
                 "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "agent"
+                "job_type": "agent",
+                "name": "some-agent"
             }))
             .await
             .unwrap();

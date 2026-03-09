@@ -43,6 +43,13 @@ pub fn add_shell_job(
     // Upsert: if a named job already exists, update it instead of inserting.
     if let Some(ref name_val) = name {
         if let Some(existing) = find_by_name(config, name_val)? {
+            if existing.job_type != JobType::Shell {
+                let existing_type: &str = existing.job_type.into();
+                anyhow::bail!(
+                    "Job named '{name_val}' already exists as a {existing_type} job. Cannot upsert as shell."
+                );
+            }
+
             let next_run = next_run_for_schedule(&schedule, now)?;
             let expression = schedule_cron_expression(&schedule).unwrap_or_default();
             let schedule_json = serde_json::to_string(&schedule)?;
@@ -123,6 +130,13 @@ pub fn add_agent_job(
     // Upsert: if a named job already exists, update it instead of inserting.
     if let Some(ref name_val) = name {
         if let Some(existing) = find_by_name(config, name_val)? {
+            if existing.job_type != JobType::Agent {
+                let existing_type: &str = existing.job_type.into();
+                anyhow::bail!(
+                    "Job named '{name_val}' already exists as a {existing_type} job. Cannot upsert as agent."
+                );
+            }
+
             let next_run = next_run_for_schedule(&schedule, now)?;
             let expression = schedule_cron_expression(&schedule).unwrap_or_default();
             let schedule_json = serde_json::to_string(&schedule)?;
@@ -637,6 +651,7 @@ fn with_connection<T>(config: &Config, f: impl FnOnce(&Connection) -> Result<T>)
             last_output      TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_jobs_name ON cron_jobs(name) WHERE name IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS cron_runs (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1130,6 +1145,141 @@ mod tests {
 
         let all = list_jobs(&config).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn cross_type_name_collision_rejected_shell_over_agent() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        // Create an agent job named "backup"
+        let (_agent_job, _) = add_agent_job(
+            &config,
+            Some("backup".into()),
+            Schedule::Cron {
+                expr: "0 2 * * *".into(),
+                tz: None,
+            },
+            "Run backup",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Try to add a shell job with the same name — must fail
+        let err = add_shell_job(
+            &config,
+            Some("backup".into()),
+            Schedule::Cron {
+                expr: "0 3 * * *".into(),
+                tz: None,
+            },
+            "echo backup",
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already exists as a") && msg.contains("agent"),
+            "Expected cross-type error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cross_type_name_collision_rejected_agent_over_shell() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        // Create a shell job named "cleanup"
+        let (_shell_job, _) = add_shell_job(
+            &config,
+            Some("cleanup".into()),
+            Schedule::Cron {
+                expr: "0 2 * * *".into(),
+                tz: None,
+            },
+            "echo cleanup",
+        )
+        .unwrap();
+
+        // Try to add an agent job with the same name — must fail
+        let err = add_agent_job(
+            &config,
+            Some("cleanup".into()),
+            Schedule::Cron {
+                expr: "0 3 * * *".into(),
+                tz: None,
+            },
+            "Run cleanup",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already exists as a") && msg.contains("shell"),
+            "Expected cross-type error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unique_index_prevents_duplicate_named_jobs() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        // Create a named shell job normally
+        let (_job, _) = add_shell_job(
+            &config,
+            Some("unique-test".into()),
+            Schedule::Every { every_ms: 60_000 },
+            "echo first",
+        )
+        .unwrap();
+
+        // Try to bypass upsert by inserting directly via raw SQL with same name
+        let result = with_connection(&config, |conn| {
+            conn.execute(
+                "INSERT INTO cron_jobs (id, expression, command, schedule, job_type, name, created_at, next_run)
+                 VALUES ('raw-dup', '* * * * *', 'echo dup', NULL, 'shell', 'unique-test', datetime('now'), datetime('now'))",
+                [],
+            ).context("raw insert")?;
+            Ok(())
+        });
+
+        assert!(
+            result.is_err(),
+            "Expected UNIQUE constraint violation for duplicate name"
+        );
+    }
+
+    #[test]
+    fn unique_index_allows_multiple_unnamed_jobs() {
+        // NULL names should not conflict with each other (partial index WHERE name IS NOT NULL)
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (a, _) = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo a",
+        )
+        .unwrap();
+        let (b, _) = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo b",
+        )
+        .unwrap();
+
+        assert_ne!(a.id, b.id);
+        assert_eq!(list_jobs(&config).unwrap().len(), 2);
     }
 
     #[test]
