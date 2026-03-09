@@ -1949,6 +1949,8 @@ reasoning_enabled = false
         assert!(!cfg.parallel_tools);
         assert_eq!(cfg.tool_dispatcher, "auto");
         assert_eq!(cfg.tool_result_ttl, 3);
+        assert!((cfg.simple_routing_confidence - 0.8).abs() < f64::EPSILON);
+        assert_eq!(cfg.simple_max_iterations, 3);
     }
 
     #[test]
@@ -1970,6 +1972,10 @@ tool_dispatcher = "xml"
         assert_eq!(parsed.agent.tool_dispatcher, "xml");
         // tool_result_ttl not specified — defaults to 3
         assert_eq!(parsed.agent.tool_result_ttl, 3);
+        // simple_routing_confidence not specified — defaults to 0.8
+        assert!((parsed.agent.simple_routing_confidence - 0.8).abs() < f64::EPSILON);
+        // simple_max_iterations not specified — defaults to 3
+        assert_eq!(parsed.agent.simple_max_iterations, 3);
     }
 
     #[test]
@@ -1992,6 +1998,19 @@ tool_result_ttl = 5
 "#;
         let parsed: Config = toml::from_str(raw).unwrap();
         assert_eq!(parsed.agent.tool_result_ttl, 5);
+    }
+
+    #[test]
+    async fn agent_config_simple_routing_custom() {
+        let raw = r#"
+default_temperature = 0.7
+[agent]
+simple_routing_confidence = 0.6
+simple_max_iterations = 5
+"#;
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert!((parsed.agent.simple_routing_confidence - 0.6).abs() < f64::EPSILON);
+        assert_eq!(parsed.agent.simple_max_iterations, 5);
     }
 
     #[tokio::test]

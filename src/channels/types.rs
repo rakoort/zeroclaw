@@ -157,6 +157,8 @@ pub(crate) struct ChannelRuntimeContext {
     pub(crate) integration_catalog: String,
     pub(crate) classifier_model: Option<String>,
     pub(crate) tool_result_ttl: u32,
+    pub(crate) simple_routing_confidence: f64,
+    pub(crate) simple_max_iterations: usize,
 }
 
 #[derive(Clone)]

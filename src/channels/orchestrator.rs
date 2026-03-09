@@ -1415,16 +1415,16 @@ pub(crate) async fn process_channel_message(
     // ── Integration filtering (classifier-driven) ──────────
     // Run weighted classification + optional LLM refinement to determine
     // which integrations are needed, then compute excluded tool names.
-    let integration_excluded_tools: Vec<String> = {
-        let mut excluded = Vec::new();
-        if let Some(mut decision) = crate::agent::classifier::classify_with_context(
+    let classification_decision: Option<crate::agent::classifier::ClassificationDecision> = {
+        let mut decision_opt = crate::agent::classifier::classify_with_context(
             &ctx.classification_config,
             &msg.content,
             0, // channel messages don't track turn count
-        ) {
+        );
+        if let Some(ref mut decision) = decision_opt {
             if let Some(ref classifier_model) = ctx.classifier_model {
                 crate::agent::classifier::refine_with_llm(
-                    &mut decision,
+                    decision,
                     active_provider.as_ref(),
                     classifier_model,
                     &msg.content,
@@ -1433,13 +1433,16 @@ pub(crate) async fn process_channel_message(
                 )
                 .await;
             }
-            excluded = crate::integrations::excluded_tool_names(
-                &ctx.integration_tool_names,
-                &decision.integrations,
-            );
         }
-        excluded
+        decision_opt
     };
+
+    let integration_excluded_tools: Vec<String> = classification_decision
+        .as_ref()
+        .map(|d| {
+            crate::integrations::excluded_tool_names(&ctx.integration_tool_names, &d.integrations)
+        })
+        .unwrap_or_default();
 
     let channel_excluded_tools: Vec<String> = {
         let mut tools: Vec<String> = if msg.channel == "cli" {
@@ -1451,67 +1454,212 @@ pub(crate) async fn process_channel_message(
         tools
     };
 
-    if let Some(ref planner_model) = ctx.planner_model {
-        let tool_specs: Vec<crate::tools::ToolSpec> =
-            ctx.tools_registry.iter().map(|t| t.spec()).collect();
-
-        let system_prompt_str = build_channel_system_prompt(
-            ctx.system_prompt.as_str(),
-            &msg.channel,
-            &msg.reply_target,
+    // ── Fast path: Simple-tier messages bypass the planner ──────────
+    // When the classifier determines the message is Simple with high
+    // confidence, run a tight flat loop (few iterations, no planner
+    // overhead).  If the fast path exhausts its budget, escalate to
+    // the planner with the accumulated history so no context is lost.
+    let route_decision = crate::agent::routing::route_decision(
+        classification_decision.as_ref(),
+        ctx.simple_routing_confidence,
+        ctx.planner_model.is_some(),
+    );
+    let mut used_fast_path = false;
+    if route_decision == crate::agent::routing::RouteDecision::FastPath {
+        let decision_confidence = classification_decision
+            .as_ref()
+            .map(|d| d.confidence)
+            .unwrap_or(0.0);
+        tracing::info!(
+            channel = %msg.channel,
+            sender = %msg.sender,
+            confidence = decision_confidence,
+            simple_max_iterations = ctx.simple_max_iterations,
+            "Classifier fast path: Simple tier, skipping planner"
         );
-
-        match crate::planner::plan_then_execute(
+        used_fast_path = true;
+        match run_tool_call_loop(
             active_provider.as_ref(),
-            planner_model,
-            route.model.as_str(),
-            &system_prompt_str,
-            &enriched_content,
-            "", // memory context already injected into history
+            &mut history,
             ctx.tools_registry.as_ref(),
-            &tool_specs,
             ctx.observer.as_ref(),
             route.provider.as_str(),
+            route.model.as_str(),
             runtime_defaults.temperature,
-            ctx.max_tool_iterations,
-            ctx.max_executor_action_iterations,
+            true,
+            None,
             msg.channel.as_str(),
+            &ctx.multimodal,
+            ctx.simple_max_iterations,
             Some(cancellation_token.clone()),
+            delta_tx.clone(),
             ctx.hooks.as_deref(),
             &channel_excluded_tools,
-            &ctx.model_routes,
+            None,
             ctx.tool_result_ttl,
         )
         .await
         {
-            Ok(crate::planner::PlanExecutionResult::Passthrough) => {
+            Ok(response) => {
                 tracing::info!(
                     channel = %msg.channel,
                     sender = %msg.sender,
-                    "Planner returned passthrough, using tool call loop"
+                    "Fast path completed successfully"
                 );
-                // Fall through to run_tool_call_loop below
-            }
-            Ok(crate::planner::PlanExecutionResult::Executed {
-                output,
-                action_results,
-                analysis: _,
-            }) => {
-                tracing::info!(
-                    channel = %msg.channel,
-                    sender = %msg.sender,
-                    actions = action_results.len(),
-                    "Planner/executor completed for channel"
-                );
-                planner_response = Some(output);
+                planner_response = Some(response);
             }
             Err(e) => {
-                tracing::warn!(
+                // Budget exhaustion or other error — escalate to planner.
+                // History already contains the accumulated tool context from
+                // the fast-path iterations, so the planner gets full context.
+                tracing::info!(
                     channel = %msg.channel,
+                    sender = %msg.sender,
                     error = %e,
-                    "Planner failed, falling back to tool call loop"
+                    "Fast path exhausted budget, escalating to planner"
                 );
-                // Fall through to run_tool_call_loop below
+                // Fall through to planner below
+            }
+        }
+    }
+
+    if planner_response.is_none() && !used_fast_path {
+        if let Some(ref planner_model) = ctx.planner_model {
+            let tool_specs: Vec<crate::tools::ToolSpec> =
+                ctx.tools_registry.iter().map(|t| t.spec()).collect();
+
+            let system_prompt_str = build_channel_system_prompt(
+                ctx.system_prompt.as_str(),
+                &msg.channel,
+                &msg.reply_target,
+            );
+
+            match crate::planner::plan_then_execute(
+                active_provider.as_ref(),
+                planner_model,
+                route.model.as_str(),
+                &system_prompt_str,
+                &enriched_content,
+                "", // memory context already injected into history
+                ctx.tools_registry.as_ref(),
+                &tool_specs,
+                ctx.observer.as_ref(),
+                route.provider.as_str(),
+                runtime_defaults.temperature,
+                ctx.max_tool_iterations,
+                ctx.max_executor_action_iterations,
+                msg.channel.as_str(),
+                Some(cancellation_token.clone()),
+                ctx.hooks.as_deref(),
+                &channel_excluded_tools,
+                &ctx.model_routes,
+                ctx.tool_result_ttl,
+            )
+            .await
+            {
+                Ok(crate::planner::PlanExecutionResult::Passthrough) => {
+                    tracing::info!(
+                        channel = %msg.channel,
+                        sender = %msg.sender,
+                        "Planner returned passthrough, using tool call loop"
+                    );
+                    // Fall through to run_tool_call_loop below
+                }
+                Ok(crate::planner::PlanExecutionResult::Executed {
+                    output,
+                    action_results,
+                    analysis: _,
+                }) => {
+                    tracing::info!(
+                        channel = %msg.channel,
+                        sender = %msg.sender,
+                        actions = action_results.len(),
+                        "Planner/executor completed for channel"
+                    );
+                    planner_response = Some(output);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %msg.channel,
+                        error = %e,
+                        "Planner failed, falling back to tool call loop"
+                    );
+                    // Fall through to run_tool_call_loop below
+                }
+            }
+        }
+    }
+
+    // If the fast path exhausted its budget, escalate to planner
+    if used_fast_path && planner_response.is_none() {
+        if let Some(ref planner_model) = ctx.planner_model {
+            let tool_specs: Vec<crate::tools::ToolSpec> =
+                ctx.tools_registry.iter().map(|t| t.spec()).collect();
+
+            let system_prompt_str = build_channel_system_prompt(
+                ctx.system_prompt.as_str(),
+                &msg.channel,
+                &msg.reply_target,
+            );
+
+            tracing::info!(
+                channel = %msg.channel,
+                sender = %msg.sender,
+                "Escalating from fast path to planner with accumulated context"
+            );
+
+            match crate::planner::plan_then_execute(
+                active_provider.as_ref(),
+                planner_model,
+                route.model.as_str(),
+                &system_prompt_str,
+                &enriched_content,
+                "", // memory context already injected into history
+                ctx.tools_registry.as_ref(),
+                &tool_specs,
+                ctx.observer.as_ref(),
+                route.provider.as_str(),
+                runtime_defaults.temperature,
+                ctx.max_tool_iterations,
+                ctx.max_executor_action_iterations,
+                msg.channel.as_str(),
+                Some(cancellation_token.clone()),
+                ctx.hooks.as_deref(),
+                &channel_excluded_tools,
+                &ctx.model_routes,
+                ctx.tool_result_ttl,
+            )
+            .await
+            {
+                Ok(crate::planner::PlanExecutionResult::Passthrough) => {
+                    tracing::info!(
+                        channel = %msg.channel,
+                        sender = %msg.sender,
+                        "Planner returned passthrough after fast-path escalation"
+                    );
+                    // Fall through to run_tool_call_loop below
+                }
+                Ok(crate::planner::PlanExecutionResult::Executed {
+                    output,
+                    action_results,
+                    analysis: _,
+                }) => {
+                    tracing::info!(
+                        channel = %msg.channel,
+                        sender = %msg.sender,
+                        actions = action_results.len(),
+                        "Planner completed after fast-path escalation"
+                    );
+                    planner_response = Some(output);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %msg.channel,
+                        error = %e,
+                        "Planner failed after fast-path escalation, falling back to tool call loop"
+                    );
+                    // Fall through to run_tool_call_loop below
+                }
             }
         }
     }
@@ -2831,6 +2979,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         integration_catalog: crate::integrations::active_integration_summary(&config),
         classifier_model: resolve_classifier_model(&config.model_routes),
         tool_result_ttl: config.agent.tool_result_ttl,
+        simple_routing_confidence: config.agent.simple_routing_confidence,
+        simple_max_iterations: config.agent.simple_max_iterations,
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
@@ -3069,6 +3219,8 @@ mod tests {
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -3127,6 +3279,8 @@ mod tests {
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -3188,6 +3342,8 @@ mod tests {
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -3672,6 +3828,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -3744,6 +3902,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -3830,6 +3990,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -3902,6 +4064,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -3983,6 +4147,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4085,6 +4251,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4169,6 +4337,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4268,6 +4438,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4352,6 +4524,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4425,6 +4599,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4609,6 +4785,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -4706,6 +4884,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4815,6 +4995,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4906,6 +5088,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -4978,6 +5162,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -5527,6 +5713,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -5629,6 +5817,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -5727,6 +5917,8 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -6289,6 +6481,8 @@ This is an example JSON object for profile settings."#;
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -6368,6 +6562,8 @@ This is an example JSON object for profile settings."#;
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         });
 
         process_channel_message(
@@ -6685,6 +6881,8 @@ mod watch_dispatch_tests {
             integration_catalog: String::new(),
             classifier_model: None,
             tool_result_ttl: 0,
+            simple_routing_confidence: 0.8,
+            simple_max_iterations: 3,
         })
     }
 

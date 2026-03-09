@@ -98,6 +98,14 @@ pub struct AgentConfig {
     /// with a compact summary.  `0` disables clearing.  Default: `3`.
     #[serde(default = "default_agent_tool_result_ttl")]
     pub tool_result_ttl: u32,
+    /// Minimum classifier confidence required to route a Simple-tier message
+    /// through the fast path (flat tool loop, no planner).  Default: `0.8`.
+    #[serde(default = "default_simple_routing_confidence")]
+    pub simple_routing_confidence: f64,
+    /// Maximum tool-call iterations when running the fast path for
+    /// Simple-tier messages.  Default: `3`.
+    #[serde(default = "default_simple_max_iterations")]
+    pub simple_max_iterations: usize,
 }
 
 fn default_agent_max_tool_iterations() -> usize {
@@ -120,6 +128,14 @@ fn default_agent_tool_result_ttl() -> u32 {
     3
 }
 
+fn default_simple_routing_confidence() -> f64 {
+    0.8
+}
+
+fn default_simple_max_iterations() -> usize {
+    3
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -130,6 +146,8 @@ impl Default for AgentConfig {
             parallel_tools: false,
             tool_dispatcher: default_agent_tool_dispatcher(),
             tool_result_ttl: 3,
+            simple_routing_confidence: default_simple_routing_confidence(),
+            simple_max_iterations: default_simple_max_iterations(),
         }
     }
 }
