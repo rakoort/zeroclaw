@@ -8,6 +8,7 @@ use crate::providers::{ChatMessage, ChatRequest, Provider};
 use crate::tools::{Tool, ToolSpec};
 
 use super::parser::parse_plan_from_response;
+pub use super::prompts::build_classifier_context;
 use super::prompts::{
     build_executor_prompt, build_planner_system_prompt, build_synthesis_prompt, filter_tool_names,
 };
@@ -127,10 +128,11 @@ pub async fn plan_then_execute(
     excluded_tools: &[String],
     model_routes: &HashMap<String, String>,
     tool_result_ttl: u32,
+    classifier_context: &str,
 ) -> Result<PlanExecutionResult> {
     // ── Phase 1: Plan ────────────────────────────────────────────────
 
-    let planner_system = build_planner_system_prompt(system_prompt);
+    let planner_system = build_planner_system_prompt(system_prompt, classifier_context);
 
     let planner_user = if memory_context.is_empty() {
         user_message.to_string()

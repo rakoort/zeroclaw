@@ -601,6 +601,7 @@ impl Agent {
                 &excluded_integration_tools,
                 &self.route_model_by_hint,
                 self.config.tool_result_ttl,
+                "", // CLI agent does not use classifier signals
             )
             .await;
 

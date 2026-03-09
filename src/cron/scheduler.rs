@@ -209,6 +209,7 @@ async fn run_agent_job(
         &[],  // no excluded tools
         &runtime.model_routes,
         runtime.tool_result_ttl,
+        "", // no classifier context for cron jobs
     )
     .await;
 

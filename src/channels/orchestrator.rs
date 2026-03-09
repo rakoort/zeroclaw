@@ -1524,6 +1524,10 @@ pub(crate) async fn process_channel_message(
         }
     }
 
+    // Build classifier context once — shared by both planner call sites.
+    let classifier_context =
+        crate::planner::build_classifier_context(classification_decision.as_ref());
+
     if planner_response.is_none() && !used_fast_path {
         if let Some(ref planner_model) = ctx.planner_model {
             let tool_specs: Vec<crate::tools::ToolSpec> =
@@ -1555,6 +1559,7 @@ pub(crate) async fn process_channel_message(
                 &channel_excluded_tools,
                 &ctx.model_routes,
                 ctx.tool_result_ttl,
+                &classifier_context,
             )
             .await
             {
@@ -1642,6 +1647,7 @@ pub(crate) async fn process_channel_message(
                 &channel_excluded_tools,
                 &ctx.model_routes,
                 ctx.tool_result_ttl,
+                &classifier_context,
             )
             .await
             {

@@ -5,12 +5,22 @@ use std::fmt::Write;
 ///
 /// The planner receives this + the original system prompt + user message.
 /// It produces a JSON plan or passthrough decision.
-pub fn build_planner_system_prompt(base_system_prompt: &str) -> String {
+///
+/// When `classifier_context` is non-empty it is injected before the planning
+/// instructions so the planner can use the classifier's assessment (tier,
+/// agentic score, relevant integrations, signals) to calibrate plan structure.
+pub fn build_planner_system_prompt(base_system_prompt: &str, classifier_context: &str) -> String {
     let mut prompt = String::new();
     if !base_system_prompt.is_empty() {
         prompt.push_str(base_system_prompt);
         prompt.push_str("\n\n");
     }
+
+    if !classifier_context.is_empty() {
+        prompt.push_str(classifier_context);
+        prompt.push_str("\n\n");
+    }
+
     prompt.push_str(
         "You are in planning mode. Analyze the user's request and output a JSON action plan.\n\
         Do NOT call tools or write final content. Only output the plan.\n\n\
@@ -122,6 +132,55 @@ pub fn build_synthesis_prompt(
     prompt
 }
 
+/// Format classifier signals as structured context for the planner prompt.
+///
+/// Produces a block like:
+/// ```text
+/// CLASSIFIER ASSESSMENT:
+/// - Tier: Complex
+/// - Agentic score: 0.82
+/// - Relevant integrations: linear, slack
+/// - Signals: tool mentions (linear, slack), multi-step language (then, after)
+/// Use this assessment to inform your plan structure.
+/// ```
+///
+/// Returns an empty string when no decision is provided.
+pub fn build_classifier_context(
+    decision: Option<&crate::agent::classifier::ClassificationDecision>,
+) -> String {
+    let decision = match decision {
+        Some(d) => d,
+        None => return String::new(),
+    };
+
+    let tier_label = format!("{:?}", decision.tier);
+    let mut ctx = String::from("CLASSIFIER ASSESSMENT:\n");
+    let _ = writeln!(ctx, "- Tier: {tier_label}");
+    let _ = writeln!(ctx, "- Agentic score: {:.2}", decision.agentic_score);
+
+    if decision.integrations.is_empty() {
+        let _ = writeln!(ctx, "- Relevant integrations: none");
+    } else {
+        let _ = writeln!(
+            ctx,
+            "- Relevant integrations: {}",
+            decision.integrations.join(", ")
+        );
+    }
+
+    if !decision.signals.is_empty() {
+        let _ = writeln!(ctx, "- Signals: {}", decision.signals.join(", "));
+    }
+
+    ctx.push_str(
+        "Use this assessment to inform your plan structure. \
+         Higher agentic scores suggest multi-group plans with tool actions. \
+         Listed integrations indicate which external services are relevant.",
+    );
+
+    ctx
+}
+
 /// Filter tool names to only those matching the action's tools list.
 pub fn filter_tool_names(all_tool_names: &[String], wanted: &[String]) -> Vec<String> {
     if wanted.is_empty() {
@@ -140,7 +199,7 @@ mod tests {
 
     #[test]
     fn planner_prompt_contains_effort_scaling() {
-        let prompt = build_planner_system_prompt("");
+        let prompt = build_planner_system_prompt("", "");
         assert!(prompt.contains("Simple"));
         assert!(prompt.contains("Complex"));
         assert!(prompt.contains("passthrough"));
@@ -149,7 +208,7 @@ mod tests {
 
     #[test]
     fn planner_prompt_prepends_base_system_prompt() {
-        let prompt = build_planner_system_prompt("You are a helpful agent.");
+        let prompt = build_planner_system_prompt("You are a helpful agent.", "");
         assert!(prompt.starts_with("You are a helpful agent."));
     }
 
@@ -277,27 +336,120 @@ mod tests {
 
     #[test]
     fn planner_prompt_guides_parallelism() {
-        let prompt = build_planner_system_prompt("");
+        let prompt = build_planner_system_prompt("", "");
         assert!(prompt.contains("independent actions to the same group"));
         assert!(prompt.contains("Prefer 1-2 groups"));
     }
 
     #[test]
     fn planner_prompt_explains_critical_field() {
-        let prompt = build_planner_system_prompt("");
+        let prompt = build_planner_system_prompt("", "");
         assert!(prompt.contains("critical"));
         assert!(prompt.contains("plan aborts immediately"));
     }
 
     #[test]
     fn planner_prompt_explains_require_synthesis_field() {
-        let prompt = build_planner_system_prompt("");
+        let prompt = build_planner_system_prompt("", "");
         assert!(prompt.contains("require_synthesis"));
     }
 
     #[test]
     fn planner_prompt_explains_max_iterations_field() {
-        let prompt = build_planner_system_prompt("");
+        let prompt = build_planner_system_prompt("", "");
         assert!(prompt.contains("max_iterations"));
+    }
+
+    // ── classifier context tests ──
+
+    #[test]
+    fn classifier_context_empty_when_no_decision() {
+        let ctx = build_classifier_context(None);
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn classifier_context_includes_tier_and_agentic_score() {
+        use crate::agent::classifier::ClassificationDecision;
+        use crate::config::schema::Tier;
+
+        let decision = ClassificationDecision {
+            tier: Tier::Complex,
+            agentic_score: 0.82,
+            ..Default::default()
+        };
+        let ctx = build_classifier_context(Some(&decision));
+        assert!(ctx.contains("Tier: Complex"));
+        assert!(ctx.contains("Agentic score: 0.82"));
+    }
+
+    #[test]
+    fn classifier_context_includes_integrations() {
+        use crate::agent::classifier::ClassificationDecision;
+        use crate::config::schema::Tier;
+
+        let decision = ClassificationDecision {
+            tier: Tier::Medium,
+            agentic_score: 0.5,
+            integrations: vec!["linear".into(), "slack".into()],
+            ..Default::default()
+        };
+        let ctx = build_classifier_context(Some(&decision));
+        assert!(ctx.contains("linear, slack"));
+    }
+
+    #[test]
+    fn classifier_context_shows_none_when_no_integrations() {
+        use crate::agent::classifier::ClassificationDecision;
+
+        let decision = ClassificationDecision::default();
+        let ctx = build_classifier_context(Some(&decision));
+        assert!(ctx.contains("Relevant integrations: none"));
+    }
+
+    #[test]
+    fn classifier_context_includes_signals() {
+        use crate::agent::classifier::ClassificationDecision;
+        use crate::config::schema::Tier;
+
+        let decision = ClassificationDecision {
+            tier: Tier::Complex,
+            agentic_score: 0.75,
+            signals: vec![
+                "tool mentions (linear)".into(),
+                "multi-step language (then, after)".into(),
+            ],
+            ..Default::default()
+        };
+        let ctx = build_classifier_context(Some(&decision));
+        assert!(ctx.contains("Signals: tool mentions (linear), multi-step language (then, after)"));
+    }
+
+    #[test]
+    fn planner_prompt_includes_classifier_context_when_provided() {
+        use crate::agent::classifier::ClassificationDecision;
+        use crate::config::schema::Tier;
+
+        let decision = ClassificationDecision {
+            tier: Tier::Complex,
+            agentic_score: 0.85,
+            integrations: vec!["linear".into()],
+            signals: vec!["multi-step language".into()],
+            ..Default::default()
+        };
+        let ctx = build_classifier_context(Some(&decision));
+        let prompt = build_planner_system_prompt("", &ctx);
+        assert!(prompt.contains("CLASSIFIER ASSESSMENT:"));
+        assert!(prompt.contains("Tier: Complex"));
+        assert!(prompt.contains("Agentic score: 0.85"));
+        assert!(prompt.contains("linear"));
+        // The planning instructions should still follow
+        assert!(prompt.contains("You are in planning mode"));
+    }
+
+    #[test]
+    fn planner_prompt_omits_classifier_section_when_empty() {
+        let prompt = build_planner_system_prompt("", "");
+        assert!(!prompt.contains("CLASSIFIER ASSESSMENT"));
     }
 }
