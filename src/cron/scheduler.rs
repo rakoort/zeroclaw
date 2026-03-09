@@ -163,7 +163,20 @@ async fn run_agent_job(
 
     let name = job.name.clone().unwrap_or_else(|| "cron-job".to_string());
     let prompt = job.prompt.clone().unwrap_or_default();
-    let prefixed_prompt = format!("[cron:{} {name}] {prompt}", job.id);
+
+    // Read context files and prepend their contents to the prompt.
+    let context_prefix = match read_context_files(&job.context_files, &config.workspace_dir) {
+        Ok(prefix) => prefix,
+        Err(e) => return (false, format!("context file error: {e}")),
+    };
+
+    let full_prompt = if context_prefix.is_empty() {
+        prompt
+    } else {
+        format!("{context_prefix}\n{prompt}")
+    };
+
+    let prefixed_prompt = format!("[cron:{} {name}] {full_prompt}", job.id);
 
     let runtime = match crate::planner::PlannerRuntime::from_config(config) {
         Ok(rt) => rt,
@@ -218,6 +231,36 @@ async fn run_agent_job(
             run_flat_fallback(config, prefixed_prompt, executor_model, runtime.temperature).await
         }
     }
+}
+
+fn read_context_files(paths: &[String], workspace_dir: &std::path::Path) -> Result<String> {
+    if paths.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut sections = Vec::with_capacity(paths.len());
+    for path_str in paths {
+        let path = std::path::Path::new(path_str);
+        // Resolve relative paths against workspace_dir.
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace_dir.join(path)
+        };
+
+        let content = std::fs::read_to_string(&resolved).map_err(|e| {
+            anyhow::anyhow!("failed to read context file '{}': {e}", resolved.display())
+        })?;
+
+        let filename = resolved
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.clone());
+
+        sections.push(format!("## Context: {filename}\n{content}"));
+    }
+
+    Ok(sections.join("\n\n"))
 }
 
 async fn run_flat_fallback(
@@ -556,6 +599,7 @@ mod tests {
             enabled: true,
             delivery: DeliveryConfig::default(),
             delete_after_run: false,
+            context_files: Vec::new(),
             created_at: Utc::now(),
             next_run: Utc::now(),
             last_run: None,
@@ -927,6 +971,7 @@ mod tests {
             None,
             None,
             true,
+            Vec::new(),
         )
         .unwrap();
         let started = Utc::now();
@@ -952,6 +997,7 @@ mod tests {
             None,
             None,
             true,
+            Vec::new(),
         )
         .unwrap();
         let started = Utc::now();
@@ -1018,6 +1064,7 @@ mod tests {
                 best_effort: false,
             }),
             false,
+            Vec::new(),
         )
         .unwrap();
         let started = Utc::now();
@@ -1056,6 +1103,7 @@ mod tests {
                 best_effort: true,
             }),
             false,
+            Vec::new(),
         )
         .unwrap();
         let started = Utc::now();
@@ -1087,6 +1135,7 @@ mod tests {
             None,
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
         assert!(!job.delete_after_run);
@@ -1117,5 +1166,126 @@ mod tests {
         };
         let err = deliver_if_configured(&config, &job, "x").await.unwrap_err();
         assert!(err.to_string().contains("unsupported delivery channel"));
+    }
+
+    // --- context files tests ---
+
+    #[test]
+    fn read_context_files_empty_list_returns_empty_string() {
+        let tmp = TempDir::new().unwrap();
+        let result = read_context_files(&[], tmp.path()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn read_context_files_reads_and_formats_single_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("instructions.md"),
+            "Do the standup ritual.\n",
+        )
+        .unwrap();
+
+        let result = read_context_files(&["instructions.md".to_string()], tmp.path()).unwrap();
+        assert!(result.contains("## Context: instructions.md"));
+        assert!(result.contains("Do the standup ritual."));
+    }
+
+    #[test]
+    fn read_context_files_reads_multiple_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.md"), "Content A").unwrap();
+        std::fs::write(tmp.path().join("b.md"), "Content B").unwrap();
+
+        let result =
+            read_context_files(&["a.md".to_string(), "b.md".to_string()], tmp.path()).unwrap();
+        assert!(result.contains("## Context: a.md"));
+        assert!(result.contains("Content A"));
+        assert!(result.contains("## Context: b.md"));
+        assert!(result.contains("Content B"));
+    }
+
+    #[test]
+    fn read_context_files_resolves_relative_paths_against_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("skills");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("ritual.md"), "Ritual instructions").unwrap();
+
+        let result = read_context_files(&["skills/ritual.md".to_string()], tmp.path()).unwrap();
+        assert!(result.contains("## Context: ritual.md"));
+        assert!(result.contains("Ritual instructions"));
+    }
+
+    #[test]
+    fn read_context_files_missing_file_produces_clear_error() {
+        let tmp = TempDir::new().unwrap();
+        let result = read_context_files(&["nonexistent-file.md".to_string()], tmp.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to read context file") && msg.contains("nonexistent-file.md"),
+            "Expected clear error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_context_files_absolute_path_works() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("absolute.md");
+        std::fs::write(&file_path, "Absolute content").unwrap();
+
+        let result =
+            read_context_files(&[file_path.to_string_lossy().to_string()], tmp.path()).unwrap();
+        assert!(result.contains("## Context: absolute.md"));
+        assert!(result.contains("Absolute content"));
+    }
+
+    #[tokio::test]
+    async fn run_agent_job_context_files_missing_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let mut job = test_job("");
+        job.job_type = JobType::Agent;
+        job.prompt = Some("Do something".into());
+        job.context_files = vec!["missing-context.md".into()];
+        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+
+        let (success, output) = run_agent_job(&config, &security, &job).await;
+        assert!(!success);
+        assert!(
+            output.contains("context file error"),
+            "Expected context file error, got: {output}"
+        );
+        assert!(output.contains("missing-context.md"));
+    }
+
+    #[tokio::test]
+    async fn add_agent_job_with_context_files_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+
+        let files = vec!["skills/standup.md".into(), "memory/state.md".into()];
+        let (job, _) = cron::add_agent_job(
+            &config,
+            Some("ctx-roundtrip".into()),
+            crate::cron::Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "Run with context",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            files.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(job.context_files, files);
+
+        // Verify it persists and loads back correctly
+        let loaded = cron::get_job(&config, &job.id).unwrap();
+        assert_eq!(loaded.context_files, files);
     }
 }

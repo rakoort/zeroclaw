@@ -14,6 +14,7 @@ mod tests {
             delivery_channel: None,
             delivery_to: None,
             name: None,
+            context_files: Vec::new(),
         };
     }
 
@@ -28,6 +29,7 @@ mod tests {
             delivery_channel: None,
             delivery_to: None,
             name: None,
+            context_files: Vec::new(),
         };
     }
 
@@ -42,6 +44,7 @@ mod tests {
             delivery_channel: None,
             delivery_to: None,
             name: None,
+            context_files: Vec::new(),
         };
     }
 
@@ -56,6 +59,7 @@ mod tests {
             delivery_channel: None,
             delivery_to: None,
             name: None,
+            context_files: Vec::new(),
         };
     }
 }

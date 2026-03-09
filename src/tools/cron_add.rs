@@ -255,6 +255,7 @@ impl Tool for CronAddTool {
                     model,
                     delivery,
                     delete_after_run,
+                    Vec::new(),
                 )
                 .map(|(job, _)| job)
             }

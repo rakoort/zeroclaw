@@ -224,6 +224,9 @@ Examples:
         /// Human-readable job name
         #[arg(long)]
         name: Option<String>,
+        /// File to read and prepend to prompt at execution time (repeatable)
+        #[arg(long = "context-file")]
+        context_files: Vec<String>,
     },
     /// Add a one-shot scheduled task at an RFC3339 timestamp
     #[command(long_about = "\
@@ -260,6 +263,9 @@ Examples:
         /// Human-readable job name
         #[arg(long)]
         name: Option<String>,
+        /// File to read and prepend to prompt at execution time (repeatable)
+        #[arg(long = "context-file")]
+        context_files: Vec<String>,
     },
     /// Add a fixed-interval scheduled task
     #[command(long_about = "\
@@ -296,6 +302,9 @@ Examples:
         /// Human-readable job name
         #[arg(long)]
         name: Option<String>,
+        /// File to read and prepend to prompt at execution time (repeatable)
+        #[arg(long = "context-file")]
+        context_files: Vec<String>,
     },
     /// Add a one-shot delayed task (e.g. "30m", "2h", "1d")
     #[command(long_about = "\
@@ -334,6 +343,9 @@ Examples:
         /// Human-readable job name
         #[arg(long)]
         name: Option<String>,
+        /// File to read and prepend to prompt at execution time (repeatable)
+        #[arg(long = "context-file")]
+        context_files: Vec<String>,
     },
     /// Remove a scheduled task
     Remove {

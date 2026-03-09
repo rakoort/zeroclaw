@@ -90,8 +90,8 @@ pub fn add_shell_job(
         conn.execute(
             "INSERT INTO cron_jobs (
                 id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                enabled, delivery, delete_after_run, created_at, next_run
-             ) VALUES (?1, ?2, ?3, ?4, 'shell', NULL, ?5, 'isolated', NULL, 1, ?6, ?7, ?8, ?9)",
+                enabled, delivery, delete_after_run, context_files, created_at, next_run
+             ) VALUES (?1, ?2, ?3, ?4, 'shell', NULL, ?5, 'isolated', NULL, 1, ?6, ?7, '[]', ?8, ?9)",
             params![
                 id,
                 expression,
@@ -122,10 +122,12 @@ pub fn add_agent_job(
     model: Option<String>,
     delivery: Option<DeliveryConfig>,
     delete_after_run: bool,
+    context_files: Vec<String>,
 ) -> Result<(CronJob, UpsertResult)> {
     let now = Utc::now();
     validate_schedule(&schedule, now)?;
     let delivery = delivery.unwrap_or_default();
+    let context_files_json = serde_json::to_string(&context_files)?;
 
     // Upsert: if a named job already exists, update it instead of inserting.
     if let Some(ref name_val) = name {
@@ -146,8 +148,8 @@ pub fn add_agent_job(
                     "UPDATE cron_jobs
                      SET expression = ?1, schedule = ?2, prompt = ?3,
                          session_target = ?4, model = ?5, delivery = ?6,
-                         delete_after_run = ?7, next_run = ?8
-                     WHERE id = ?9",
+                         delete_after_run = ?7, next_run = ?8, context_files = ?9
+                     WHERE id = ?10",
                     params![
                         expression,
                         schedule_json,
@@ -157,6 +159,7 @@ pub fn add_agent_job(
                         serde_json::to_string(&delivery)?,
                         if delete_after_run { 1 } else { 0 },
                         next_run.to_rfc3339(),
+                        context_files_json,
                         existing.id,
                     ],
                 )
@@ -178,8 +181,8 @@ pub fn add_agent_job(
         conn.execute(
             "INSERT INTO cron_jobs (
                 id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                enabled, delivery, delete_after_run, created_at, next_run
-             ) VALUES (?1, ?2, '', ?3, 'agent', ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11)",
+                enabled, delivery, delete_after_run, context_files, created_at, next_run
+             ) VALUES (?1, ?2, '', ?3, 'agent', ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11, ?12)",
             params![
                 id,
                 expression,
@@ -190,6 +193,7 @@ pub fn add_agent_job(
                 model,
                 serde_json::to_string(&delivery)?,
                 if delete_after_run { 1 } else { 0 },
+                context_files_json,
                 now.to_rfc3339(),
                 next_run.to_rfc3339(),
             ],
@@ -206,7 +210,7 @@ pub fn list_jobs(config: &Config) -> Result<Vec<CronJob>> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                    enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output
+                    enabled, delivery, delete_after_run, context_files, created_at, next_run, last_run, last_status, last_output
              FROM cron_jobs ORDER BY next_run ASC",
         )?;
 
@@ -224,7 +228,7 @@ pub fn get_job(config: &Config, job_id: &str) -> Result<CronJob> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                    enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output
+                    enabled, delivery, delete_after_run, context_files, created_at, next_run, last_run, last_status, last_output
              FROM cron_jobs WHERE id = ?1",
         )?;
 
@@ -241,7 +245,7 @@ pub fn find_by_name(config: &Config, name: &str) -> Result<Option<CronJob>> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                    enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output
+                    enabled, delivery, delete_after_run, context_files, created_at, next_run, last_run, last_status, last_output
              FROM cron_jobs WHERE name = ?1",
         )?;
 
@@ -274,7 +278,7 @@ pub fn due_jobs(config: &Config, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                    enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output
+                    enabled, delivery, delete_after_run, context_files, created_at, next_run, last_run, last_status, last_output
              FROM cron_jobs
              WHERE enabled = 1 AND next_run <= ?1
              ORDER BY next_run ASC
@@ -325,6 +329,9 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
     if let Some(delete_after_run) = patch.delete_after_run {
         job.delete_after_run = delete_after_run;
     }
+    if let Some(context_files) = patch.context_files {
+        job.context_files = context_files;
+    }
 
     if schedule_changed {
         job.next_run = next_run_for_schedule(&job.schedule, Utc::now())?;
@@ -335,8 +342,8 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
             "UPDATE cron_jobs
              SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4, prompt = ?5, name = ?6,
                  session_target = ?7, model = ?8, enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                 next_run = ?12
-             WHERE id = ?13",
+                 context_files = ?12, next_run = ?13
+             WHERE id = ?14",
             params![
                 job.expression,
                 job.command,
@@ -349,6 +356,7 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
                 if job.enabled { 1 } else { 0 },
                 serde_json::to_string(&job.delivery)?,
                 if job.delete_after_run { 1 } else { 0 },
+                serde_json::to_string(&job.context_files)?,
                 job.next_run.to_rfc3339(),
                 job.id,
             ],
@@ -531,9 +539,13 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJob> {
     let delivery_raw: Option<String> = row.get(10)?;
     let delivery = decode_delivery(delivery_raw.as_deref()).map_err(sql_conversion_error)?;
 
-    let next_run_raw: String = row.get(13)?;
-    let last_run_raw: Option<String> = row.get(14)?;
-    let created_at_raw: String = row.get(12)?;
+    let context_files_raw: Option<String> = row.get(12)?;
+    let context_files =
+        decode_context_files(context_files_raw.as_deref()).map_err(sql_conversion_error)?;
+
+    let created_at_raw: String = row.get(13)?;
+    let next_run_raw: String = row.get(14)?;
+    let last_run_raw: Option<String> = row.get(15)?;
 
     Ok(CronJob {
         id: row.get(0)?,
@@ -548,14 +560,15 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJob> {
         enabled: row.get::<_, i64>(9)? != 0,
         delivery,
         delete_after_run: row.get::<_, i64>(11)? != 0,
+        context_files,
         created_at: parse_rfc3339(&created_at_raw).map_err(sql_conversion_error)?,
         next_run: parse_rfc3339(&next_run_raw).map_err(sql_conversion_error)?,
         last_run: match last_run_raw {
             Some(raw) => Some(parse_rfc3339(&raw).map_err(sql_conversion_error)?),
             None => None,
         },
-        last_status: row.get(15)?,
-        last_output: row.get(16)?,
+        last_status: row.get(16)?,
+        last_output: row.get(17)?,
     })
 }
 
@@ -587,6 +600,17 @@ fn decode_delivery(delivery_raw: Option<&str>) -> Result<DeliveryConfig> {
         }
     }
     Ok(DeliveryConfig::default())
+}
+
+fn decode_context_files(raw: Option<&str>) -> Result<Vec<String>> {
+    if let Some(raw) = raw {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return serde_json::from_str(trimmed)
+                .with_context(|| format!("Failed to parse context_files JSON: {trimmed}"));
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn add_column_if_missing(conn: &Connection, name: &str, sql_type: &str) -> Result<()> {
@@ -678,6 +702,7 @@ fn with_connection<T>(config: &Config, f: impl FnOnce(&Connection) -> Result<T>)
     add_column_if_missing(&conn, "enabled", "INTEGER NOT NULL DEFAULT 1")?;
     add_column_if_missing(&conn, "delivery", "TEXT")?;
     add_column_if_missing(&conn, "delete_after_run", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&conn, "context_files", "TEXT NOT NULL DEFAULT '[]'")?;
 
     f(&conn)
 }
@@ -1035,6 +1060,7 @@ mod tests {
             Some("gemini-pro".into()),
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
         assert!(matches!(first_result, UpsertResult::Created));
@@ -1051,6 +1077,7 @@ mod tests {
             Some("gpt-4o".into()),
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
         assert!(matches!(second_result, UpsertResult::Updated));
@@ -1085,6 +1112,7 @@ mod tests {
             None,
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
         assert!(matches!(first_result, UpsertResult::Created));
@@ -1101,6 +1129,7 @@ mod tests {
             None,
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
         assert!(matches!(second_result, UpsertResult::Created));
@@ -1165,6 +1194,7 @@ mod tests {
             None,
             None,
             false,
+            Vec::new(),
         )
         .unwrap();
 
@@ -1217,6 +1247,7 @@ mod tests {
             None,
             None,
             false,
+            Vec::new(),
         )
         .unwrap_err();
 
@@ -1308,5 +1339,134 @@ mod tests {
         assert_ne!(first.id, second.id);
         let all = list_jobs(&config).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    // --- context_files tests ---
+
+    #[test]
+    fn add_agent_job_stores_context_files() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let files = vec!["skills/standup.md".into(), "memory/state.md".into()];
+        let (job, result) = add_agent_job(
+            &config,
+            Some("ctx-test".into()),
+            Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "Run with context",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            files.clone(),
+        )
+        .unwrap();
+
+        assert!(matches!(result, UpsertResult::Created));
+        assert_eq!(job.context_files, files);
+
+        // Verify round-trip from DB
+        let loaded = get_job(&config, &job.id).unwrap();
+        assert_eq!(loaded.context_files, files);
+    }
+
+    #[test]
+    fn add_agent_job_empty_context_files_stored_as_empty() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (job, _) = add_agent_job(
+            &config,
+            Some("no-ctx".into()),
+            Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "No context",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(job.context_files.is_empty());
+        let loaded = get_job(&config, &job.id).unwrap();
+        assert!(loaded.context_files.is_empty());
+    }
+
+    #[test]
+    fn add_agent_job_upsert_updates_context_files() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (first, _) = add_agent_job(
+            &config,
+            Some("ctx-upsert".into()),
+            Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: None,
+            },
+            "First version",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            vec!["file-a.md".into()],
+        )
+        .unwrap();
+        assert_eq!(first.context_files, vec!["file-a.md"]);
+
+        let (second, result) = add_agent_job(
+            &config,
+            Some("ctx-upsert".into()),
+            Schedule::Cron {
+                expr: "0 10 * * *".into(),
+                tz: None,
+            },
+            "Updated version",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            vec!["file-b.md".into(), "file-c.md".into()],
+        )
+        .unwrap();
+
+        assert!(matches!(result, UpsertResult::Updated));
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.context_files, vec!["file-b.md", "file-c.md"]);
+    }
+
+    #[test]
+    fn shell_job_has_empty_context_files() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let (job, _) = add_shell_job(
+            &config,
+            None,
+            Schedule::Every { every_ms: 60_000 },
+            "echo shell",
+        )
+        .unwrap();
+
+        assert!(job.context_files.is_empty());
+    }
+
+    #[test]
+    fn decode_context_files_handles_null_and_empty() {
+        assert!(super::decode_context_files(None).unwrap().is_empty());
+        assert!(super::decode_context_files(Some("")).unwrap().is_empty());
+        assert!(super::decode_context_files(Some("  ")).unwrap().is_empty());
+        assert!(super::decode_context_files(Some("[]")).unwrap().is_empty());
+        assert_eq!(
+            super::decode_context_files(Some(r#"["a.md","b.md"]"#)).unwrap(),
+            vec!["a.md", "b.md"]
+        );
     }
 }

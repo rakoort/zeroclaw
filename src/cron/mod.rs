@@ -107,6 +107,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             delivery_channel,
             delivery_to,
             name,
+            context_files,
         } => {
             let schedule = Schedule::Cron {
                 expr: expression,
@@ -119,7 +120,15 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
                     let (job, upsert) = add_agent_job(
-                        config, name, schedule, &command, target, model, delivery, false,
+                        config,
+                        name,
+                        schedule,
+                        &command,
+                        target,
+                        model,
+                        delivery,
+                        false,
+                        context_files,
                     )?;
                     let verb = upsert_verb(upsert);
                     println!("{verb} agent cron job {}", job.id);
@@ -147,6 +156,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             delivery_channel,
             delivery_to,
             name,
+            context_files,
         } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
@@ -159,7 +169,15 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
                     let (job, upsert) = add_agent_job(
-                        config, name, schedule, &command, target, model, delivery, true,
+                        config,
+                        name,
+                        schedule,
+                        &command,
+                        target,
+                        model,
+                        delivery,
+                        true,
+                        context_files,
                     )?;
                     let verb = upsert_verb(upsert);
                     println!("{verb} one-shot agent cron job {}", job.id);
@@ -185,6 +203,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             delivery_channel,
             delivery_to,
             name,
+            context_files,
         } => {
             let schedule = Schedule::Every { every_ms };
             validate_job_type(&job_type)?;
@@ -194,7 +213,15 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
                     let (job, upsert) = add_agent_job(
-                        config, name, schedule, &command, target, model, delivery, false,
+                        config,
+                        name,
+                        schedule,
+                        &command,
+                        target,
+                        model,
+                        delivery,
+                        false,
+                        context_files,
                     )?;
                     let verb = upsert_verb(upsert);
                     println!("{verb} interval agent cron job {}", job.id);
@@ -222,6 +249,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             delivery_channel,
             delivery_to,
             name,
+            context_files,
         } => {
             validate_job_type(&job_type)?;
             require_name_for_agent(&job_type, name.as_ref())?;
@@ -233,7 +261,15 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     let delivery = build_delivery_config(delivery_channel, delivery_to)?;
                     let target = SessionTarget::parse(&session_target);
                     let (job, upsert) = add_agent_job(
-                        config, name, schedule, &command, target, model, delivery, true,
+                        config,
+                        name,
+                        schedule,
+                        &command,
+                        target,
+                        model,
+                        delivery,
+                        true,
+                        context_files,
                     )?;
                     let verb = upsert_verb(upsert);
                     println!("{verb} one-shot agent cron job {}", job.id);
@@ -620,6 +656,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: Some("alert-summary".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -650,6 +687,7 @@ mod tests {
                 delivery_channel: Some("discord".into()),
                 delivery_to: Some("999".into()),
                 name: Some("at-reminder".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -677,6 +715,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: Some("health-check".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -704,6 +743,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: Some("reminder".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -733,6 +773,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: None,
+                context_files: Vec::new(),
             },
             &config,
         );
@@ -759,6 +800,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: None,
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -786,6 +828,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: Some("standup".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
@@ -805,6 +848,7 @@ mod tests {
                 delivery_channel: None,
                 delivery_to: None,
                 name: Some("standup".into()),
+                context_files: Vec::new(),
             },
             &config,
         )
