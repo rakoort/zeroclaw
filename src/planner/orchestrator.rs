@@ -12,7 +12,7 @@ pub use super::prompts::build_classifier_context;
 use super::prompts::{
     build_executor_prompt, build_planner_system_prompt, build_synthesis_prompt, filter_tool_names,
 };
-use super::types::{ActionResult, PlanExecutionResult};
+use super::types::{ActionResult, PlanAction, PlanExecutionResult};
 
 const COMPRESS_LINE_MAX: usize = 500;
 
@@ -100,6 +100,212 @@ fn should_run_synthesis(require_synthesis: Option<bool>, succeeded_count: usize)
         Some(false) => false,
         None => succeeded_count >= 2,
     }
+}
+
+/// Build the exclusion list for tool filtering.
+///
+/// When an action specifies a `tools` list, all tools NOT in that list
+/// are added to the exclusion set (merged with any global exclusions).
+fn build_tool_exclusion_list(
+    all_tool_names: &[String],
+    action_tools: &[String],
+    excluded_tools: &[String],
+) -> Vec<String> {
+    let wanted_tools = filter_tool_names(all_tool_names, action_tools);
+    let mut combined = excluded_tools.to_vec();
+    if !action_tools.is_empty() {
+        combined.extend(
+            all_tool_names
+                .iter()
+                .filter(|name| !wanted_tools.contains(name))
+                .cloned(),
+        );
+    }
+    combined.sort();
+    combined.dedup();
+    combined
+}
+
+/// Execute a single plan action, choosing delegate or direct mode based on
+/// the action's `action_type` field.
+///
+/// **Delegate mode** (`action_type == "delegate"`):
+/// - Builds an isolated context with just the action's prompt as user message
+/// - Injects compressed prior-group results as system context (if any)
+/// - Uses exclusion-based tool filtering from the action's `tools` list
+/// - Runs `run_tool_call_loop` with the full tools registry + exclusions
+///
+/// **Direct mode** (all other action types):
+/// - Builds the full executor system prompt with accumulated results
+/// - Uses exclusion-based tool filtering
+/// - Runs `run_tool_call_loop` with the full tools registry
+#[allow(clippy::too_many_arguments)]
+async fn execute_action(
+    action: &PlanAction,
+    action_index: usize,
+    group_accumulated: &[String],
+    plan_analysis: Option<&str>,
+    all_tool_names: &[String],
+    provider: &dyn Provider,
+    tools_registry: &[Box<dyn Tool>],
+    observer: &dyn Observer,
+    provider_name: &str,
+    action_model: &str,
+    temperature: f64,
+    budget: usize,
+    channel_name: &str,
+    cancellation_token: Option<CancellationToken>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
+    tool_result_ttl: u32,
+) -> ActionResult {
+    let action_type = action.action_type.clone();
+    let action_group = action.group;
+    let action_desc = action.description.clone();
+    let action_model_hint = action.model_hint.clone();
+
+    runtime_trace::record_event(
+        "action_start",
+        Some(channel_name),
+        Some(provider_name),
+        Some(action_model),
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "action_index": action_index,
+            "action_type": &action_type,
+            "group": action_group,
+            "description": &action_desc,
+            "model_hint": &action_model_hint,
+            "iteration_budget": budget,
+            "delegate": action_type == "delegate",
+        }),
+    );
+
+    let action_started = Instant::now();
+
+    let combined_excluded =
+        build_tool_exclusion_list(all_tool_names, &action.tools, excluded_tools);
+
+    let result = if action_type == "delegate" {
+        // Delegate mode: isolated context with just the action's prompt.
+        // No executor system prompt — the sub-agent sees only its task.
+        let mut delegate_messages =
+            vec![ChatMessage::user(action.executor_instruction().to_string())];
+
+        // If there are accumulated results from prior groups, inject them as
+        // system context so the delegate can reference IDs/URLs from earlier actions.
+        if !group_accumulated.is_empty() {
+            let context = format!(
+                "RESULTS FROM PRIOR ACTIONS:\n{}",
+                group_accumulated
+                    .iter()
+                    .map(|l| format!("- {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            delegate_messages.insert(0, ChatMessage::system(context));
+        }
+
+        crate::agent::loop_::run_tool_call_loop(
+            provider,
+            &mut delegate_messages,
+            tools_registry,
+            observer,
+            provider_name,
+            action_model,
+            temperature,
+            true,
+            None,
+            channel_name,
+            &crate::config::MultimodalConfig::default(),
+            budget,
+            cancellation_token,
+            None,
+            hooks,
+            &combined_excluded,
+            None,
+            tool_result_ttl,
+        )
+        .await
+    } else {
+        // Direct mode: full executor system prompt with accumulated results.
+        let executor_system = build_executor_prompt(action, group_accumulated, plan_analysis);
+
+        let mut action_messages = vec![
+            ChatMessage::system(executor_system),
+            ChatMessage::user(action.executor_instruction().to_string()),
+        ];
+
+        crate::agent::loop_::run_tool_call_loop(
+            provider,
+            &mut action_messages,
+            tools_registry,
+            observer,
+            provider_name,
+            action_model,
+            temperature,
+            true,
+            None,
+            channel_name,
+            &crate::config::MultimodalConfig::default(),
+            budget,
+            cancellation_token,
+            None,
+            hooks,
+            &combined_excluded,
+            None,
+            tool_result_ttl,
+        )
+        .await
+    };
+
+    let action_result = match result {
+        Ok(output) => ActionResult {
+            action_type,
+            group: action_group,
+            success: true,
+            summary: output.clone(),
+            raw_output: output,
+        },
+        Err(e) => {
+            tracing::warn!(
+                action_type = action_type.as_str(),
+                group = action_group,
+                "Action execution failed: {e}"
+            );
+            ActionResult {
+                action_type,
+                group: action_group,
+                success: false,
+                summary: e.to_string(),
+                raw_output: String::new(),
+            }
+        }
+    };
+
+    runtime_trace::record_event(
+        "action_end",
+        Some(channel_name),
+        Some(provider_name),
+        Some(action_model),
+        None,
+        Some(action_result.success),
+        if action_result.success {
+            None
+        } else {
+            Some(&action_result.summary)
+        },
+        serde_json::json!({
+            "action_index": action_index,
+            "action_type": &action_result.action_type,
+            "group": action_result.group,
+            "duration_ms": action_started.elapsed().as_millis(),
+        }),
+    );
+
+    action_result
 }
 
 /// Three-phase planner/executor/synthesizer orchestration.
@@ -248,136 +454,44 @@ pub async fn plan_then_execute(
             .iter()
             .enumerate()
             .map(|(action_index, action)| {
-                let executor_system =
-                    build_executor_prompt(action, &group_accumulated, plan_analysis);
-                let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
-
-                // Resolve executor model for this action.
-                // Clone model_hint before entering async block to avoid holding
-                // a borrow on `action` (&&PlanAction) across the await point.
-                let action_model_hint = action.model_hint.clone();
-                let action_model = action_model_hint
+                let action_model = action
+                    .model_hint
                     .as_ref()
                     .and_then(|hint| model_routes.get(hint))
                     .map(String::as_str)
                     .unwrap_or(executor_model)
                     .to_string();
 
-                let mut combined_excluded = excluded_tools.to_vec();
-                if !action.tools.is_empty() {
-                    combined_excluded.extend(
-                        all_tool_names
-                            .iter()
-                            .filter(|name| !wanted_tools.contains(name))
-                            .cloned(),
-                    );
-                }
-                combined_excluded.sort();
-                combined_excluded.dedup();
-
-                let mut action_messages = vec![
-                    ChatMessage::system(executor_system),
-                    ChatMessage::user(action.executor_instruction().to_string()),
-                ];
-
-                let action_type = action.action_type.clone();
-                let action_group = action.group;
-                let action_desc = action.description.clone();
                 let budget = resolve_action_budget(
                     action.max_iterations,
                     max_executor_iterations,
                     max_tool_iterations,
                 );
                 let ct = cancellation_token.clone();
+                let ga = group_accumulated.clone();
+                let atn = all_tool_names.clone();
 
                 async move {
-                    runtime_trace::record_event(
-                        "action_start",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(&action_model),
-                        None,
-                        None,
-                        None,
-                        serde_json::json!({
-                            "action_index": action_index,
-                            "action_type": &action_type,
-                            "group": action_group,
-                            "description": &action_desc,
-                            "model_hint": &action_model_hint,
-                            "iteration_budget": budget,
-                        }),
-                    );
-
-                    let action_started = Instant::now();
-
-                    let result = crate::agent::loop_::run_tool_call_loop(
+                    execute_action(
+                        action,
+                        action_index,
+                        &ga,
+                        plan_analysis,
+                        &atn,
                         provider,
-                        &mut action_messages,
                         tools_registry,
                         observer,
                         provider_name,
                         &action_model,
                         temperature,
-                        true, // silent
-                        None, // no approval manager
-                        channel_name,
-                        &crate::config::MultimodalConfig::default(),
                         budget,
+                        channel_name,
                         ct,
-                        None, // no delta sender
                         hooks,
-                        &combined_excluded,
-                        None, // route_hint: executor uses resolved model directly
+                        excluded_tools,
                         tool_result_ttl,
                     )
-                    .await;
-
-                    let action_result = match result {
-                        Ok(output) => ActionResult {
-                            action_type,
-                            group: action_group,
-                            success: true,
-                            summary: output.clone(),
-                            raw_output: output,
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                action_type = action_type.as_str(),
-                                group = action_group,
-                                "Action execution failed: {e}"
-                            );
-                            ActionResult {
-                                action_type,
-                                group: action_group,
-                                success: false,
-                                summary: e.to_string(),
-                                raw_output: String::new(),
-                            }
-                        }
-                    };
-
-                    runtime_trace::record_event(
-                        "action_end",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(&action_model),
-                        None,
-                        Some(action_result.success),
-                        if action_result.success {
-                            None
-                        } else {
-                            Some(&action_result.summary)
-                        },
-                        serde_json::json!({
-                            "action_index": action_index,
-                            "action_type": &action_result.action_type,
-                            "group": action_result.group,
-                            "duration_ms": action_started.elapsed().as_millis(),
-                        }),
-                    );
-
-                    action_result
+                    .await
                 }
             })
             .collect();
@@ -556,133 +670,44 @@ pub async fn execute_plan(
             .iter()
             .enumerate()
             .map(|(action_index, action)| {
-                let executor_system =
-                    build_executor_prompt(action, &group_accumulated, plan_analysis);
-                let wanted_tools = filter_tool_names(&all_tool_names, &action.tools);
-
-                let action_model_hint = action.model_hint.clone();
-                let action_model = action_model_hint
+                let action_model = action
+                    .model_hint
                     .as_ref()
                     .and_then(|hint| model_routes.get(hint))
                     .map(String::as_str)
                     .unwrap_or(executor_model)
                     .to_string();
 
-                let mut combined_excluded = excluded_tools.to_vec();
-                if !action.tools.is_empty() {
-                    combined_excluded.extend(
-                        all_tool_names
-                            .iter()
-                            .filter(|name| !wanted_tools.contains(name))
-                            .cloned(),
-                    );
-                }
-                combined_excluded.sort();
-                combined_excluded.dedup();
-
-                let mut action_messages = vec![
-                    ChatMessage::system(executor_system),
-                    ChatMessage::user(action.executor_instruction().to_string()),
-                ];
-
-                let action_type = action.action_type.clone();
-                let action_group = action.group;
-                let action_desc = action.description.clone();
                 let budget = resolve_action_budget(
                     action.max_iterations,
                     max_executor_iterations,
                     max_tool_iterations,
                 );
                 let ct = cancellation_token.clone();
+                let ga = group_accumulated.clone();
+                let atn = all_tool_names.clone();
 
                 async move {
-                    runtime_trace::record_event(
-                        "action_start",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(&action_model),
-                        None,
-                        None,
-                        None,
-                        serde_json::json!({
-                            "action_index": action_index,
-                            "action_type": &action_type,
-                            "group": action_group,
-                            "description": &action_desc,
-                            "model_hint": &action_model_hint,
-                            "iteration_budget": budget,
-                        }),
-                    );
-
-                    let action_started = Instant::now();
-
-                    let result = crate::agent::loop_::run_tool_call_loop(
+                    execute_action(
+                        action,
+                        action_index,
+                        &ga,
+                        plan_analysis,
+                        &atn,
                         provider,
-                        &mut action_messages,
                         tools_registry,
                         observer,
                         provider_name,
                         &action_model,
                         temperature,
-                        true, // silent
-                        None, // no approval manager
-                        channel_name,
-                        &crate::config::MultimodalConfig::default(),
                         budget,
+                        channel_name,
                         ct,
-                        None, // no delta sender
                         hooks,
-                        &combined_excluded,
-                        None, // route_hint
+                        excluded_tools,
                         tool_result_ttl,
                     )
-                    .await;
-
-                    let action_result = match result {
-                        Ok(output) => ActionResult {
-                            action_type,
-                            group: action_group,
-                            success: true,
-                            summary: output.clone(),
-                            raw_output: output,
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                action_type = action_type.as_str(),
-                                group = action_group,
-                                "Action execution failed: {e}"
-                            );
-                            ActionResult {
-                                action_type,
-                                group: action_group,
-                                success: false,
-                                summary: e.to_string(),
-                                raw_output: String::new(),
-                            }
-                        }
-                    };
-
-                    runtime_trace::record_event(
-                        "action_end",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(&action_model),
-                        None,
-                        Some(action_result.success),
-                        if action_result.success {
-                            None
-                        } else {
-                            Some(&action_result.summary)
-                        },
-                        serde_json::json!({
-                            "action_index": action_index,
-                            "action_type": &action_result.action_type,
-                            "group": action_result.group,
-                            "duration_ms": action_started.elapsed().as_millis(),
-                        }),
-                    );
-
-                    action_result
+                    .await
                 }
             })
             .collect();
@@ -890,5 +915,800 @@ mod tests {
         // back to global_max rather than capping at 0.
         let budget = resolve_action_budget(Some(0), 30, 50);
         assert_eq!(budget, 30);
+    }
+
+    // ── tool exclusion list ──
+
+    #[test]
+    fn build_exclusion_list_empty_action_tools_returns_global_exclusions() {
+        let all = vec!["a".into(), "b".into(), "c".into()];
+        let result = build_tool_exclusion_list(&all, &[], &["c".into()]);
+        assert_eq!(result, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn build_exclusion_list_filters_to_wanted_tools() {
+        let all = vec!["a".into(), "b".into(), "c".into()];
+        let result = build_tool_exclusion_list(&all, &["b".into()], &[]);
+        assert!(result.contains(&"a".to_string()));
+        assert!(result.contains(&"c".to_string()));
+        assert!(!result.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn build_exclusion_list_merges_global_and_action_exclusions() {
+        let all = vec!["a".into(), "b".into(), "c".into(), "d".into()];
+        let result = build_tool_exclusion_list(&all, &["b".into(), "c".into()], &["a".into()]);
+        // "a" is globally excluded, "d" is excluded by action filter
+        assert!(result.contains(&"a".to_string()));
+        assert!(result.contains(&"d".to_string()));
+        assert!(!result.contains(&"b".to_string()));
+        assert!(!result.contains(&"c".to_string()));
+    }
+
+    // ── delegate execution integration tests ──
+
+    use crate::observability::NoopObserver;
+    use crate::providers::{ChatRequest, ChatResponse, ToolCall};
+    use crate::tools::ToolResult;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    /// Echo tool for testing: returns "echo:<value>" for the `value` arg.
+    #[derive(Default)]
+    struct TestEchoTool {
+        name: String,
+    }
+
+    impl TestEchoTool {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for TestEchoTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            "Test echo tool"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"}
+                },
+                "required": ["value"]
+            })
+        }
+
+        async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            let value = args
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(ToolResult {
+                success: true,
+                output: format!("echo:{}:{}", self.name, value),
+                error: None,
+            })
+        }
+    }
+
+    /// Recorded call from the test provider.
+    #[derive(Debug, Clone)]
+    struct RecordedCall {
+        messages: Vec<ChatMessage>,
+        has_tools: bool,
+    }
+
+    /// Provider that issues one tool call, then responds with text.
+    /// Records all chat calls for verification.
+    struct RecordingProvider {
+        /// Tool name to call on first invocation per conversation.
+        tool_name: String,
+        /// Final text response after tool call is processed.
+        final_text: String,
+        /// All recorded chat() calls.
+        calls: Arc<Mutex<Vec<RecordedCall>>>,
+    }
+
+    impl RecordingProvider {
+        fn new(tool_name: &str, final_text: &str) -> Self {
+            Self {
+                tool_name: tool_name.to_string(),
+                final_text: final_text.to_string(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn recorded_calls(&self) -> Vec<RecordedCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RecordingProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok(self.final_text.clone())
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            let messages: Vec<ChatMessage> = request.messages.to_vec();
+            self.calls.lock().unwrap().push(RecordedCall {
+                messages: messages.clone(),
+                has_tools: request.tools.is_some(),
+            });
+
+            // If a tool result is already in the history, return final text.
+            let has_tool_result = messages.iter().any(|m| m.role == "tool");
+            if has_tool_result {
+                return Ok(ChatResponse {
+                    text: Some(self.final_text.clone()),
+                    tool_calls: Vec::new(),
+                    usage: None,
+                    reasoning_content: None,
+                    provider_parts: None,
+                });
+            }
+
+            // First call: issue a tool call.
+            Ok(ChatResponse {
+                text: None,
+                tool_calls: vec![ToolCall::new(
+                    "call_1",
+                    &self.tool_name,
+                    r#"{"value":"test"}"#,
+                )],
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            })
+        }
+    }
+
+    /// Provider that immediately returns text (no tool calls).
+    struct ImmediateProvider {
+        text: String,
+        calls: Arc<Mutex<Vec<RecordedCall>>>,
+    }
+
+    impl ImmediateProvider {
+        fn new(text: &str) -> Self {
+            Self {
+                text: text.to_string(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn recorded_calls(&self) -> Vec<RecordedCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for ImmediateProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok(self.text.clone())
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            self.calls.lock().unwrap().push(RecordedCall {
+                messages: request.messages.to_vec(),
+                has_tools: request.tools.is_some(),
+            });
+            Ok(ChatResponse {
+                text: Some(self.text.clone()),
+                tool_calls: Vec::new(),
+                usage: None,
+                reasoning_content: None,
+                provider_parts: None,
+            })
+        }
+    }
+
+    fn make_delegate_action(
+        group: u32,
+        description: &str,
+        prompt: Option<&str>,
+        tools: Vec<&str>,
+        max_iterations: Option<u32>,
+    ) -> PlanAction {
+        PlanAction {
+            group,
+            action_type: "delegate".into(),
+            description: description.into(),
+            prompt: prompt.map(|s| s.to_string()),
+            tools: tools.into_iter().map(|s| s.to_string()).collect(),
+            params: serde_json::Value::Null,
+            model_hint: None,
+            critical: false,
+            max_iterations,
+        }
+    }
+
+    fn make_direct_action(group: u32, description: &str) -> PlanAction {
+        PlanAction {
+            group,
+            action_type: "synthesize".into(),
+            description: description.into(),
+            prompt: None,
+            tools: vec![],
+            params: serde_json::Value::Null,
+            model_hint: None,
+            critical: false,
+            max_iterations: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn delegate_action_gets_isolated_context() {
+        // A delegate action should NOT get the full executor system prompt.
+        // It should only get its own prompt as a user message.
+        let provider = ImmediateProvider::new("delegate result");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: Some("test plan".into()),
+            passthrough: false,
+            actions: vec![make_delegate_action(
+                1,
+                "Short label",
+                Some("Detailed task for the delegate"),
+                vec![],
+                Some(3),
+            )],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TestEchoTool::new("tool_a"))];
+        let tool_specs: Vec<ToolSpec> = tools.iter().map(|t| t.spec()).collect();
+
+        let result = execute_plan(
+            plan,
+            &provider,
+            "executor-model",
+            "planner-model",
+            "user message",
+            &tools,
+            &tool_specs,
+            &observer,
+            "test-provider",
+            0.7,
+            10,
+            10,
+            "test-channel",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Verify the plan executed (not passthrough).
+        match &result {
+            PlanExecutionResult::Executed { output, .. } => {
+                assert_eq!(output, "delegate result");
+            }
+            PlanExecutionResult::Passthrough => panic!("Expected Executed, got Passthrough"),
+        }
+
+        // Verify the provider received an isolated context:
+        // - The user message should be the action's prompt, not the description.
+        // - There should be NO system message with "executor" instructions
+        //   (like "You are executing a single action from a plan").
+        let calls = provider.recorded_calls();
+        assert!(!calls.is_empty(), "Provider should have been called");
+
+        let first_call = &calls[0];
+        let user_msg = first_call
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("Should have user message");
+        assert_eq!(
+            user_msg.content, "Detailed task for the delegate",
+            "Delegate should use executor_instruction (prompt field)"
+        );
+
+        // Verify no executor system prompt is present.
+        let has_executor_system = first_call
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("You are executing a single action"));
+        assert!(
+            !has_executor_system,
+            "Delegate should NOT receive the standard executor system prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_action_uses_prompt_over_description() {
+        // When a delegate action has both prompt and description,
+        // executor_instruction() returns the prompt.
+        let provider = ImmediateProvider::new("ok");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: None,
+            passthrough: false,
+            actions: vec![make_delegate_action(
+                1,
+                "Short label",
+                Some("Detailed prompt"),
+                vec![],
+                None,
+            )],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let tool_specs: Vec<ToolSpec> = vec![];
+
+        execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "user msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let calls = provider.recorded_calls();
+        let user_msg = calls[0].messages.iter().find(|m| m.role == "user").unwrap();
+        assert_eq!(user_msg.content, "Detailed prompt");
+    }
+
+    #[tokio::test]
+    async fn direct_action_gets_executor_system_prompt() {
+        // A non-delegate action should get the standard executor system prompt.
+        let provider = ImmediateProvider::new("direct result");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: Some("test analysis".into()),
+            passthrough: false,
+            actions: vec![make_direct_action(1, "Synthesize output")],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let tool_specs: Vec<ToolSpec> = vec![];
+
+        execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "user msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let calls = provider.recorded_calls();
+        let has_executor_system = calls[0]
+            .messages
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("You are executing a single action"));
+        assert!(
+            has_executor_system,
+            "Direct action SHOULD receive executor system prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_group_plan_delegate_then_synthesis() {
+        // Group 1: two delegate actions run in parallel.
+        // Group 2: one synthesize action receives compressed results.
+        let provider = ImmediateProvider::new("synthesized output");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: Some("gather then synthesize".into()),
+            passthrough: false,
+            actions: vec![
+                make_delegate_action(
+                    1,
+                    "Gather data A",
+                    Some("Fetch data from source A"),
+                    vec!["tool_a"],
+                    Some(5),
+                ),
+                make_delegate_action(
+                    1,
+                    "Gather data B",
+                    Some("Fetch data from source B"),
+                    vec!["tool_b"],
+                    Some(5),
+                ),
+                make_direct_action(2, "Synthesize gathered data"),
+            ],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(TestEchoTool::new("tool_a")),
+            Box::new(TestEchoTool::new("tool_b")),
+        ];
+        let tool_specs: Vec<ToolSpec> = tools.iter().map(|t| t.spec()).collect();
+
+        let result = execute_plan(
+            plan,
+            &provider,
+            "executor-model",
+            "planner-model",
+            "gather and synthesize",
+            &tools,
+            &tool_specs,
+            &observer,
+            "test-provider",
+            0.7,
+            10,
+            10,
+            "test-channel",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        match &result {
+            PlanExecutionResult::Executed { action_results, .. } => {
+                // All 3 actions should have produced accumulated lines.
+                assert_eq!(action_results.len(), 3);
+                // Group 1 actions are delegate type.
+                assert!(action_results[0].contains("delegate"));
+                assert!(action_results[1].contains("delegate"));
+                // Group 2 action is synthesize type.
+                assert!(action_results[2].contains("synthesize"));
+            }
+            PlanExecutionResult::Passthrough => panic!("Expected Executed"),
+        }
+
+        // Verify group 2 action received accumulated results from group 1.
+        // Group 2 is a direct (non-delegate) action, so it gets the executor
+        // system prompt which includes "RESULTS FROM PRIOR ACTIONS".
+        let calls = provider.recorded_calls();
+        // Find the call that contains the synthesis action.
+        // It should be the last call (group 2 runs after group 1).
+        let synthesis_call = calls.last().expect("Should have calls");
+        let system_msg = synthesis_call
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .expect("Synthesis should have system message");
+        assert!(
+            system_msg.content.contains("RESULTS FROM PRIOR ACTIONS"),
+            "Group 2 action should see results from group 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_group2_receives_prior_results_as_context() {
+        // When a delegate action is in group 2, it should receive compressed
+        // results from group 1 as a system message.
+        let provider = ImmediateProvider::new("group2 result");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: None,
+            passthrough: false,
+            actions: vec![
+                make_delegate_action(1, "First action", Some("Do first thing"), vec![], None),
+                make_delegate_action(
+                    2,
+                    "Second action",
+                    Some("Do second thing using prior results"),
+                    vec![],
+                    None,
+                ),
+            ],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let tool_specs: Vec<ToolSpec> = vec![];
+
+        execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "user msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let calls = provider.recorded_calls();
+        // The last call should be for group 2's delegate action.
+        let last_call = calls.last().expect("Should have calls");
+
+        // Delegate in group 2 should have a system message with prior results.
+        let system_msg = last_call.messages.iter().find(|m| m.role == "system");
+        assert!(
+            system_msg.is_some(),
+            "Group 2 delegate should have system context with prior results"
+        );
+        assert!(
+            system_msg
+                .unwrap()
+                .content
+                .contains("RESULTS FROM PRIOR ACTIONS"),
+            "System context should contain prior action results"
+        );
+
+        // Verify the user message is the delegate's own prompt, not executor prompt.
+        let user_msg = last_call
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .unwrap();
+        assert_eq!(user_msg.content, "Do second thing using prior results");
+    }
+
+    #[tokio::test]
+    async fn delegate_parallel_execution_in_group() {
+        // Two delegate actions in the same group should run via join_all.
+        // We verify this by checking both produce results.
+        let provider = ImmediateProvider::new("parallel result");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: None,
+            passthrough: false,
+            actions: vec![
+                make_delegate_action(1, "Parallel A", Some("Task A"), vec![], None),
+                make_delegate_action(1, "Parallel B", Some("Task B"), vec![], None),
+            ],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let tool_specs: Vec<ToolSpec> = vec![];
+
+        let result = execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        match &result {
+            PlanExecutionResult::Executed { action_results, .. } => {
+                assert_eq!(action_results.len(), 2);
+                // Both should succeed (ImmediateProvider returns text immediately).
+                assert!(
+                    action_results[0].contains("parallel result"),
+                    "Action A should have result"
+                );
+                assert!(
+                    action_results[1].contains("parallel result"),
+                    "Action B should have result"
+                );
+            }
+            PlanExecutionResult::Passthrough => panic!("Expected Executed"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delegate_with_tool_call_filters_tools() {
+        // A delegate action specifying tools = ["tool_a"] should only see tool_a.
+        // We verify by using a provider that calls "tool_a" and getting a result.
+        let provider = RecordingProvider::new("tool_a", "tool call done");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: None,
+            passthrough: false,
+            actions: vec![make_delegate_action(
+                1,
+                "Use tool A",
+                Some("Call tool_a with test data"),
+                vec!["tool_a"],
+                Some(5),
+            )],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(TestEchoTool::new("tool_a")),
+            Box::new(TestEchoTool::new("tool_b")),
+        ];
+        let tool_specs: Vec<ToolSpec> = tools.iter().map(|t| t.spec()).collect();
+
+        let result = execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        match &result {
+            PlanExecutionResult::Executed { output, .. } => {
+                assert_eq!(output, "tool call done");
+            }
+            PlanExecutionResult::Passthrough => panic!("Expected Executed"),
+        }
+
+        // Verify the provider was called and tool_a was used.
+        let calls = provider.recorded_calls();
+        assert!(
+            calls.len() >= 2,
+            "Should have at least 2 calls (tool call + final)"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_no_group1_context_when_first_group() {
+        // Group 1 delegate actions should NOT have a system message with prior
+        // results (there are no prior results).
+        let provider = ImmediateProvider::new("first group result");
+        let observer = NoopObserver;
+
+        let plan = super::super::types::Plan {
+            analysis: None,
+            passthrough: false,
+            actions: vec![make_delegate_action(
+                1,
+                "First group action",
+                Some("Do something"),
+                vec![],
+                None,
+            )],
+            require_synthesis: Some(false),
+        };
+
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let tool_specs: Vec<ToolSpec> = vec![];
+
+        execute_plan(
+            plan,
+            &provider,
+            "model",
+            "model",
+            "msg",
+            &tools,
+            &tool_specs,
+            &observer,
+            "prov",
+            0.7,
+            10,
+            10,
+            "ch",
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let calls = provider.recorded_calls();
+        let first_call = &calls[0];
+
+        // Group 1 delegate should have only a user message, no system context.
+        let system_msgs: Vec<_> = first_call
+            .messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .collect();
+        assert!(
+            system_msgs.is_empty(),
+            "Group 1 delegate should have no system message (no prior results)"
+        );
+
+        // Verify it has a user message with the prompt.
+        let user_msg = first_call
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .unwrap();
+        assert_eq!(user_msg.content, "Do something");
     }
 }
