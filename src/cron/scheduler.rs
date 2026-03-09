@@ -238,6 +238,10 @@ fn read_context_files(paths: &[String], workspace_dir: &std::path::Path) -> Resu
         return Ok(String::new());
     }
 
+    let ws_canonical = workspace_dir
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_dir.to_path_buf());
+
     let mut sections = Vec::with_capacity(paths.len());
     for path_str in paths {
         let path = std::path::Path::new(path_str);
@@ -248,11 +252,24 @@ fn read_context_files(paths: &[String], workspace_dir: &std::path::Path) -> Resu
             workspace_dir.join(path)
         };
 
-        let content = std::fs::read_to_string(&resolved).map_err(|e| {
+        // Security: canonicalize and enforce workspace boundary to prevent
+        // path traversal (e.g. "../../../etc/shadow" or absolute paths
+        // outside the workspace).
+        let canonical = resolved.canonicalize().map_err(|e| {
+            anyhow::anyhow!(
+                "failed to resolve context file '{}': {e}",
+                resolved.display()
+            )
+        })?;
+        if !canonical.starts_with(&ws_canonical) {
+            anyhow::bail!("context file '{}' is outside workspace directory", path_str);
+        }
+
+        let content = std::fs::read_to_string(&canonical).map_err(|e| {
             anyhow::anyhow!("failed to read context file '{}': {e}", resolved.display())
         })?;
 
-        let filename = resolved
+        let filename = canonical
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| path_str.clone());
@@ -1224,8 +1241,8 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("failed to read context file") && msg.contains("nonexistent-file.md"),
-            "Expected clear error message, got: {msg}"
+            msg.contains("nonexistent-file.md"),
+            "Expected clear error message mentioning the file, got: {msg}"
         );
     }
 
@@ -1239,6 +1256,45 @@ mod tests {
             read_context_files(&[file_path.to_string_lossy().to_string()], tmp.path()).unwrap();
         assert!(result.contains("## Context: absolute.md"));
         assert!(result.contains("Absolute content"));
+    }
+
+    #[test]
+    fn read_context_files_rejects_path_outside_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Create a file outside the workspace but inside the tempdir so
+        // canonicalize() succeeds and the boundary check is exercised.
+        let outside_file = tmp.path().join("secret.txt");
+        std::fs::write(&outside_file, "sensitive data").unwrap();
+
+        // Relative traversal outside workspace (../secret.txt escapes workspace/)
+        let result = read_context_files(&["../secret.txt".to_string()], &workspace);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("outside workspace directory"),
+            "Expected workspace boundary error for traversal, got: {msg}"
+        );
+
+        // Absolute path outside workspace
+        let result = read_context_files(&[outside_file.to_string_lossy().to_string()], &workspace);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("outside workspace directory"),
+            "Expected workspace boundary error for absolute path, got: {msg}"
+        );
+
+        // Non-existent traversal path: canonicalize fails, which is also safe
+        let result = read_context_files(&["../../../etc/passwd".to_string()], &workspace);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to resolve context file"),
+            "Expected resolve error for non-existent traversal path, got: {msg}"
+        );
     }
 
     #[tokio::test]
