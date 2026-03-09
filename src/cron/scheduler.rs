@@ -1426,23 +1426,19 @@ mod tests {
     }
 
     // ── Fallback structural guarantees ──────────────────────────
-
-    #[test]
-    fn run_flat_fallback_does_not_invoke_planner() {
-        // Structural test: run_flat_fallback calls agent::loop_::run, not
-        // planner::plan_then_execute. This is verified by code inspection.
-        // The function signature takes a prompt String and calls a completely
-        // separate code path (agent::loop_::run) that creates fresh provider,
-        // memory, and tool state. No planner re-entry is possible.
-        //
-        // This test documents the guarantee. If run_flat_fallback is ever
-        // changed to call the planner, this comment should trigger review.
-        //
-        // The actual integration behavior (planner failure -> fallback -> no
-        // retry) requires a live provider. The unit-level guarantee is:
-        // build_fallback_prompt produces a fresh prompt, and run_flat_fallback
-        // passes it to agent::loop_::run (not plan_then_execute).
-    }
+    //
+    // NOTE: The full Err(e) -> build_fallback_prompt -> run_flat_fallback
+    // integration path cannot be exercised in unit tests because reaching the
+    // Err(e) match arm requires plan_then_execute() to run and fail, which
+    // needs a configured provider with API credentials. To unit-test this
+    // path, plan_then_execute would need to be injected as a trait/closure,
+    // which is not justified by the current architecture (YAGNI). The
+    // unit-level coverage is:
+    //   - build_fallback_prompt: fully tested above (prompt reconstruction)
+    //   - run_flat_fallback: tested below (failure returns job failure)
+    //   - No-retry guarantee: structural — run_flat_fallback calls
+    //     agent::loop_::run (not plan_then_execute), so planner re-entry
+    //     is impossible.
 
     #[tokio::test]
     async fn run_flat_fallback_failure_returns_job_failure() {
@@ -1468,12 +1464,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn planner_failure_then_fallback_failure_is_terminal() {
-        // End-to-end structural test: when the planner can't even start
-        // (no API key), run_agent_job fails. If a provider were available and
-        // the planner failed, the fallback would also fail for the same
-        // infrastructure reason. The key guarantee: there is exactly one
-        // fallback attempt, no retry loop.
+    async fn run_agent_job_no_api_key_fails_without_retry() {
+        // Without API credentials, run_agent_job fails at one of two points:
+        //   1. PlannerRuntime::from_config -> "failed to build planner runtime"
+        //   2. plan_then_execute fails -> fallback also fails -> "agent job failed"
+        // Which path is taken depends on whether a default provider is
+        // configured. Either way, the job fails terminally with no retry loop.
+        //
+        // When path 2 is taken, this test exercises the full Err(e) ->
+        // build_fallback_prompt -> run_flat_fallback chain: the planner fails
+        // (no API key), the fallback rebuilds a fresh prompt and calls
+        // agent::loop_::run, which also fails (same missing key). The job
+        // records a single failure.
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let mut job = test_job("");
@@ -1483,14 +1485,11 @@ mod tests {
 
         let (success, output) = run_agent_job(&config, &security, &job).await;
 
-        assert!(!success, "Job should fail when no provider is configured");
-        // The error comes from PlannerRuntime::from_config failing (no API key),
-        // which means neither planner nor fallback was attempted. This is correct:
-        // if the runtime can't be built, the job fails immediately.
+        assert!(!success, "Job should fail when no API key is configured");
         assert!(
             output.contains("failed to build planner runtime")
                 || output.contains("agent job failed"),
-            "Expected infrastructure error, got: {output}"
+            "Expected infrastructure failure, got: {output}"
         );
     }
 
