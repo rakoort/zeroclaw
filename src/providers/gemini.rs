@@ -1964,6 +1964,30 @@ impl GeminiProvider {
             usage,
         })
     }
+
+    /// Recover a non-JSON tool result by wrapping it in a valid `FunctionResponsePart`.
+    ///
+    /// Extracts the function name from `[Cleared: {name} returned ...]` format if present,
+    /// otherwise falls back to `"unknown"`. Wraps the raw content in `{"output": "..."}`.
+    fn recover_non_json_tool_result(
+        raw_content: &str,
+        _tool_id_to_name: &std::collections::HashMap<String, String>,
+    ) -> Part {
+        // Try to extract tool name from "[Cleared: {name} returned {n} bytes]"
+        let fn_name = raw_content
+            .strip_prefix("[Cleared: ")
+            .and_then(|rest| rest.split_once(' '))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Part {
+            function_response: Some(FunctionResponsePart {
+                name: fn_name,
+                response: serde_json::json!({"output": raw_content}),
+            }),
+            ..Default::default()
+        }
+    }
 }
 
 #[async_trait]
@@ -3980,6 +4004,46 @@ mod tests {
         let preview: String = content.chars().take(200).collect();
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('\u{00E9}'));
+    }
+
+    #[test]
+    fn non_json_tool_message_produces_function_response_part() {
+        // Simulate a cleared tool result — plain string, not JSON
+        let cleared = "[Cleared: shell returned 199 bytes]";
+
+        // The recovery helper should produce a valid FunctionResponsePart
+        let part = GeminiProvider::recover_non_json_tool_result(
+            cleared,
+            &std::collections::HashMap::new(),
+        );
+
+        let fr = part
+            .function_response
+            .as_ref()
+            .expect("must produce a FunctionResponsePart");
+        assert_eq!(
+            fr.name, "shell",
+            "should extract tool name from cleared format"
+        );
+        assert_eq!(
+            fr.response,
+            serde_json::json!({"output": cleared}),
+            "should wrap raw content in output envelope"
+        );
+    }
+
+    #[test]
+    fn non_json_tool_message_without_cleared_prefix_uses_unknown_name() {
+        let garbage = "not json at all";
+
+        let part = GeminiProvider::recover_non_json_tool_result(
+            garbage,
+            &std::collections::HashMap::new(),
+        );
+
+        let fr = part.function_response.as_ref().unwrap();
+        assert_eq!(fr.name, "unknown");
+        assert_eq!(fr.response, serde_json::json!({"output": garbage}));
     }
 
     #[test]
