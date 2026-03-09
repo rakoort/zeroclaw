@@ -1948,6 +1948,7 @@ reasoning_enabled = false
         assert_eq!(cfg.max_history_messages, 50);
         assert!(!cfg.parallel_tools);
         assert_eq!(cfg.tool_dispatcher, "auto");
+        assert_eq!(cfg.tool_result_ttl, 3);
     }
 
     #[test]
@@ -1967,6 +1968,30 @@ tool_dispatcher = "xml"
         assert_eq!(parsed.agent.max_history_messages, 80);
         assert!(parsed.agent.parallel_tools);
         assert_eq!(parsed.agent.tool_dispatcher, "xml");
+        // tool_result_ttl not specified — defaults to 3
+        assert_eq!(parsed.agent.tool_result_ttl, 3);
+    }
+
+    #[test]
+    async fn agent_config_tool_result_ttl_disabled() {
+        let raw = r#"
+default_temperature = 0.7
+[agent]
+tool_result_ttl = 0
+"#;
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert_eq!(parsed.agent.tool_result_ttl, 0);
+    }
+
+    #[test]
+    async fn agent_config_tool_result_ttl_custom() {
+        let raw = r#"
+default_temperature = 0.7
+[agent]
+tool_result_ttl = 5
+"#;
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert_eq!(parsed.agent.tool_result_ttl, 5);
     }
 
     #[tokio::test]

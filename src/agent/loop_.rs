@@ -106,6 +106,95 @@ pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 /// Used before streaming the final answer so progress lines are replaced by the clean response.
 pub(crate) const DRAFT_CLEAR_SENTINEL: &str = "\x00CLEAR\x00";
 
+/// Replace stale tool result messages with compact summaries.
+///
+/// Walks history backwards, counting assistant messages.  For each
+/// `role: "tool"` message that appeared more than `ttl` assistant turns ago,
+/// the content is replaced with `[Cleared: {tool_name} returned {byte_count} bytes]`.
+///
+/// The most-recent tool result is never cleared regardless of TTL.
+pub(crate) fn clear_stale_tool_results(history: &mut [ChatMessage], ttl: u32) {
+    // Find the index of the most-recent tool-result message (never cleared).
+    let most_recent_tool_idx = history.iter().rposition(|m| m.role == "tool");
+
+    // Walk backwards, counting assistant messages to determine age.
+    // Each tool result's "age" is the number of assistant messages that
+    // appear *after* it in the history.
+    let mut assistant_count_from_end: Vec<u32> = vec![0; history.len()];
+    let mut running = 0u32;
+    for i in (0..history.len()).rev() {
+        assistant_count_from_end[i] = running;
+        if history[i].role == "assistant" {
+            running += 1;
+        }
+    }
+
+    for i in 0..history.len() {
+        if history[i].role != "tool" {
+            continue;
+        }
+
+        // Never clear the most-recent tool result.
+        if Some(i) == most_recent_tool_idx {
+            continue;
+        }
+
+        // Already cleared — skip.
+        if history[i].content.starts_with("[Cleared:") {
+            continue;
+        }
+
+        let age = assistant_count_from_end[i];
+        if age < ttl {
+            continue;
+        }
+
+        let byte_count = history[i].content.len();
+        let tool_name = extract_tool_name_for_clearing(history, i);
+        history[i].content = format!("[Cleared: {tool_name} returned {byte_count} bytes]");
+    }
+}
+
+/// Try to determine the tool name for a `role: "tool"` message at `tool_idx`.
+///
+/// Strategy: parse the tool message's `tool_call_id`, then look at the
+/// preceding `role: "assistant"` message for a `tool_calls` JSON array
+/// that contains a matching `id` field.  Falls back to `"tool"`.
+fn extract_tool_name_for_clearing(history: &[ChatMessage], tool_idx: usize) -> String {
+    // Try to get tool_call_id from the tool message JSON.
+    let tool_call_id = serde_json::from_str::<serde_json::Value>(&history[tool_idx].content)
+        .ok()
+        .and_then(|v| v.get("tool_call_id")?.as_str().map(String::from));
+
+    let tool_call_id = match tool_call_id {
+        Some(id) => id,
+        None => return "tool".into(),
+    };
+
+    // Search backwards from tool_idx for the nearest assistant message
+    // that contains matching tool_calls.
+    for j in (0..tool_idx).rev() {
+        if history[j].role != "assistant" {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&history[j].content) {
+            if let Some(calls) = v.get("tool_calls").and_then(|c| c.as_array()) {
+                for call in calls {
+                    if call.get("id").and_then(|id| id.as_str()) == Some(&tool_call_id) {
+                        if let Some(name) = call.get("name").and_then(|n| n.as_str()) {
+                            return name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        // Stop searching after the first assistant message before this tool result.
+        break;
+    }
+
+    "tool".into()
+}
+
 /// Extract a short hint from tool call arguments for progress display.
 fn truncate_tool_args_for_progress(name: &str, args: &serde_json::Value, max_len: usize) -> String {
     let hint = match name {
@@ -1907,6 +1996,7 @@ pub(crate) async fn agent_turn(
         None,
         &[],
         None,
+        0, // tool_result_ttl: disabled for simple agent_turn callers
     )
     .await
 }
@@ -2098,6 +2188,7 @@ pub(crate) async fn run_tool_call_loop(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     route_hint: Option<&str>,
+    tool_result_ttl: u32,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2115,6 +2206,11 @@ pub(crate) async fn run_tool_call_loop(
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
 
     for iteration in 0..max_iterations {
+        // Clear stale tool results to keep context lean (0 = disabled).
+        if tool_result_ttl > 0 {
+            clear_stale_tool_results(history, tool_result_ttl);
+        }
+
         if cancellation_token
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
@@ -3066,6 +3162,7 @@ pub async fn run(
             None,
             &[],
             None,
+            config.agent.tool_result_ttl,
         )
         .await?;
         final_output = response.clone();
@@ -3189,6 +3286,7 @@ pub async fn run(
                 None,
                 &[],
                 None,
+                config.agent.tool_result_ttl,
             )
             .await
             {
@@ -3737,6 +3835,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3784,6 +3883,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3825,6 +3925,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3952,6 +4053,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect("parallel execution should complete");
@@ -4022,6 +4124,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4079,6 +4182,7 @@ mod tests {
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -5760,6 +5864,7 @@ Let me check the result."#;
             None,
             &[],
             None,
+            0,
         )
         .await
         .expect("tool loop should complete successfully");
@@ -5773,5 +5878,317 @@ Let me check the result."#;
             "gateway return must not leak internal reasoning, got: {result}"
         );
         assert_eq!(result, "Here is the result.");
+    }
+
+    // ── clear_stale_tool_results tests ─────────────────────────────────
+
+    /// Helper: build a native-format assistant message containing tool_calls JSON.
+    fn make_assistant_with_tool_calls(names_and_ids: &[(&str, &str)]) -> ChatMessage {
+        let calls: Vec<serde_json::Value> = names_and_ids
+            .iter()
+            .map(|(name, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "arguments": "{}",
+                })
+            })
+            .collect();
+        let content = serde_json::json!({
+            "content": null,
+            "tool_calls": calls,
+        });
+        ChatMessage::assistant(content.to_string())
+    }
+
+    /// Helper: build a native-format tool result message.
+    fn make_tool_result(tool_call_id: &str, result_text: &str) -> ChatMessage {
+        let content = serde_json::json!({
+            "tool_call_id": tool_call_id,
+            "content": result_text,
+        });
+        ChatMessage::tool(content.to_string())
+    }
+
+    #[test]
+    fn clear_stale_tool_results_empty_history() {
+        let mut history: Vec<ChatMessage> = vec![];
+        clear_stale_tool_results(&mut history, 3);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn clear_stale_tool_results_no_tool_results() {
+        let mut history = vec![
+            ChatMessage::system("system prompt"),
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("hi there"),
+        ];
+        clear_stale_tool_results(&mut history, 3);
+        // Nothing should change.
+        assert_eq!(history[0].content, "system prompt");
+        assert_eq!(history[1].content, "hello");
+        assert_eq!(history[2].content, "hi there");
+    }
+
+    #[test]
+    fn clear_stale_tool_results_preserves_most_recent() {
+        // Even with TTL=0, the most recent tool result is never cleared.
+        let tool_content = make_tool_result("call_1", "big result payload");
+        let original_content = tool_content.content.clone();
+
+        let mut history = vec![
+            ChatMessage::system("system"),
+            make_assistant_with_tool_calls(&[("shell", "call_1")]),
+            tool_content,
+            ChatMessage::assistant("final answer"),
+            ChatMessage::assistant("another answer"),
+            ChatMessage::assistant("yet another answer"),
+        ];
+
+        clear_stale_tool_results(&mut history, 0);
+        // The tool result at index 2 is the most recent (and only) tool result,
+        // so it must be preserved even though TTL=0.
+        assert_eq!(history[2].content, original_content);
+    }
+
+    #[test]
+    fn clear_stale_tool_results_clears_old_preserves_recent() {
+        // History: assistant+tool, assistant+tool, assistant, assistant
+        // TTL=1: the first tool result (2 assistant turns after) should be cleared,
+        //        the second tool result (1 assistant turns after but is most recent) preserved.
+        let mut history = vec![
+            ChatMessage::system("system"),
+            ChatMessage::user("do something"),
+            // Turn 1: tool call + result
+            make_assistant_with_tool_calls(&[("shell", "call_1")]),
+            make_tool_result("call_1", "first result data that is quite large"),
+            // Turn 2: tool call + result
+            make_assistant_with_tool_calls(&[("file_read", "call_2")]),
+            make_tool_result("call_2", "second result"),
+            // Two more assistant messages
+            ChatMessage::assistant("thinking"),
+            ChatMessage::assistant("final"),
+        ];
+
+        let original_second = history[5].content.clone();
+        clear_stale_tool_results(&mut history, 1);
+
+        // First tool result (index 3): 2 assistant turns after it (indices 6,7) -> age=2 >= ttl=1 -> cleared.
+        // But wait, the assistant at index 4 also counts. Let me recount.
+        // Messages after index 3: [4]=assistant, [5]=tool, [6]=assistant, [7]=assistant
+        // Assistant messages after index 3: indices 4, 6, 7 => age = 3
+        // So age=3 >= ttl=1 -> cleared.
+        assert!(
+            history[3].content.starts_with("[Cleared:"),
+            "first tool result should be cleared, got: {}",
+            history[3].content,
+        );
+        assert!(
+            history[3].content.contains("shell"),
+            "cleared message should include tool name 'shell', got: {}",
+            history[3].content,
+        );
+        assert!(
+            history[3].content.contains("bytes]"),
+            "cleared message should include byte count, got: {}",
+            history[3].content,
+        );
+
+        // Second tool result (index 5) is the most recent tool result -> never cleared.
+        assert_eq!(history[5].content, original_second);
+    }
+
+    #[test]
+    fn clear_stale_tool_results_ttl_boundary() {
+        // With TTL=2, a tool result that has exactly 2 assistant turns after it
+        // should be cleared (age >= ttl).
+        let mut history = vec![
+            ChatMessage::system("system"),
+            make_assistant_with_tool_calls(&[("shell", "call_old")]),
+            make_tool_result("call_old", "old data"),
+            // 2 assistant turns after
+            ChatMessage::assistant("turn_1"),
+            ChatMessage::assistant("turn_2"),
+            // Another tool result (most recent)
+            make_assistant_with_tool_calls(&[("file_read", "call_new")]),
+            make_tool_result("call_new", "new data"),
+        ];
+
+        clear_stale_tool_results(&mut history, 2);
+
+        // Old tool at index 2: assistant messages after it are at indices 3, 4 (not counting 5
+        // which is assistant but we count all assistants after index 2).
+        // Actually let me count: after index 2 we have [3]=assistant, [4]=assistant, [5]=assistant, [6]=tool
+        // So age = 3 >= 2 -> cleared.
+        assert!(
+            history[2].content.starts_with("[Cleared:"),
+            "tool result at age=3 should be cleared with ttl=2, got: {}",
+            history[2].content,
+        );
+
+        // New tool at index 6 is most recent -> preserved.
+        assert!(
+            !history[6].content.starts_with("[Cleared:"),
+            "most recent tool result should be preserved",
+        );
+    }
+
+    #[test]
+    fn clear_stale_tool_results_ttl_not_yet_expired() {
+        // With TTL=5, no tool result should be cleared when there are only 2 assistant turns.
+        let tool_content_1 = make_tool_result("call_1", "data_1");
+        let tool_content_2 = make_tool_result("call_2", "data_2");
+        let original_1 = tool_content_1.content.clone();
+        let original_2 = tool_content_2.content.clone();
+
+        let mut history = vec![
+            ChatMessage::system("system"),
+            make_assistant_with_tool_calls(&[("shell", "call_1")]),
+            tool_content_1,
+            ChatMessage::assistant("turn_1"),
+            make_assistant_with_tool_calls(&[("file_read", "call_2")]),
+            tool_content_2,
+            ChatMessage::assistant("turn_2"),
+        ];
+
+        clear_stale_tool_results(&mut history, 5);
+
+        // No clearing should happen — all ages < 5.
+        assert_eq!(history[2].content, original_1);
+        assert_eq!(history[5].content, original_2);
+    }
+
+    #[test]
+    fn clear_stale_tool_results_idempotent() {
+        // Calling clear twice should not double-clear already cleared messages.
+        let mut history = vec![
+            ChatMessage::system("system"),
+            make_assistant_with_tool_calls(&[("shell", "call_1")]),
+            make_tool_result("call_1", "some data"),
+            ChatMessage::assistant("turn_1"),
+            ChatMessage::assistant("turn_2"),
+            ChatMessage::assistant("turn_3"),
+            ChatMessage::assistant("turn_4"),
+            make_assistant_with_tool_calls(&[("file_read", "call_2")]),
+            make_tool_result("call_2", "recent data"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+        let after_first = history[2].content.clone();
+        assert!(after_first.starts_with("[Cleared:"));
+
+        // Run again — the cleared message should not change.
+        clear_stale_tool_results(&mut history, 1);
+        assert_eq!(history[2].content, after_first);
+    }
+
+    #[test]
+    fn clear_stale_tool_results_byte_count_matches_original() {
+        let original_result = "x".repeat(1234);
+        let tool_msg = make_tool_result("call_1", &original_result);
+        let original_byte_count = tool_msg.content.len();
+
+        let mut history = vec![
+            make_assistant_with_tool_calls(&[("shell", "call_1")]),
+            tool_msg,
+            ChatMessage::assistant("turn_1"),
+            ChatMessage::assistant("turn_2"),
+            ChatMessage::assistant("turn_3"),
+            // Add a more recent tool result so index 1 can be cleared
+            make_assistant_with_tool_calls(&[("file_read", "call_2")]),
+            make_tool_result("call_2", "recent"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+
+        let cleared = &history[1].content;
+        assert!(cleared.starts_with("[Cleared:"));
+        // The byte count in the summary should match the original content length.
+        let expected_fragment = format!("returned {original_byte_count} bytes]");
+        assert!(
+            cleared.contains(&expected_fragment),
+            "expected byte count {original_byte_count} in cleared message, got: {cleared}",
+        );
+    }
+
+    #[test]
+    fn clear_stale_tool_results_extracts_tool_name_from_assistant() {
+        // Verify the tool name is extracted from the preceding assistant message.
+        let mut history = vec![
+            make_assistant_with_tool_calls(&[("memory_search", "call_abc")]),
+            make_tool_result("call_abc", "search results"),
+            ChatMessage::assistant("done_1"),
+            ChatMessage::assistant("done_2"),
+            // Most recent tool result
+            make_assistant_with_tool_calls(&[("shell", "call_xyz")]),
+            make_tool_result("call_xyz", "ok"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+
+        assert!(
+            history[1].content.contains("memory_search"),
+            "cleared message should contain extracted tool name, got: {}",
+            history[1].content,
+        );
+    }
+
+    #[test]
+    fn clear_stale_tool_results_fallback_tool_name() {
+        // When tool_call_id is missing from the tool message, fall back to "tool".
+        let mut history = vec![
+            ChatMessage::assistant("called something"),
+            ChatMessage::tool("raw result without JSON structure"),
+            ChatMessage::assistant("done_1"),
+            ChatMessage::assistant("done_2"),
+            ChatMessage::assistant("done_3"),
+            // Most recent tool result
+            ChatMessage::tool("recent result"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+
+        assert!(
+            history[1].content.starts_with("[Cleared: tool returned"),
+            "should use fallback name 'tool' when tool_call_id is absent, got: {}",
+            history[1].content,
+        );
+    }
+
+    #[test]
+    fn clear_stale_tool_results_multiple_tool_results_per_turn() {
+        // When an assistant turn produces multiple tool calls, all stale results should be cleared.
+        let mut history = vec![
+            ChatMessage::system("system"),
+            make_assistant_with_tool_calls(&[("shell", "c1"), ("file_read", "c2")]),
+            make_tool_result("c1", "output_1"),
+            make_tool_result("c2", "output_2"),
+            ChatMessage::assistant("thinking"),
+            ChatMessage::assistant("final"),
+            ChatMessage::assistant("extra"),
+            // Most recent
+            make_assistant_with_tool_calls(&[("shell", "c3")]),
+            make_tool_result("c3", "recent"),
+        ];
+
+        clear_stale_tool_results(&mut history, 1);
+
+        // Both old tool results should be cleared.
+        assert!(
+            history[2].content.starts_with("[Cleared:"),
+            "first tool result in multi-call should be cleared, got: {}",
+            history[2].content,
+        );
+        assert!(
+            history[3].content.starts_with("[Cleared:"),
+            "second tool result in multi-call should be cleared, got: {}",
+            history[3].content,
+        );
+        // Most recent preserved.
+        assert!(
+            !history[8].content.starts_with("[Cleared:"),
+            "most recent should be preserved",
+        );
     }
 }

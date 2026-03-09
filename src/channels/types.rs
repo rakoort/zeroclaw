@@ -156,6 +156,7 @@ pub(crate) struct ChannelRuntimeContext {
     pub(crate) integration_tool_names: std::collections::HashMap<String, Vec<String>>,
     pub(crate) integration_catalog: String,
     pub(crate) classifier_model: Option<String>,
+    pub(crate) tool_result_ttl: u32,
 }
 
 #[derive(Clone)]

@@ -94,6 +94,10 @@ pub struct AgentConfig {
     /// Tool dispatch strategy (e.g. `"auto"`). Default: `"auto"`.
     #[serde(default = "default_agent_tool_dispatcher")]
     pub tool_dispatcher: String,
+    /// Number of assistant turns a tool result survives before being replaced
+    /// with a compact summary.  `0` disables clearing.  Default: `3`.
+    #[serde(default = "default_agent_tool_result_ttl")]
+    pub tool_result_ttl: u32,
 }
 
 fn default_agent_max_tool_iterations() -> usize {
@@ -112,6 +116,10 @@ fn default_agent_tool_dispatcher() -> String {
     "auto".into()
 }
 
+fn default_agent_tool_result_ttl() -> u32 {
+    3
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -121,6 +129,7 @@ impl Default for AgentConfig {
             max_history_messages: default_agent_max_history_messages(),
             parallel_tools: false,
             tool_dispatcher: default_agent_tool_dispatcher(),
+            tool_result_ttl: 3,
         }
     }
 }

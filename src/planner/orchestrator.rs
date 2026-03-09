@@ -326,6 +326,7 @@ pub async fn plan_then_execute(
                         hooks,
                         &combined_excluded,
                         None, // route_hint: executor uses resolved model directly
+                        3,    // tool_result_ttl: default clearing for planner actions
                     )
                     .await;
 

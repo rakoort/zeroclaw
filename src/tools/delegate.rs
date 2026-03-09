@@ -412,6 +412,7 @@ impl DelegateTool {
                 None,
                 &[],
                 None, // route_hint: delegate uses resolved model directly
+                3,    // tool_result_ttl: default clearing for delegate sub-agents
             ),
         )
         .await;

@@ -1542,6 +1542,7 @@ pub(crate) async fn process_channel_message(
                     ctx.hooks.as_deref(),
                     &channel_excluded_tools,
                     None, // route_hint: channel orchestrator doesn't classify queries
+                    ctx.tool_result_ttl,
                 ),
             ) => LlmExecutionResult::Completed(result),
         }
@@ -2828,6 +2829,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         integration_tool_names: crate::integrations::build_integration_tool_map(&config),
         integration_catalog: crate::integrations::active_integration_summary(&config),
         classifier_model: resolve_classifier_model(&config.model_routes),
+        tool_result_ttl: config.agent.tool_result_ttl,
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages, Some(watch_manager)).await;
@@ -3065,6 +3067,7 @@ mod tests {
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -3122,6 +3125,7 @@ mod tests {
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -3182,6 +3186,7 @@ mod tests {
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -3665,6 +3670,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -3736,6 +3742,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -3821,6 +3828,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -3892,6 +3900,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -3972,6 +3981,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4073,6 +4083,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4156,6 +4167,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4254,6 +4266,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4337,6 +4350,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4409,6 +4423,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4592,6 +4607,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -4688,6 +4704,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4796,6 +4813,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4886,6 +4904,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -4957,6 +4976,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -5505,6 +5525,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -5606,6 +5627,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -5703,6 +5725,7 @@ BTC is currently around $65,000 based on latest tool output."#
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -6264,6 +6287,7 @@ This is an example JSON object for profile settings."#;
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -6342,6 +6366,7 @@ This is an example JSON object for profile settings."#;
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         });
 
         process_channel_message(
@@ -6658,6 +6683,7 @@ mod watch_dispatch_tests {
             integration_tool_names: HashMap::new(),
             integration_catalog: String::new(),
             classifier_model: None,
+            tool_result_ttl: 0,
         })
     }
 
