@@ -2489,37 +2489,12 @@ impl Provider for GeminiProvider {
                     });
                 }
                 "tool" => {
-                    // Parse tool result and convert to functionResponse
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
-                        let tool_call_id = parsed
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let fn_name = tool_id_to_name
-                            .get(tool_call_id)
-                            .cloned()
-                            .unwrap_or_else(|| tool_call_id.to_string());
-                        // Try to parse content as JSON; fall back to string wrapper
-                        let response_value = match parsed.get("content") {
-                            Some(v) if v.is_object() => v.clone(),
-                            Some(v) => match v
-                                .as_str()
-                                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                            {
-                                Some(obj) if obj.is_object() => obj,
-                                _ => serde_json::json!({"output": v}),
-                            },
-                            None => serde_json::json!({"output": ""}),
-                        };
-                        let part = Part {
-                            function_response: Some(FunctionResponsePart {
-                                name: fn_name,
-                                response: response_value,
-                            }),
-                            ..Default::default()
-                        };
+                    if let Some(tool_content) =
+                        Self::convert_tool_message(&msg.content, &tool_id_to_name)
+                    {
                         // Merge consecutive tool results into one Content because
                         // Gemini requires function response count == function call count per turn.
+                        let part = tool_content.parts.into_iter().next().unwrap();
                         if let Some(last) = contents.last_mut() {
                             if last.role.as_deref() == Some("tool")
                                 && last.parts.iter().all(|p| p.function_response.is_some())
