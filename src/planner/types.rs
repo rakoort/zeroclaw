@@ -206,7 +206,8 @@ mod tests {
 
     #[test]
     fn plan_require_synthesis_false_deserializes() {
-        let json = r#"{"require_synthesis": false, "actions": [{"type": "a", "description": "b"}]}"#;
+        let json =
+            r#"{"require_synthesis": false, "actions": [{"type": "a", "description": "b"}]}"#;
         let plan: Plan = serde_json::from_str(json).unwrap();
         assert_eq!(plan.require_synthesis, Some(false));
     }

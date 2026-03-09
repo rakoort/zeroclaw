@@ -22,12 +22,9 @@ impl SlackMrkdwnHook {
 const SLACK_MESSAGE_TOOLS: &[&str] = &["slack_send", "slack_dm", "slack_send_thread"];
 
 // Compiled regexes — built once, reused across calls.
-static RE_BOLD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\*{2,3}([^*]+?)\*{2,3}").unwrap());
-static RE_LINK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap());
-static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s+(.+)$").unwrap());
+static RE_BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*{2,3}([^*]+?)\*{2,3}").unwrap());
+static RE_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap());
+static RE_HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s+(.+)$").unwrap());
 static RE_CODE_BLOCK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```[a-zA-Z]*\n(.*?)```").unwrap());
 
@@ -145,10 +142,7 @@ mod tests {
 
     #[test]
     fn converts_multiple_bolds() {
-        assert_eq!(
-            markdown_to_mrkdwn("**one** and **two**"),
-            "*one* and *two*"
-        );
+        assert_eq!(markdown_to_mrkdwn("**one** and **two**"), "*one* and *two*");
     }
 
     #[test]
@@ -276,7 +270,10 @@ mod tests {
     async fn before_tool_call_ignores_non_slack_tools() {
         let hook = SlackMrkdwnHook::new();
         let args = serde_json::json!({"query": "**bold**"});
-        match hook.before_tool_call("linear_issues".into(), args.clone()).await {
+        match hook
+            .before_tool_call("linear_issues".into(), args.clone())
+            .await
+        {
             HookResult::Continue((_, result_args)) => {
                 assert_eq!(result_args, args);
             }

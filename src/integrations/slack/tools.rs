@@ -765,7 +765,11 @@ mod tests {
 
     #[test]
     fn all_slack_tools_have_valid_json_schemas() {
-        let client = Arc::new(SlackClient::new("xoxb-test".into(), "xapp-test".into(), Arc::new(NoopObserver)));
+        let client = Arc::new(SlackClient::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_slack_tools(client);
         assert_eq!(tools.len(), 9);
         for tool in &tools {
@@ -786,7 +790,11 @@ mod tests {
 
     #[test]
     fn all_slack_tools_have_unique_names() {
-        let client = Arc::new(SlackClient::new("xoxb-test".into(), "xapp-test".into(), Arc::new(NoopObserver)));
+        let client = Arc::new(SlackClient::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_slack_tools(client);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         names.sort_unstable();

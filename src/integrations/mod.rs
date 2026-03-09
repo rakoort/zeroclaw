@@ -38,11 +38,17 @@ pub trait Integration: Send + Sync {
 }
 
 /// Build integrations from config. Returns empty vec when no integrations are configured.
-pub fn collect_integrations(config: &Config, observer: Arc<dyn Observer>) -> Vec<Arc<dyn Integration>> {
+pub fn collect_integrations(
+    config: &Config,
+    observer: Arc<dyn Observer>,
+) -> Vec<Arc<dyn Integration>> {
     let mut integrations: Vec<Arc<dyn Integration>> = Vec::new();
 
     if let Some(ref slack_config) = config.integrations.slack {
-        integrations.push(Arc::new(slack::SlackIntegration::new(slack_config.clone(), Arc::clone(&observer))));
+        integrations.push(Arc::new(slack::SlackIntegration::new(
+            slack_config.clone(),
+            Arc::clone(&observer),
+        )));
     }
 
     if let Some(ref linear_config) = config.integrations.linear {
@@ -66,7 +72,8 @@ pub fn collect_integrations(config: &Config, observer: Arc<dyn Observer>) -> Vec
 /// for use in the classifier prompt. Only includes integrations with runtime
 /// tools (i.e., those returned by `collect_integrations`).
 pub fn active_integration_summary(config: &Config) -> String {
-    let integrations = collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
+    let integrations =
+        collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
     if integrations.is_empty() {
         return String::new();
     }
@@ -107,7 +114,8 @@ pub fn excluded_tool_names(
 pub fn build_integration_tool_map(
     config: &Config,
 ) -> std::collections::HashMap<String, Vec<String>> {
-    let integrations = collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
+    let integrations =
+        collect_integrations(config, Arc::new(crate::observability::noop::NoopObserver));
     integrations
         .iter()
         .map(|i| {

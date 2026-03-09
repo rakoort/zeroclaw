@@ -54,14 +54,22 @@ mod tests {
 
     #[test]
     fn all_github_tools_returns_3_tools() {
-        let client = Arc::new(GitHubClient::new("ghp_test".into(), None, Arc::new(NoopObserver)));
+        let client = Arc::new(GitHubClient::new(
+            "ghp_test".into(),
+            None,
+            Arc::new(NoopObserver),
+        ));
         let tools = all_github_tools(client);
         assert_eq!(tools.len(), 3);
     }
 
     #[test]
     fn all_github_tools_have_valid_json_schemas() {
-        let client = Arc::new(GitHubClient::new("ghp_test".into(), None, Arc::new(NoopObserver)));
+        let client = Arc::new(GitHubClient::new(
+            "ghp_test".into(),
+            None,
+            Arc::new(NoopObserver),
+        ));
         let tools = all_github_tools(client);
         for tool in &tools {
             let schema = tool.parameters_schema();

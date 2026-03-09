@@ -859,7 +859,10 @@ mod tests {
 
     #[test]
     fn all_linear_tools_have_valid_json_schemas() {
-        let client = Arc::new(LinearClient::new("lin_api_test".into(), Arc::new(NoopObserver)));
+        let client = Arc::new(LinearClient::new(
+            "lin_api_test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_linear_tools(client);
         assert_eq!(tools.len(), 14);
         for tool in &tools {
@@ -915,7 +918,10 @@ mod tests {
 
     #[test]
     fn all_linear_tools_have_unique_names() {
-        let client = Arc::new(LinearClient::new("lin_api_test".into(), Arc::new(NoopObserver)));
+        let client = Arc::new(LinearClient::new(
+            "lin_api_test".into(),
+            Arc::new(NoopObserver),
+        ));
         let tools = all_linear_tools(client);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         names.sort_unstable();
