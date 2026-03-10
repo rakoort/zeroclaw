@@ -4,7 +4,7 @@ use crate::config::schema::{
 };
 use crate::config::{
     ChannelsConfig, DiscordConfig, IMessageConfig, LarkConfig, MatrixConfig, SlackConfig,
-    TelegramConfig, WebhookConfig,
+    TelegramConfig, ThreadGateConfig, WebhookConfig,
 };
 use anyhow::Result;
 use console::style;
@@ -540,6 +540,7 @@ pub(crate) fn setup_channels() -> Result<ChannelsConfig> {
                     mention_only: true,
                     mention_regex: None,
                     triage_model: None,
+                    thread_gate: ThreadGateConfig::default(),
                 });
             }
             ChannelMenuChoice::IMessage => {

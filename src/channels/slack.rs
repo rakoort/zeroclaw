@@ -239,6 +239,31 @@ enum MentionGateResult {
     Buffer,
 }
 
+/// Per-thread processing status for the thread gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ThreadStatus {
+    Idle,
+    InFlight,
+}
+
+/// Tracks the processing state of a single Slack thread.
+#[derive(Debug, Clone)]
+struct ThreadState {
+    status: ThreadStatus,
+    pending_count: u32,
+    last_activity: std::time::Instant,
+}
+
+impl Default for ThreadState {
+    fn default() -> Self {
+        Self {
+            status: ThreadStatus::Idle,
+            pending_count: 0,
+            last_activity: std::time::Instant::now(),
+        }
+    }
+}
+
 /// Parse a Socket Mode envelope and extract the inner `message` event.
 ///
 /// Returns `Some((envelope_id, event))` for `events_api` envelopes that contain
@@ -1592,5 +1617,21 @@ mod tests {
         assert!(dedup.is_new("a"), "'a' should be new after eviction");
         // d is still tracked
         assert!(!dedup.is_new("d"), "'d' should NOT be new");
+    }
+
+    // -- Thread gate state -------------------------------------------------
+
+    #[test]
+    fn thread_state_defaults_to_idle() {
+        let state = ThreadState::default();
+        assert_eq!(state.status, ThreadStatus::Idle);
+        assert_eq!(state.pending_count, 0);
+    }
+
+    #[test]
+    fn thread_status_debug_display() {
+        let idle = ThreadStatus::Idle;
+        let inflight = ThreadStatus::InFlight;
+        assert_ne!(format!("{idle:?}"), format!("{inflight:?}"));
     }
 }

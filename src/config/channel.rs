@@ -452,6 +452,40 @@ impl ChannelConfig for DiscordConfig {
     }
 }
 
+/// Thread gate configuration — prevents duplicate agent loops per thread.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadGateConfig {
+    /// Enable thread gate. Default: true.
+    #[serde(default = "default_thread_gate_enabled")]
+    pub enabled: bool,
+    /// Maximum number of tracked threads. Default: 500.
+    #[serde(default = "default_max_tracked_threads")]
+    pub max_tracked_threads: usize,
+    /// Minutes before idle thread entries are evicted. Default: 30.
+    #[serde(default = "default_idle_eviction_minutes")]
+    pub idle_eviction_minutes: u64,
+}
+
+fn default_thread_gate_enabled() -> bool {
+    true
+}
+fn default_max_tracked_threads() -> usize {
+    500
+}
+fn default_idle_eviction_minutes() -> u64 {
+    30
+}
+
+impl Default for ThreadGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_thread_gate_enabled(),
+            max_tracked_threads: default_max_tracked_threads(),
+            idle_eviction_minutes: default_idle_eviction_minutes(),
+        }
+    }
+}
+
 /// Slack bot channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SlackConfig {
@@ -476,6 +510,9 @@ pub struct SlackConfig {
     /// to messages in threads it participates in (without explicit @mention).
     /// When absent, thread-participant messages are buffered silently.
     pub triage_model: Option<String>,
+    /// Thread gate configuration — prevents duplicate agent loops per Slack thread.
+    #[serde(default)]
+    pub thread_gate: ThreadGateConfig,
 }
 
 fn default_mention_only() -> bool {
