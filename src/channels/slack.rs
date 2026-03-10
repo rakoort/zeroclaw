@@ -470,21 +470,52 @@ impl SlackChannel {
     /// Attempt to dispatch an agent for a thread.
     /// Returns `true` if dispatch should proceed (thread was Idle or new).
     /// Returns `false` if thread is already InFlight (message queued as pending).
+    ///
+    /// Enforces a max capacity of 500 tracked threads. When at capacity and a
+    /// new thread arrives, the oldest idle entry is evicted to make room. If all
+    /// entries are InFlight (no idle to evict), the new thread is allowed anyway
+    /// as a safety valve.
     fn try_dispatch(&self, thread_ts: &str) -> bool {
         let mut states = self.thread_states.lock().unwrap();
-        let state = states.entry(thread_ts.to_string()).or_default();
-        match state.status {
-            ThreadStatus::Idle => {
-                state.status = ThreadStatus::InFlight;
-                state.last_activity = std::time::Instant::now();
-                true
-            }
-            ThreadStatus::InFlight => {
-                state.pending_count += 1;
-                state.last_activity = std::time::Instant::now();
-                false
-            }
+
+        // If thread already tracked, handle it directly
+        if let Some(state) = states.get_mut(thread_ts) {
+            return match state.status {
+                ThreadStatus::Idle => {
+                    state.status = ThreadStatus::InFlight;
+                    state.last_activity = std::time::Instant::now();
+                    true
+                }
+                ThreadStatus::InFlight => {
+                    state.pending_count += 1;
+                    state.last_activity = std::time::Instant::now();
+                    false
+                }
+            };
         }
+
+        // New thread — enforce capacity (evict oldest idle first)
+        if states.len() >= 500 {
+            let oldest_idle = states
+                .iter()
+                .filter(|(_, s)| s.status == ThreadStatus::Idle)
+                .min_by_key(|(_, s)| s.last_activity)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest_idle {
+                states.remove(&key);
+            }
+            // If still at capacity (all InFlight), allow anyway — safety valve
+        }
+
+        states.insert(
+            thread_ts.to_string(),
+            ThreadState {
+                status: ThreadStatus::InFlight,
+                pending_count: 0,
+                last_activity: std::time::Instant::now(),
+            },
+        );
+        true
     }
 
     /// Mark a thread dispatch as complete.
@@ -765,6 +796,10 @@ impl Channel for SlackChannel {
         let scoped_channel = self.configured_channel_id();
         let mut dedup = EnvelopeDedup::new(100);
 
+        // Periodic thread state eviction
+        let mut last_eviction = std::time::Instant::now();
+        let eviction_interval = std::time::Duration::from_secs(300); // every 5 minutes
+
         // Exponential backoff state: start 1s, double on failure, cap 60s
         let mut backoff_ms: u64 = 1_000;
         const BACKOFF_CAP_MS: u64 = 60_000;
@@ -795,6 +830,11 @@ impl Channel for SlackChannel {
 
             // --- read loop ---
             while let Some(msg_result) = stream.next().await {
+                if last_eviction.elapsed() >= eviction_interval {
+                    self.evict_stale_threads(30); // 30 min idle threshold
+                    last_eviction = std::time::Instant::now();
+                }
+
                 let ws_msg = match msg_result {
                     Ok(m) => m,
                     Err(e) => {
@@ -1930,5 +1970,34 @@ mod tests {
         channel.evict_stale_threads(30);
         let states = channel.thread_states.lock().unwrap();
         assert!(states.contains_key("busy.thread"));
+    }
+
+    #[test]
+    fn thread_gate_enforces_capacity() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        // Insert 500 idle entries directly
+        {
+            let mut states = channel.thread_states.lock().unwrap();
+            for i in 0..500 {
+                states.insert(
+                    format!("{i}.0000"),
+                    ThreadState {
+                        status: ThreadStatus::Idle,
+                        pending_count: 0,
+                        last_activity: std::time::Instant::now(),
+                    },
+                );
+            }
+        }
+        // try_dispatch for a new thread should succeed (evicts one idle)
+        assert!(channel.try_dispatch("new.thread"));
+        let states = channel.thread_states.lock().unwrap();
+        assert!(states.len() <= 500);
+        assert!(states.contains_key("new.thread"));
     }
 }
