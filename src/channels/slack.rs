@@ -836,6 +836,17 @@ impl Channel for SlackChannel {
                     tracing::warn!("Failed to add ack reaction: {e}");
                 }
 
+                // Thread gate — at most one agent loop per thread
+                if let Some(ref tts) = thread_ts {
+                    if !self.try_dispatch(tts) {
+                        tracing::debug!(
+                            thread_ts = %tts,
+                            "Thread gate: message queued (agent in-flight)"
+                        );
+                        continue;
+                    }
+                }
+
                 // Thread hydration
                 let (thread_starter_body, thread_history) = if let Some(ref tts) = thread_ts {
                     match fetch_thread_replies(
