@@ -563,6 +563,92 @@ impl SlackChannel {
         });
     }
 
+    /// Dispatch a follow-up message for a thread with pending messages.
+    /// Returns `true` if the follow-up was successfully sent.
+    async fn dispatch_thread_followup(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<ChannelMessage>,
+        thread_ts: &str,
+        channel_id: &str,
+    ) -> bool {
+        let replies_url = format!("{}/conversations.replies", self.api_base);
+        let query = vec![
+            ("channel", channel_id.to_string()),
+            ("ts", thread_ts.to_string()),
+            ("limit", "50".to_string()),
+        ];
+        let replies = match slack_api_get(&self.client, &replies_url, &self.bot_token, &query).await
+        {
+            Ok(data) => data
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("Thread gate follow-up: failed to fetch thread: {e}");
+                return false;
+            }
+        };
+
+        if replies.is_empty() {
+            tracing::debug!("Thread gate follow-up: empty thread replies");
+            return false;
+        }
+
+        let starter_body = replies
+            .first()
+            .and_then(|r| r.get("text"))
+            .and_then(|t| t.as_str())
+            .map(String::from);
+        let cached_bot_id = self.bot_user_id.lock().unwrap().clone();
+        let history = format_thread_history(
+            &replies,
+            &cached_bot_id,
+            "ZeroClaw",
+            channel_id,
+            &HashMap::new(),
+        );
+        let last_ts = replies
+            .last()
+            .and_then(|r| r.get("ts"))
+            .and_then(|t| t.as_str())
+            .unwrap_or(thread_ts);
+        let ts_display = last_ts
+            .split('.')
+            .next()
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|epoch| chrono::DateTime::from_timestamp(epoch, 0))
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| last_ts.to_string());
+
+        let followup = ChannelMessage {
+            id: format!("slack_{channel_id}_{last_ts}_followup"),
+            sender: "thread_gate_followup".to_string(),
+            reply_target: channel_id.to_string(),
+            content: format!(
+                "[Slack thread follow-up {ts_display}] New messages arrived while agent was working. Re-read the thread and address any unanswered questions."
+            ),
+            channel: "slack".to_string(),
+            timestamp: last_ts
+                .split('.')
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0),
+            thread_ts: Some(thread_ts.to_string()),
+            thread_starter_body: starter_body,
+            thread_history: Some(history),
+            triage_required: false,
+            ack_reaction_ts: None,
+        };
+
+        if tx.send(followup).await.is_err() {
+            tracing::warn!("Thread gate follow-up: dispatch channel closed");
+            return false;
+        }
+
+        true
+    }
+
     /// Evaluate mention gating for an inbound message.
     ///
     /// Returns a `MentionGateResult` indicating how the message should be handled:
@@ -711,94 +797,28 @@ impl Channel for SlackChannel {
                         thread_ts = %thread_ts,
                         "Thread gate: pending messages detected, dispatching follow-up"
                     );
-                    let tx_guard = self.dispatch_tx.lock().await;
-                    if let Some(ref tx) = *tx_guard {
+                    // Clone tx out of the guard so we don't hold the async mutex
+                    // during network I/O.
+                    let tx = self.dispatch_tx.lock().await.clone();
+                    if let Some(tx) = tx {
                         let channel_id = message.recipient.clone();
-                        let replies_url = format!("{}/conversations.replies", self.api_base);
-                        let query = vec![
-                            ("channel", channel_id.clone()),
-                            ("ts", thread_ts.clone()),
-                            ("limit", "50".to_string()),
-                        ];
-                        match slack_api_get(&self.client, &replies_url, &self.bot_token, &query)
-                            .await
-                        {
-                            Ok(data) => {
-                                let replies = data
-                                    .get("messages")
-                                    .and_then(|m| m.as_array())
-                                    .cloned()
-                                    .unwrap_or_default();
-                                if replies.is_empty() {
-                                    tracing::debug!("Thread gate follow-up: empty thread replies");
-                                } else {
-                                    let starter_body = replies
-                                        .first()
-                                        .and_then(|r| r.get("text"))
-                                        .and_then(|t| t.as_str())
-                                        .map(String::from);
-                                    let cached_bot_id = self.bot_user_id.lock().unwrap().clone();
-                                    let history = format_thread_history(
-                                        &replies,
-                                        &cached_bot_id,
-                                        "ZeroClaw",
-                                        &channel_id,
-                                        &HashMap::new(),
-                                    );
-                                    let last_ts = replies
-                                        .last()
-                                        .and_then(|r| r.get("ts"))
-                                        .and_then(|t| t.as_str())
-                                        .unwrap_or(thread_ts);
-                                    let ts_display = last_ts
-                                        .split('.')
-                                        .next()
-                                        .and_then(|s| s.parse::<i64>().ok())
-                                        .and_then(|epoch| {
-                                            chrono::DateTime::from_timestamp(epoch, 0)
-                                        })
-                                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                        .unwrap_or_else(|| last_ts.to_string());
-
-                                    let followup = ChannelMessage {
-                                        id: format!(
-                                            "slack_{channel_id}_{last_ts}_followup"
-                                        ),
-                                        sender: "thread_gate_followup".to_string(),
-                                        reply_target: channel_id,
-                                        content: format!(
-                                            "[Slack thread follow-up {ts_display}] New messages arrived while agent was working. Re-read the thread and address any unanswered questions."
-                                        ),
-                                        channel: "slack".to_string(),
-                                        timestamp: last_ts
-                                            .split('.')
-                                            .next()
-                                            .and_then(|s| s.parse::<u64>().ok())
-                                            .unwrap_or(0),
-                                        thread_ts: Some(thread_ts.clone()),
-                                        thread_starter_body: starter_body,
-                                        thread_history: Some(history),
-                                        triage_required: false,
-                                        ack_reaction_ts: None,
-                                    };
-
-                                    if tx.send(followup).await.is_err() {
-                                        tracing::warn!(
-                                            "Thread gate follow-up: dispatch channel closed"
-                                        );
-                                        // Recover from closed channel — release the thread lock
-                                        // so future messages aren't permanently blocked.
-                                        let mut states = self.thread_states.lock().unwrap();
-                                        states.remove(thread_ts.as_str());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Thread gate follow-up: failed to fetch thread: {e}"
-                                );
-                            }
+                        let sent = self
+                            .dispatch_thread_followup(&tx, thread_ts, &channel_id)
+                            .await;
+                        if !sent {
+                            // Release the thread lock on any failure so future
+                            // messages aren't permanently blocked.
+                            self.thread_states
+                                .lock()
+                                .unwrap()
+                                .remove(thread_ts.as_str());
                         }
+                    } else {
+                        // No dispatch channel — release the thread lock.
+                        self.thread_states
+                            .lock()
+                            .unwrap()
+                            .remove(thread_ts.as_str());
                     }
                 }
             }
