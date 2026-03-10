@@ -85,12 +85,6 @@ pub(crate) fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
     format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
 }
 
-/// Parse a triage response. Returns true (respond) if the response
-/// starts with "YES" (case-insensitive). Anything else = false (skip).
-pub(crate) fn parse_triage_response(response: &str) -> bool {
-    response.trim().to_uppercase().starts_with("YES")
-}
-
 use crate::channels::types::TriageAction;
 
 /// Confidence threshold below which any action defaults to Ignore.
@@ -6770,33 +6764,8 @@ This is an example JSON object for profile settings."#;
 
 #[cfg(test)]
 mod triage_tests {
-    use super::parse_triage_response;
     use super::{parse_triage_action, TRIAGE_CONFIDENCE_THRESHOLD};
     use crate::channels::types::TriageAction;
-
-    #[test]
-    fn triage_response_yes_returns_true() {
-        assert!(parse_triage_response("YES"));
-        assert!(parse_triage_response("yes"));
-        assert!(parse_triage_response("Yes"));
-        assert!(parse_triage_response("YES, they need my help"));
-    }
-
-    #[test]
-    fn triage_response_no_returns_false() {
-        assert!(!parse_triage_response("NO"));
-        assert!(!parse_triage_response("no"));
-        assert!(!parse_triage_response("No"));
-        assert!(!parse_triage_response("NO, they're fine"));
-    }
-
-    #[test]
-    fn triage_response_empty_or_error_returns_false() {
-        assert!(!parse_triage_response(""));
-        assert!(!parse_triage_response("   "));
-        assert!(!parse_triage_response("maybe"));
-        assert!(!parse_triage_response("I think so"));
-    }
 
     #[test]
     fn parse_triage_json_respond_high_confidence() {

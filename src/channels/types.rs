@@ -48,23 +48,6 @@ pub(crate) const CHANNEL_HISTORY_COMPACT_CONTENT_CHARS: usize = 600;
 /// Guardrail for hook-modified outbound channel content.
 pub(crate) const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 
-pub(crate) const TRIAGE_PROMPT: &str = r#"You are monitoring a Slack thread you previously participated in.
-A new message arrived. Decide whether you should respond.
-
-Respond YES if:
-- You are directly addressed by name or role
-- Someone asks a question you can answer
-- The conversation needs your input to move forward
-- You're being asked to take an action
-
-Respond NO if:
-- People are talking to each other
-- The message is an acknowledgment (ok, thanks, got it)
-- Your input would not add value
-- The conversation is proceeding fine without you
-
-Respond with exactly YES or NO."#;
-
 pub(crate) const THREAD_TRIAGE_PROMPT: &str = r#"You are a triage classifier for an autonomous PM agent.
 The agent participated in this thread. Decide if the latest message requires the agent to act.
 
