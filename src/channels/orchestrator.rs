@@ -19,7 +19,7 @@ use super::{
     DEFAULT_CHANNEL_INITIAL_BACKOFF_SECS, DEFAULT_CHANNEL_MAX_BACKOFF_SECS, MAX_CHANNEL_HISTORY,
     MEMORY_CONTEXT_ENTRY_MAX_CHARS, MEMORY_CONTEXT_MAX_CHARS, MEMORY_CONTEXT_MAX_ENTRIES,
     MIN_CHANNEL_MESSAGE_TIMEOUT_SECS, OPENRC_RESTART_ARGS, OPENRC_STATUS_ARGS,
-    SYSTEMD_RESTART_ARGS, SYSTEMD_STATUS_ARGS, TRIAGE_PROMPT,
+    SYSTEMD_RESTART_ARGS, SYSTEMD_STATUS_ARGS, THREAD_TRIAGE_PROMPT,
 };
 use super::{Channel, NostrChannel, SendMessage};
 use crate::config::ModelRouteConfig;
@@ -1186,12 +1186,11 @@ pub(crate) async fn process_channel_message(
     if msg.triage_required {
         if let Some(ref triage_model) = ctx.triage_model {
             let thread_context = msg.thread_history.as_deref().unwrap_or("");
-            let triage_input = format!(
-                "{}\n\nThread context:\n{}\n\nNew message:\n{}",
-                TRIAGE_PROMPT, thread_context, msg.content
-            );
+            let triage_input = THREAD_TRIAGE_PROMPT
+                .replace("{thread_context}", thread_context)
+                .replace("{latest_message}", &msg.content);
 
-            let should_respond = match tokio::time::timeout(
+            let action = match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 ctx.provider.chat_with_history(
                     &[crate::providers::ChatMessage {
@@ -1204,27 +1203,45 @@ pub(crate) async fn process_channel_message(
             )
             .await
             {
-                Ok(Ok(response)) => parse_triage_response(&response),
+                Ok(Ok(response)) => parse_triage_action(&response),
                 Ok(Err(e)) => {
-                    tracing::debug!("Triage LLM error, skipping: {e}");
-                    false
+                    tracing::debug!("Triage LLM error, defaulting to ignore: {e}");
+                    TriageAction::Ignore
                 }
                 Err(_) => {
-                    tracing::debug!("Triage LLM timeout, skipping");
-                    false
+                    tracing::debug!("Triage LLM timeout, defaulting to ignore");
+                    TriageAction::Ignore
                 }
             };
 
-            if !should_respond {
-                tracing::debug!(
-                    "Triage: skipping message from {} in thread {:?}",
-                    msg.sender,
-                    msg.thread_ts
-                );
-                return;
+            match action {
+                TriageAction::Respond => {
+                    tracing::debug!(
+                        "Triage: responding to message from {} in thread {:?}",
+                        msg.sender,
+                        msg.thread_ts
+                    );
+                    // Fall through to normal processing
+                }
+                TriageAction::SilentAct => {
+                    tracing::info!(
+                        "Triage: silent_act for message from {} in thread {:?}",
+                        msg.sender,
+                        msg.thread_ts
+                    );
+                    // TODO(spo-92): dispatch silent action (Linear update, etc.)
+                    // For now, fall through — the agent prompt instructs no visible reply
+                }
+                TriageAction::Ignore => {
+                    tracing::debug!(
+                        "Triage: ignoring message from {} in thread {:?}",
+                        msg.sender,
+                        msg.thread_ts
+                    );
+                    return;
+                }
             }
         } else {
-            // triage_model not configured — skip silently (backward-compatible)
             tracing::debug!(
                 "Triage required but no triage_model configured, skipping message from {}",
                 msg.sender

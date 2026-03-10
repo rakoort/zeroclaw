@@ -65,6 +65,32 @@ Respond NO if:
 
 Respond with exactly YES or NO."#;
 
+pub(crate) const THREAD_TRIAGE_PROMPT: &str = r#"You are a triage classifier for an autonomous PM agent.
+The agent participated in this thread. Decide if the latest message requires the agent to act.
+
+The agent's role: track project state in Linear, surface blockers, capture decisions
+and commitments, correct incorrect claims about project status.
+
+The agent does NOT weigh in on technical decisions, social conversations, or debates.
+
+RULES:
+- Bias toward "ignore". When in doubt, stay silent.
+- "respond" = agent must post a visible reply
+- "silent_act" = agent should update Linear or state, no visible reply
+- "ignore" = agent does nothing
+- If a human already addressed the need, output "ignore"
+- If the message is social, emotional, or off-topic, output "ignore"
+- If the message is about technical implementation, output "ignore"
+
+Thread context:
+{thread_context}
+
+Latest message:
+{latest_message}
+
+Output JSON only:
+{"action": "respond"|"silent_act"|"ignore", "confidence": 0.0-1.0, "reason": "..."}"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TriageAction {
     /// Post a visible response.
