@@ -305,7 +305,8 @@ pub(crate) fn collect_configured_channels(
                     sl.channel_id.clone(),
                     sl.allowed_users.clone(),
                 )
-                .with_mention_config(sl.mention_only, sl.mention_regex.clone()),
+                .with_mention_config(sl.mention_only, sl.mention_regex.clone())
+                .with_thread_gate_config(&sl.thread_gate),
             ),
         });
     }
