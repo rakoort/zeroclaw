@@ -332,6 +332,10 @@ pub struct SlackChannel {
     thread_states: std::sync::Mutex<HashMap<String, ThreadState>>,
     /// Base URL for Slack API calls (override for testing).
     api_base: String,
+    /// Dispatch channel for follow-up messages from thread gate.
+    dispatch_tx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ChannelMessage>>>,
+    /// Cached bot user ID for thread history formatting in follow-up dispatch.
+    bot_user_id: std::sync::Mutex<String>,
 }
 
 impl SlackChannel {
@@ -352,6 +356,8 @@ impl SlackChannel {
             participated_threads: std::sync::Mutex::new(std::collections::HashSet::new()),
             thread_states: std::sync::Mutex::new(HashMap::new()),
             api_base: "https://slack.com/api".into(),
+            dispatch_tx: tokio::sync::Mutex::new(None),
+            bot_user_id: std::sync::Mutex::new(String::new()),
         }
     }
 
@@ -650,10 +656,107 @@ impl Channel for SlackChannel {
             }
         }
 
+        // Thread gate follow-up: check if pending messages arrived while agent was working
+        if let Some(ref thread_ts) = message.thread_ts {
+            if self.complete_dispatch(thread_ts) {
+                tracing::info!(
+                    thread_ts = %thread_ts,
+                    "Thread gate: pending messages detected, dispatching follow-up"
+                );
+                let tx_guard = self.dispatch_tx.lock().await;
+                if let Some(ref tx) = *tx_guard {
+                    let channel_id = message.recipient.clone();
+                    let replies_url = format!("{}/conversations.replies", self.api_base);
+                    let query = vec![
+                        ("channel", channel_id.clone()),
+                        ("ts", thread_ts.clone()),
+                        ("limit", "50".to_string()),
+                    ];
+                    match slack_api_get(&self.client, &replies_url, &self.bot_token, &query).await {
+                        Ok(data) => {
+                            let replies = data
+                                .get("messages")
+                                .and_then(|m| m.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            if replies.is_empty() {
+                                tracing::debug!("Thread gate follow-up: empty thread replies");
+                            } else {
+                                let starter_body = replies
+                                    .first()
+                                    .and_then(|r| r.get("text"))
+                                    .and_then(|t| t.as_str())
+                                    .map(String::from);
+                                let cached_bot_id = self.bot_user_id.lock().unwrap().clone();
+                                let history = format_thread_history(
+                                    &replies,
+                                    &cached_bot_id,
+                                    "ZeroClaw",
+                                    &channel_id,
+                                    &HashMap::new(),
+                                );
+                                let last_ts = replies
+                                    .last()
+                                    .and_then(|r| r.get("ts"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or(thread_ts);
+                                let ts_display = last_ts
+                                    .split('.')
+                                    .next()
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                    .and_then(|epoch| chrono::DateTime::from_timestamp(epoch, 0))
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                    .unwrap_or_else(|| last_ts.to_string());
+
+                                let followup = ChannelMessage {
+                                    id: format!("slack_{channel_id}_{last_ts}_followup"),
+                                    sender: "thread_gate_followup".to_string(),
+                                    reply_target: channel_id,
+                                    content: format!(
+                                        "[Slack thread follow-up {ts_display}] New messages arrived while agent was working. Re-read the thread and address any unanswered questions."
+                                    ),
+                                    channel: "slack".to_string(),
+                                    timestamp: last_ts
+                                        .split('.')
+                                        .next()
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(0),
+                                    thread_ts: Some(thread_ts.clone()),
+                                    thread_starter_body: starter_body,
+                                    thread_history: Some(history),
+                                    triage_required: false,
+                                    ack_reaction_ts: None,
+                                };
+
+                                if tx.send(followup).await.is_err() {
+                                    tracing::warn!(
+                                        "Thread gate follow-up: dispatch channel closed"
+                                    );
+                                    // Recover from closed channel — release the thread lock
+                                    // so future messages aren't permanently blocked.
+                                    let mut states = self.thread_states.lock().unwrap();
+                                    states.remove(thread_ts.as_str());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Thread gate follow-up: failed to fetch thread: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+        *self.dispatch_tx.lock().await = Some(tx.clone());
         let bot_user_id = self.get_bot_user_id().await.unwrap_or_default();
+
+        // Cache bot_user_id for follow-up dispatch thread history formatting
+        if !bot_user_id.is_empty() {
+            *self.bot_user_id.lock().unwrap() = bot_user_id.clone();
+        }
 
         if bot_user_id.is_empty() {
             tracing::warn!("Slack auth.test failed — bot_user_id unknown; self-message filtering may miss own messages");
