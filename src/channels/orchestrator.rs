@@ -91,6 +91,60 @@ pub(crate) fn parse_triage_response(response: &str) -> bool {
     response.trim().to_uppercase().starts_with("YES")
 }
 
+use crate::channels::types::TriageAction;
+
+/// Confidence threshold below which any action defaults to Ignore.
+const TRIAGE_CONFIDENCE_THRESHOLD: f64 = 0.8;
+
+/// Parse a triage classifier response (JSON or legacy YES/NO).
+///
+/// Expected JSON format:
+/// `{"action": "respond"|"silent_act"|"ignore", "confidence": 0.0-1.0, "reason": "..."}`
+///
+/// Falls back to legacy YES/NO parsing for backward compatibility.
+pub(crate) fn parse_triage_action(response: &str) -> TriageAction {
+    let trimmed = response.trim();
+
+    // Try JSON parse — strip markdown fences if present
+    let json_str = if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            &trimmed[start..=end]
+        } else {
+            trimmed
+        }
+    } else {
+        // No JSON found — try legacy YES/NO
+        return if trimmed.to_uppercase().starts_with("YES") {
+            TriageAction::Respond
+        } else {
+            TriageAction::Ignore
+        };
+    };
+
+    #[derive(serde::Deserialize)]
+    struct TriageResponse {
+        action: Option<String>,
+        confidence: Option<f64>,
+        #[allow(dead_code)]
+        reason: Option<String>,
+    }
+
+    match serde_json::from_str::<TriageResponse>(json_str) {
+        Ok(resp) => {
+            let confidence = resp.confidence.unwrap_or(0.0);
+            if confidence < TRIAGE_CONFIDENCE_THRESHOLD {
+                return TriageAction::Ignore;
+            }
+            match resp.action.as_deref() {
+                Some("respond") => TriageAction::Respond,
+                Some("silent_act") => TriageAction::SilentAct,
+                _ => TriageAction::Ignore,
+            }
+        }
+        Err(_) => TriageAction::Ignore,
+    }
+}
+
 /// Strip tool-call XML tags from outgoing messages.
 ///
 /// LLM responses may contain `<function_calls>`, `<function_call>`,
@@ -6700,6 +6754,8 @@ This is an example JSON object for profile settings."#;
 #[cfg(test)]
 mod triage_tests {
     use super::parse_triage_response;
+    use super::{parse_triage_action, TRIAGE_CONFIDENCE_THRESHOLD};
+    use crate::channels::types::TriageAction;
 
     #[test]
     fn triage_response_yes_returns_true() {
@@ -6723,6 +6779,80 @@ mod triage_tests {
         assert!(!parse_triage_response("   "));
         assert!(!parse_triage_response("maybe"));
         assert!(!parse_triage_response("I think so"));
+    }
+
+    #[test]
+    fn parse_triage_json_respond_high_confidence() {
+        let input = r#"{"action": "respond", "confidence": 0.9, "reason": "direct question"}"#;
+        assert_eq!(parse_triage_action(input), TriageAction::Respond);
+    }
+
+    #[test]
+    fn parse_triage_json_silent_act() {
+        let input = r#"{"action": "silent_act", "confidence": 0.85, "reason": "commitment made"}"#;
+        assert_eq!(parse_triage_action(input), TriageAction::SilentAct);
+    }
+
+    #[test]
+    fn parse_triage_json_ignore() {
+        let input = r#"{"action": "ignore", "confidence": 0.95, "reason": "social chat"}"#;
+        assert_eq!(parse_triage_action(input), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn parse_triage_json_low_confidence_defaults_to_ignore() {
+        let input = r#"{"action": "respond", "confidence": 0.5, "reason": "maybe relevant"}"#;
+        assert_eq!(parse_triage_action(input), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn parse_triage_json_confidence_threshold_boundary() {
+        let at_threshold = r#"{"action": "respond", "confidence": 0.8, "reason": "boundary"}"#;
+        assert_eq!(parse_triage_action(at_threshold), TriageAction::Respond);
+
+        let below = r#"{"action": "respond", "confidence": 0.79, "reason": "below"}"#;
+        assert_eq!(parse_triage_action(below), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn parse_triage_json_malformed_defaults_to_ignore() {
+        assert_eq!(parse_triage_action("not json at all"), TriageAction::Ignore);
+        assert_eq!(parse_triage_action(""), TriageAction::Ignore);
+        assert_eq!(parse_triage_action("{}"), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn parse_triage_json_unknown_action_defaults_to_ignore() {
+        let input = r#"{"action": "unknown", "confidence": 0.9, "reason": "wat"}"#;
+        assert_eq!(parse_triage_action(input), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn parse_triage_json_extracts_from_markdown_fence() {
+        let input =
+            "```json\n{\"action\": \"respond\", \"confidence\": 0.9, \"reason\": \"test\"}\n```";
+        assert_eq!(parse_triage_action(input), TriageAction::Respond);
+    }
+
+    #[test]
+    fn parse_triage_legacy_yes_still_works() {
+        assert_eq!(parse_triage_action("YES"), TriageAction::Respond);
+        assert_eq!(
+            parse_triage_action("yes, they need help"),
+            TriageAction::Respond
+        );
+    }
+
+    #[test]
+    fn parse_triage_legacy_no_maps_to_ignore() {
+        assert_eq!(parse_triage_action("NO"), TriageAction::Ignore);
+        assert_eq!(parse_triage_action("no"), TriageAction::Ignore);
+    }
+
+    #[test]
+    fn triage_confidence_threshold_is_0_8() {
+        // Guard against accidental threshold changes.
+        assert!((TRIAGE_CONFIDENCE_THRESHOLD - 0.8).abs() < f64::EPSILON);
     }
 }
 

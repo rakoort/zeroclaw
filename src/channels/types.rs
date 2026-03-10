@@ -65,6 +65,16 @@ Respond NO if:
 
 Respond with exactly YES or NO."#;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriageAction {
+    /// Post a visible response.
+    Respond,
+    /// Update Linear/state silently, no visible reply.
+    SilentAct,
+    /// Do nothing.
+    Ignore,
+}
+
 pub(crate) type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 pub(crate) type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
