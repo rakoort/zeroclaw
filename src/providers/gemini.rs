@@ -2026,10 +2026,8 @@ impl GeminiProvider {
                 ..Default::default()
             }
         } else {
-            let preview: String = raw_content.chars().take(200).collect();
-            tracing::warn!(
+            tracing::trace!(
                 content_len = raw_content.len(),
-                content_preview = %preview,
                 "Non-JSON tool message — wrapping in JSON envelope"
             );
             Self::recover_non_json_tool_result(raw_content, tool_id_to_name)
@@ -2585,6 +2583,9 @@ impl Provider for GeminiProvider {
                         project_id = %creds.project_id,
                         region = %creds.region,
                         "Gemini provider: Vertex AI service account ready"
+                    );
+                    tracing::warn!(
+                        "Non-JSON tool results will be silently wrapped in JSON envelopes (trace-level logging)"
                     );
                 }
                 _ => {
