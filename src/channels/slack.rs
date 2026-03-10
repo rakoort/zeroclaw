@@ -329,6 +329,7 @@ pub struct SlackChannel {
     mention_only: bool,
     mention_regex: Option<regex::Regex>,
     participated_threads: std::sync::Mutex<std::collections::HashSet<String>>,
+    thread_states: std::sync::Mutex<HashMap<String, ThreadState>>,
     /// Base URL for Slack API calls (override for testing).
     api_base: String,
 }
@@ -349,6 +350,7 @@ impl SlackChannel {
             mention_only: true,
             mention_regex: None,
             participated_threads: std::sync::Mutex::new(std::collections::HashSet::new()),
+            thread_states: std::sync::Mutex::new(HashMap::new()),
             api_base: "https://slack.com/api".into(),
         }
     }
@@ -457,6 +459,55 @@ impl SlackChannel {
     /// Get the current set of participated threads (for testing).
     fn participated_threads(&self) -> std::collections::HashSet<String> {
         self.participated_threads.lock().unwrap().clone()
+    }
+
+    /// Attempt to dispatch an agent for a thread.
+    /// Returns `true` if dispatch should proceed (thread was Idle or new).
+    /// Returns `false` if thread is already InFlight (message queued as pending).
+    fn try_dispatch(&self, thread_ts: &str) -> bool {
+        let mut states = self.thread_states.lock().unwrap();
+        let state = states.entry(thread_ts.to_string()).or_default();
+        match state.status {
+            ThreadStatus::Idle => {
+                state.status = ThreadStatus::InFlight;
+                state.last_activity = std::time::Instant::now();
+                true
+            }
+            ThreadStatus::InFlight => {
+                state.pending_count += 1;
+                state.last_activity = std::time::Instant::now();
+                false
+            }
+        }
+    }
+
+    /// Mark a thread dispatch as complete.
+    /// Returns `true` if there are pending messages that need a follow-up dispatch.
+    /// If true, pending_count is reset to 0 and status stays InFlight.
+    /// If false, the entry is removed.
+    fn complete_dispatch(&self, thread_ts: &str) -> bool {
+        let mut states = self.thread_states.lock().unwrap();
+        if let Some(state) = states.get_mut(thread_ts) {
+            if state.pending_count > 0 {
+                state.pending_count = 0;
+                state.last_activity = std::time::Instant::now();
+                true
+            } else {
+                states.remove(thread_ts);
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Evict thread state entries that are Idle and older than `max_age_minutes`.
+    fn evict_stale_threads(&self, max_age_minutes: u64) {
+        let cutoff = std::time::Duration::from_secs(max_age_minutes * 60);
+        let mut states = self.thread_states.lock().unwrap();
+        states.retain(|_, state| {
+            state.status == ThreadStatus::InFlight || state.last_activity.elapsed() < cutoff
+        });
     }
 
     /// Evaluate mention gating for an inbound message.
@@ -1633,5 +1684,137 @@ mod tests {
         let idle = ThreadStatus::Idle;
         let inflight = ThreadStatus::InFlight;
         assert_ne!(format!("{idle:?}"), format!("{inflight:?}"));
+    }
+
+    // -- Thread gate dispatch/complete ----------------------------------------
+
+    #[test]
+    fn thread_gate_try_dispatch_idle_thread_returns_true() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        assert!(channel.try_dispatch("1234.5678"));
+    }
+
+    #[test]
+    fn thread_gate_try_dispatch_inflight_thread_returns_false() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        assert!(channel.try_dispatch("1234.5678"));
+        assert!(!channel.try_dispatch("1234.5678"));
+    }
+
+    #[test]
+    fn thread_gate_try_dispatch_increments_pending() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        channel.try_dispatch("1234.5678");
+        channel.try_dispatch("1234.5678"); // blocked, pending_count = 1
+        channel.try_dispatch("1234.5678"); // blocked, pending_count = 2
+
+        let states = channel.thread_states.lock().unwrap();
+        let state = states.get("1234.5678").unwrap();
+        assert_eq!(state.pending_count, 2);
+    }
+
+    #[test]
+    fn thread_gate_complete_with_no_pending_returns_false() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        channel.try_dispatch("1234.5678");
+        let has_pending = channel.complete_dispatch("1234.5678");
+        assert!(!has_pending);
+
+        let states = channel.thread_states.lock().unwrap();
+        assert!(
+            !states.contains_key("1234.5678"),
+            "idle entry should be removed"
+        );
+    }
+
+    #[test]
+    fn thread_gate_complete_with_pending_returns_true() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        channel.try_dispatch("1234.5678");
+        channel.try_dispatch("1234.5678"); // pending = 1
+        let has_pending = channel.complete_dispatch("1234.5678");
+        assert!(has_pending);
+
+        let states = channel.thread_states.lock().unwrap();
+        let state = states.get("1234.5678").unwrap();
+        assert_eq!(state.status, ThreadStatus::InFlight);
+        assert_eq!(state.pending_count, 0);
+    }
+
+    #[test]
+    fn thread_gate_evicts_idle_entries() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        {
+            let mut states = channel.thread_states.lock().unwrap();
+            states.insert(
+                "old.thread".to_string(),
+                ThreadState {
+                    status: ThreadStatus::Idle,
+                    pending_count: 0,
+                    last_activity: std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(3600))
+                        .unwrap(),
+                },
+            );
+        }
+        channel.evict_stale_threads(30);
+        let states = channel.thread_states.lock().unwrap();
+        assert!(!states.contains_key("old.thread"));
+    }
+
+    #[test]
+    fn thread_gate_does_not_evict_inflight_entries() {
+        let channel = SlackChannel::new(
+            "xoxb-test".into(),
+            "xapp-test".into(),
+            None,
+            vec!["*".into()],
+        );
+        {
+            let mut states = channel.thread_states.lock().unwrap();
+            states.insert(
+                "busy.thread".to_string(),
+                ThreadState {
+                    status: ThreadStatus::InFlight,
+                    pending_count: 0,
+                    last_activity: std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(3600))
+                        .unwrap(),
+                },
+            );
+        }
+        channel.evict_stale_threads(30);
+        let states = channel.thread_states.lock().unwrap();
+        assert!(states.contains_key("busy.thread"));
     }
 }
