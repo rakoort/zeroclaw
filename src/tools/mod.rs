@@ -692,6 +692,7 @@ mod tests {
         let mut cfg = test_config(&tmp);
         cfg.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
 
         let tools = all_tools(

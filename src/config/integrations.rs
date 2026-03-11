@@ -965,6 +965,8 @@ fn default_mention_only_integration() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LinearIntegrationConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 /// GitHub integration configuration (`[integrations.github]`).
@@ -973,6 +975,8 @@ pub struct GitHubIntegrationConfig {
     pub token: String,
     #[serde(default)]
     pub owner: Option<String>,
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 #[cfg(test)]
@@ -998,9 +1002,11 @@ mention_only = true
     fn linear_integration_config_deserializes() {
         let toml_str = r#"
 api_key = "lin_api_test"
+webhook_secret = "whsec_test"
 "#;
         let config: LinearIntegrationConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.api_key, "lin_api_test");
+        assert_eq!(config.webhook_secret.as_deref(), Some("whsec_test"));
     }
 
     #[test]
@@ -1035,10 +1041,12 @@ api_key = "lin_api_test"
         let toml_str = r#"
 token = "ghp_test123"
 owner = "zeroclaw_org"
+webhook_secret = "whsec_gh_test"
 "#;
         let config: GitHubIntegrationConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.token, "ghp_test123");
         assert_eq!(config.owner.as_deref(), Some("zeroclaw_org"));
+        assert_eq!(config.webhook_secret.as_deref(), Some("whsec_gh_test"));
     }
 
     #[test]

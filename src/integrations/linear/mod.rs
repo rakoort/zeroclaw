@@ -87,6 +87,7 @@ mod tests {
     fn linear_integration_name() {
         let config = LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         };
         let integration = LinearIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.name(), "linear");
@@ -96,6 +97,7 @@ mod tests {
     fn linear_integration_returns_14_tools() {
         let config = LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         };
         let integration = LinearIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.tools().len(), 14);
@@ -105,6 +107,7 @@ mod tests {
     fn linear_integration_as_channel_returns_none() {
         let config = LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         };
         let integration = LinearIntegration::new(config, Arc::new(NoopObserver));
         assert!(integration.as_channel().is_none());

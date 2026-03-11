@@ -196,6 +196,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 1);
@@ -209,6 +210,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let summary = active_integration_summary(&config);
         assert!(
@@ -241,6 +243,7 @@ mod tests {
         });
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
 
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
@@ -263,6 +266,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         let filtered = filter_tools_by_integrations(&integrations, &[]);
@@ -274,6 +278,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         let selected = vec!["Linear".to_string()];
@@ -324,6 +329,7 @@ mod tests {
         config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         });
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 1);
@@ -344,6 +350,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let map = build_integration_tool_map(&config);
         assert!(map.contains_key("linear"));
@@ -355,10 +362,12 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: Some("zeroclaw_org".into()),
+            webhook_secret: None,
         });
         let integrations = collect_integrations(&config, Arc::new(NoopObserver));
         assert_eq!(integrations.len(), 2);
@@ -373,6 +382,7 @@ mod tests {
         config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         });
         let map = build_integration_tool_map(&config);
         assert!(map.contains_key("github"));

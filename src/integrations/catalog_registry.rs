@@ -1039,6 +1039,7 @@ mod tests {
         let mut config = Config::default();
         config.integrations.linear = Some(LinearIntegrationConfig {
             api_key: "lin_api_test".into(),
+            webhook_secret: None,
         });
         let entries = all_integrations();
         let linear = entries.iter().find(|e| e.name == "Linear").unwrap();
@@ -1065,6 +1066,7 @@ mod tests {
         config.integrations.github = Some(crate::config::GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         });
         let entries = all_integrations();
         let gh = entries.iter().find(|e| e.name == "GitHub").unwrap();

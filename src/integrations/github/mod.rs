@@ -91,6 +91,7 @@ mod tests {
         let config = GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         };
         let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.name(), "github");
@@ -105,6 +106,7 @@ mod tests {
         let config = GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         };
         let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert_eq!(integration.tools().len(), 3);
@@ -119,6 +121,7 @@ mod tests {
         let config = GitHubIntegrationConfig {
             token: "ghp_test".into(),
             owner: None,
+            webhook_secret: None,
         };
         let integration = GitHubIntegration::new(config, Arc::new(NoopObserver));
         assert!(integration.as_channel().is_none());

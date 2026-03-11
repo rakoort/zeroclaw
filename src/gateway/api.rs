@@ -1440,6 +1440,7 @@ mod tests {
         });
         cfg.integrations.linear = Some(crate::config::LinearIntegrationConfig {
             api_key: "lin_api_real_key".into(),
+            webhook_secret: None,
         });
 
         let masked = mask_sensitive_fields(&cfg);
